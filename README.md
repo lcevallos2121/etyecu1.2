@@ -43,7 +43,7 @@ Abre http://localhost:3000 — deberías ver el Dashboard con el mismo diseño d
 2. Entra a https://vercel.com, conecta tu cuenta de GitHub.
 3. Importa el repositorio — Vercel detecta Next.js automáticamente.
 4. En **Environment Variables**, agrega las mismas dos variables de tu `.env.local`.
-5. Deploy. En ~1 minuto tienes una URL pública para mostrar avances.
+5. Deploy. En ~1 minuto tienes una URL pública para mostrar avawwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwnces.
 
 ## Estructura del proyecto
 
