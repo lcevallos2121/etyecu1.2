@@ -4,11 +4,37 @@ import { useEffect, useState, useCallback } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import { Plus, Pencil, Trash2, X } from "lucide-react";
+import { Plus, Pencil, Trash2, X, MapPin, FileText } from "lucide-react";
+import { ConfirmModal, Toast } from "@/components/Feedback";
 
 export const dynamic = "force-dynamic";
 
-type CdaRef = { id: string; numero_orden: string; clientes: { nombre: string } | null };
+type TipoEspacio = "deposito_aduanero_publico" | "bodega_simple";
+
+const espacioLabel: Record<TipoEspacio, string> = {
+  deposito_aduanero_publico: "Depósito Aduanero Público",
+  bodega_simple: "Bodega Simple",
+};
+
+type CdaRef = {
+  id: string;
+  numero_cda: string | null;
+  folio: number;
+  bl: string | null;
+  clientes: { nombre: string } | null;
+};
+
+type Catalogo = { id: string; nombre: string };
+
+type PosicionLibre = {
+  id: string;
+  codigo_posicion: string;
+  ocupado: boolean;
+  nivel_id: string;
+  niveles_rack: { numero_nivel: number; rack_id: string; racks: { codigo: string; tipo_espacio: string } } | null;
+};
+
+type Ubicacion = { posicion_id: string; cantidad: string };
 
 type OrdenDap = {
   id: string;
@@ -17,60 +43,119 @@ type OrdenDap = {
   cantidad_ingresada: number;
   cantidad_actual: number;
   regimen: string;
-  creado_en: string;
+  tipo_espacio: string | null;
+  total_pallets: number | null;
+  total_unidades: number | null;
+  peso_total_kg: number | null;
+  paletizada: boolean | null;
+  tipo_carga: string | null;
+  nombre_transportista: string | null;
+  cedula_transportista: string | null;
+  placa_vehiculo: string | null;
+  candados: string | null;
+  sellos: string | null;
+  hora_llegada: string | null;
+  observaciones: string | null;
+  fecha_emision_ingreso: string | null;
+  transporte_id: string | null;
+  operador_candado_id: string | null;
   cdas: CdaRef | null;
 };
-
-type FormState = {
-  id?: string;
-  numero_dap: string;
-  cda_id: string;
-  cantidad_ingresada: string;
-  regimen: "10" | "70";
-};
-
-const emptyForm: FormState = { numero_dap: "", cda_id: "", cantidad_ingresada: "", regimen: "70" };
 
 export default function IngresoPage() {
   const supabase = createClient();
 
   const [ordenes, setOrdenes] = useState<OrdenDap[]>([]);
   const [cdas, setCdas] = useState<CdaRef[]>([]);
+  const [transportes, setTransportes] = useState<Catalogo[]>([]);
+  const [operadores, setOperadores] = useState<Catalogo[]>([]);
+  const [posiciones, setPosiciones] = useState<PosicionLibre[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState<FormState>(emptyForm);
-  const [saving, setSaving] = useState(false);
   const [search, setSearch] = useState("");
+
+  const [showForm, setShowForm] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [formId, setFormId] = useState<string | undefined>(undefined);
+
+  // Sección 1
+  const [numeroDap, setNumeroDap] = useState("");
+  const [fechaEmision, setFechaEmision] = useState(new Date().toISOString().slice(0, 10));
+  const [cdaId, setCdaId] = useState("");
+  const [regimen, setRegimen] = useState<"10" | "70">("70");
+  const [tipoEspacio, setTipoEspacio] = useState<TipoEspacio>("deposito_aduanero_publico");
+
+  // Sección 2
+  const [totalPaquetes, setTotalPaquetes] = useState("");
+  const [totalPallets, setTotalPallets] = useState("");
+  const [totalUnidades, setTotalUnidades] = useState("");
+  const [pesoTotal, setPesoTotal] = useState("");
+  const [paletizada, setPaletizada] = useState<"si" | "no" | "">("");
+  const [tipoCarga, setTipoCarga] = useState<"contenedor" | "plataforma" | "camion" | "">("");
+
+  // Sección 3
+  const [nombreTransportista, setNombreTransportista] = useState("");
+  const [cedulaTransportista, setCedulaTransportista] = useState("");
+  const [transporteId, setTransporteId] = useState("");
+  const [placa, setPlaca] = useState("");
+  const [candados, setCandados] = useState("");
+  const [sellos, setSellos] = useState("");
+  const [operadorId, setOperadorId] = useState("");
+  const [horaLlegada, setHoraLlegada] = useState("");
+  const [observaciones, setObservaciones] = useState("");
+
+  // Sección 4: ubicaciones
+  const [ubicaciones, setUbicaciones] = useState<Ubicacion[]>([]);
+  const [toast, setToast] = useState<string | null>(null);
+  const [aEliminar, setAEliminar] = useState<string | null>(null);
+
+  // Impresión de orden de ingreso
+  const [ordenImprimir, setOrdenImprimir] = useState<OrdenDap | null>(null);
+  const [transporteImprimir, setTransporteImprimir] = useState<string>("");
+
+  async function imprimirOrden(o: OrdenDap) {
+    const transporte = transportes.find((t) => t.id === o.transporte_id);
+    setTransporteImprimir(transporte?.nombre ?? "");
+    setOrdenImprimir(o);
+  }
+
+  useEffect(() => {
+    if (ordenImprimir) {
+      const t = setTimeout(() => window.print(), 300);
+      return () => clearTimeout(t);
+    }
+  }, [ordenImprimir]);
 
   const cargarDatos = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
 
-    const [{ data: ordenData, error: ordenError }, { data: cdaData, error: cdaError }] =
-      await Promise.all([
-        supabase
-          .from("ordenes_dap")
-          .select("*, cdas(id, numero_orden, clientes(nombre))")
-          .order("creado_en", { ascending: false }),
-        supabase
-          .from("cdas")
-          .select("id, numero_orden, clientes(nombre)")
-          .order("numero_orden"),
-      ]);
+    const [ordenRes, cdaRes, transRes, operRes, posRes] = await Promise.all([
+      supabase
+        .from("ordenes_dap")
+        .select("*, cdas(id, numero_cda, folio, bl, clientes(nombre))")
+        .order("creado_en", { ascending: false }),
+      supabase.from("cdas").select("id, numero_cda, folio, bl, clientes(nombre)").order("folio", { ascending: false }),
+      supabase.from("catalogo_transportes").select("*").order("nombre"),
+      supabase.from("catalogo_operadores_candado").select("*").order("nombre"),
+      supabase
+        .from("posiciones_nivel")
+        .select("id, codigo_posicion, ocupado, nivel_id, niveles_rack(numero_nivel, rack_id, racks(codigo, tipo_espacio))"),
+    ]);
 
-    if (ordenError) {
+    if (ordenRes.error) {
       setErrorMsg(
-        ordenError.message.includes("permission")
-          ? "Sin permisos para leer órdenes DAP. Falta crear la política temporal de RLS para ordenes_dap."
-          : ordenError.message
+        ordenRes.error.message.includes("column")
+          ? "Faltan columnas nuevas. ¿Corriste migracion_flujo_real.sql en Supabase?"
+          : ordenRes.error.message
       );
     } else {
-      setOrdenes((ordenData as unknown as OrdenDap[]) ?? []);
+      setOrdenes((ordenRes.data as unknown as OrdenDap[]) ?? []);
     }
-
-    if (!cdaError) setCdas((cdaData as unknown as CdaRef[]) ?? []);
-
+    setCdas((cdaRes.data as unknown as CdaRef[]) ?? []);
+    setTransportes(transRes.data ?? []);
+    setOperadores(operRes.data ?? []);
+    setPosiciones((posRes.data as unknown as PosicionLibre[]) ?? []);
     setLoading(false);
   }, [supabase]);
 
@@ -78,71 +163,215 @@ export default function IngresoPage() {
     cargarDatos();
   }, [cargarDatos]);
 
+  const cdaSeleccionado = cdas.find((c) => c.id === cdaId);
+
+  // Posiciones que ya están seleccionadas en el formulario (para no perderlas del
+  // desplegable al editar, aunque figuren como "ocupadas" en la base).
+  const idsPosicionesEnForm = ubicaciones.map((u) => u.posicion_id).filter(Boolean);
+
+  // Solo posiciones libres del tipo de espacio elegido, MÁS las que esta orden
+  // ya tiene asignadas (para poder mantenerlas o cambiarlas al editar).
+  const posicionesDisponibles = posiciones.filter(
+    (p) =>
+      p.niveles_rack?.racks.tipo_espacio === tipoEspacio &&
+      (!p.ocupado || idsPosicionesEnForm.includes(p.id))
+  );
+
+  const sumaUbicaciones = ubicaciones.reduce((acc, u) => acc + Number(u.cantidad || 0), 0);
+
+  function limpiarForm() {
+    setFormId(undefined);
+    setNumeroDap("");
+    setFechaEmision(new Date().toISOString().slice(0, 10));
+    setCdaId("");
+    setRegimen("70");
+    setTipoEspacio("deposito_aduanero_publico");
+    setTotalPaquetes("");
+    setTotalPallets("");
+    setTotalUnidades("");
+    setPesoTotal("");
+    setPaletizada("");
+    setTipoCarga("");
+    setNombreTransportista("");
+    setCedulaTransportista("");
+    setTransporteId("");
+    setPlaca("");
+    setCandados("");
+    setSellos("");
+    setOperadorId("");
+    setHoraLlegada("");
+    setObservaciones("");
+    setUbicaciones([]);
+    setErrorMsg(null);
+  }
+
   function abrirNuevo() {
-    setForm(emptyForm);
+    limpiarForm();
     setShowForm(true);
   }
 
-  function abrirEditar(o: OrdenDap) {
-    setForm({
-      id: o.id,
-      numero_dap: o.numero_dap,
-      cda_id: o.cda_id,
-      cantidad_ingresada: o.cantidad_ingresada.toString(),
-      regimen: o.regimen as "10" | "70",
-    });
+  async function abrirEditar(o: OrdenDap) {
+    limpiarForm();
+    setFormId(o.id);
+    setNumeroDap(o.numero_dap);
+    setFechaEmision(o.fecha_emision_ingreso ?? new Date().toISOString().slice(0, 10));
+    setCdaId(o.cda_id);
+    setRegimen((o.regimen as "10" | "70") ?? "70");
+    setTipoEspacio((o.tipo_espacio as TipoEspacio) ?? "deposito_aduanero_publico");
+    setTotalPaquetes(o.cantidad_ingresada?.toString() ?? "");
+    setTotalPallets(o.total_pallets?.toString() ?? "");
+    setTotalUnidades(o.total_unidades?.toString() ?? "");
+    setPesoTotal(o.peso_total_kg?.toString() ?? "");
+    setPaletizada(o.paletizada === true ? "si" : o.paletizada === false ? "no" : "");
+    setTipoCarga((o.tipo_carga as typeof tipoCarga) ?? "");
+    setNombreTransportista(o.nombre_transportista ?? "");
+    setCedulaTransportista(o.cedula_transportista ?? "");
+    setTransporteId(o.transporte_id ?? "");
+    setPlaca(o.placa_vehiculo ?? "");
+    setCandados(o.candados ?? "");
+    setSellos(o.sellos ?? "");
+    setOperadorId(o.operador_candado_id ?? "");
+    setHoraLlegada(o.hora_llegada ?? "");
+    setObservaciones(o.observaciones ?? "");
+
+    // Cargar las ubicaciones ya asignadas a esta orden para poder editarlas
+    const { data: ubiData } = await supabase
+      .from("ubicaciones_carga")
+      .select("posicion_id, cantidad")
+      .eq("orden_dap_id", o.id);
+    setUbicaciones(
+      (ubiData ?? []).map((u) => ({
+        posicion_id: u.posicion_id,
+        cantidad: u.cantidad?.toString() ?? "",
+      }))
+    );
+
     setShowForm(true);
+  }
+
+  function agregarUbicacion() {
+    setUbicaciones((prev) => [...prev, { posicion_id: "", cantidad: "" }]);
+  }
+
+  function actualizarUbicacion(idx: number, campo: keyof Ubicacion, valor: string) {
+    setUbicaciones((prev) => prev.map((u, i) => (i === idx ? { ...u, [campo]: valor } : u)));
+  }
+
+  function quitarUbicacion(idx: number) {
+    setUbicaciones((prev) => prev.filter((_, i) => i !== idx));
   }
 
   async function guardar() {
-    if (!form.numero_dap.trim() || !form.cda_id || !form.cantidad_ingresada) {
-      setErrorMsg("Número de DAP, CDA y cantidad son obligatorios.");
+    if (!numeroDap.trim() || !cdaId || !totalPaquetes) {
+      setErrorMsg("Número de DAP, CDA y total de paquetes son obligatorios.");
       return;
     }
+
+    const cantidad = Number(totalPaquetes);
+
+    // Validar que las ubicaciones (si hay) sumen el total de paquetes
+    if (ubicaciones.length > 0) {
+      const ubicacionesValidas = ubicaciones.filter((u) => u.posicion_id && u.cantidad);
+      if (ubicacionesValidas.length !== ubicaciones.length) {
+        setErrorMsg("Hay ubicaciones sin posición o sin cantidad. Complétalas o quítalas.");
+        return;
+      }
+      if (sumaUbicaciones !== cantidad) {
+        setErrorMsg(
+          `Las ubicaciones suman ${sumaUbicaciones}, pero el total de paquetes es ${cantidad}. Deben coincidir.`
+        );
+        return;
+      }
+    }
+
     setSaving(true);
     setErrorMsg(null);
 
-    const cantidad = Number(form.cantidad_ingresada);
+    const payload = {
+      numero_dap: numeroDap.trim(),
+      cda_id: cdaId,
+      regimen,
+      tipo_espacio: tipoEspacio,
+      cantidad_ingresada: cantidad,
+      fecha_emision_ingreso: fechaEmision || null,
+      total_pallets: totalPallets ? Number(totalPallets) : null,
+      total_unidades: totalUnidades ? Number(totalUnidades) : null,
+      peso_total_kg: pesoTotal ? Number(pesoTotal) : null,
+      paletizada: paletizada === "si" ? true : paletizada === "no" ? false : null,
+      tipo_carga: tipoCarga || null,
+      nombre_transportista: nombreTransportista.trim() || null,
+      cedula_transportista: cedulaTransportista.trim() || null,
+      transporte_id: transporteId || null,
+      placa_vehiculo: placa.trim() || null,
+      candados: candados.trim() || null,
+      sellos: sellos.trim() || null,
+      operador_candado_id: operadorId || null,
+      hora_llegada: horaLlegada.trim() || null,
+      observaciones: observaciones.trim() || null,
+    };
 
-    if (form.id) {
-      // Al editar, no tocamos cantidad_actual: eso lo maneja el módulo de Egreso.
-      const { error } = await supabase
-        .from("ordenes_dap")
-        .update({
-          numero_dap: form.numero_dap.trim(),
-          cda_id: form.cda_id,
-          cantidad_ingresada: cantidad,
-          regimen: form.regimen,
-        })
-        .eq("id", form.id);
-      setSaving(false);
+    let ordenId = formId;
+
+    if (formId) {
+      const { error } = await supabase.from("ordenes_dap").update(payload).eq("id", formId);
       if (error) {
+        setSaving(false);
         setErrorMsg(error.message.includes("duplicate") ? "Ya existe una orden con ese número de DAP." : error.message);
         return;
       }
     } else {
-      // Al crear, la cantidad actual arranca igual a la ingresada.
-      const { error } = await supabase.from("ordenes_dap").insert({
-        numero_dap: form.numero_dap.trim(),
-        cda_id: form.cda_id,
-        cantidad_ingresada: cantidad,
-        cantidad_actual: cantidad,
-        regimen: form.regimen,
-      });
-      setSaving(false);
+      const { data, error } = await supabase
+        .from("ordenes_dap")
+        .insert({ ...payload, cantidad_actual: cantidad })
+        .select()
+        .single();
       if (error) {
+        setSaving(false);
         setErrorMsg(error.message.includes("duplicate") ? "Ya existe una orden con ese número de DAP." : error.message);
         return;
       }
+      ordenId = data.id;
     }
 
+    // Manejo de ubicaciones: al editar, primero liberar las anteriores y
+    // borrarlas; luego (en ambos casos) escribir las nuevas y ocupar posiciones.
+    if (formId) {
+      const { data: viejas } = await supabase
+        .from("ubicaciones_carga")
+        .select("posicion_id")
+        .eq("orden_dap_id", formId);
+      const idsViejas = (viejas ?? []).map((v) => v.posicion_id);
+      if (idsViejas.length > 0) {
+        await supabase.from("posiciones_nivel").update({ ocupado: false }).in("id", idsViejas);
+        await supabase.from("ubicaciones_carga").delete().eq("orden_dap_id", formId);
+      }
+    }
+
+    if (ubicaciones.length > 0 && ordenId) {
+      const ubicacionesPayload = ubicaciones
+        .filter((u) => u.posicion_id && u.cantidad)
+        .map((u) => ({
+          orden_dap_id: ordenId,
+          posicion_id: u.posicion_id,
+          cantidad: Number(u.cantidad),
+        }));
+      const { error: ubiError } = await supabase.from("ubicaciones_carga").insert(ubicacionesPayload);
+      if (!ubiError) {
+        const idsPosiciones = ubicacionesPayload.map((u) => u.posicion_id);
+        await supabase.from("posiciones_nivel").update({ ocupado: true }).in("id", idsPosiciones);
+      }
+    }
+
+    setSaving(false);
     setShowForm(false);
+    setToast(formId ? "Orden actualizada correctamente." : "Ingreso registrado exitosamente.");
     cargarDatos();
   }
 
-  async function eliminar(id: string) {
-    if (!confirm("¿Eliminar esta orden DAP? Esta acción no se puede deshacer.")) return;
-    const { error } = await supabase.from("ordenes_dap").delete().eq("id", id);
+  async function confirmarEliminar() {
+    if (!aEliminar) return;
+    const { error } = await supabase.from("ordenes_dap").delete().eq("id", aEliminar);
+    setAEliminar(null);
     if (error) {
       setErrorMsg(
         error.message.includes("foreign key") || error.message.includes("violates")
@@ -151,6 +380,7 @@ export default function IngresoPage() {
       );
       return;
     }
+    setToast("Orden eliminada correctamente.");
     cargarDatos();
   }
 
@@ -162,12 +392,16 @@ export default function IngresoPage() {
 
   return (
     <div className="flex min-h-screen">
-      <Sidebar activePath="/ingreso" />
+      <div className="print:hidden">
+        <Sidebar activePath="/ingreso" />
+      </div>
 
       <main className="flex-1 min-w-0">
-        <Topbar userName="Abigail Cobos" userRole="Gerencia General" />
+        <div className="print:hidden">
+          <Topbar />
+        </div>
 
-        <div className="px-6.5 pt-5.5 pb-10">
+        <div className="px-6.5 pt-5.5 pb-10 print:hidden">
           <div className="flex items-center justify-between mb-4.5">
             <div>
               <h1 className="text-[21px] font-semibold mb-0.5">Ingreso de carga</h1>
@@ -180,7 +414,6 @@ export default function IngresoPage() {
               onClick={abrirNuevo}
               disabled={cdas.length === 0}
               className="btn-primary flex items-center gap-1.5 text-[12.5px] font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
-              title={cdas.length === 0 ? "Primero registra un CDA" : undefined}
             >
               <Plus size={15} /> Nuevo ingreso
             </button>
@@ -199,17 +432,17 @@ export default function IngresoPage() {
             className="w-full max-w-[340px] card px-3 py-2 text-[12.5px] mb-4.5 outline-none focus:border-border-2 placeholder:text-text-faint"
           />
 
-          {errorMsg && (
+          {errorMsg && !showForm && (
             <div className="mb-4 px-4 py-3 rounded-lg bg-red/10 border border-red/20 text-[12.5px] text-[#fca5a5]">
               {errorMsg}
             </div>
           )}
 
           <div className="card overflow-hidden">
-            <div className="grid grid-cols-[1.2fr_1.6fr_1fr_1.2fr_1.2fr_90px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+            <div className="grid grid-cols-[1.1fr_1.5fr_1.4fr_1fr_1fr_120px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
               <span>N° DAP</span>
-              <span>Cliente / CDA</span>
-              <span>Régimen</span>
+              <span>Cliente</span>
+              <span>Espacio</span>
               <span>Ingresado</span>
               <span>Actual</span>
               <span></span>
@@ -225,19 +458,20 @@ export default function IngresoPage() {
               ordenesFiltradas.map((o) => (
                 <div
                   key={o.id}
-                  className="grid grid-cols-[1.2fr_1.6fr_1fr_1.2fr_1.2fr_90px] gap-3 px-5 py-3.5 items-center border-b border-border last:border-b-0 hover:bg-white/[0.02]"
+                  className="grid grid-cols-[1.1fr_1.5fr_1.4fr_1fr_1fr_120px] gap-3 px-5 py-3.5 items-center border-b border-border last:border-b-0 hover:bg-white/[0.02]"
                 >
                   <span className="text-[13px] font-medium">{o.numero_dap}</span>
-                  <div className="min-w-0">
-                    <p className="text-[12.5px] text-text-dim truncate">
-                      {o.cdas?.clientes?.nombre ?? "—"}
-                    </p>
-                    <p className="text-[11px] text-text-faint truncate">
-                      CDA {o.cdas?.numero_orden ?? "—"}
-                    </p>
-                  </div>
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-accent/[0.18] text-[#c4b8ff] w-fit">
-                    Régimen {o.regimen}
+                  <span className="text-[12.5px] text-text-dim truncate">
+                    {o.cdas?.clientes?.nombre ?? "—"}
+                  </span>
+                  <span
+                    className={`text-[10.5px] px-2 py-0.5 rounded-full w-fit ${
+                      o.tipo_espacio === "bodega_simple"
+                        ? "bg-amber/[0.14] text-[#fbbf24]"
+                        : "bg-accent/[0.18] text-[#c4b8ff]"
+                    }`}
+                  >
+                    {o.tipo_espacio ? espacioLabel[o.tipo_espacio as TipoEspacio] : "—"}
                   </span>
                   <span className="text-[12.5px] text-text-dim">
                     {o.cantidad_ingresada.toLocaleString("es-EC")}
@@ -249,16 +483,25 @@ export default function IngresoPage() {
                   >
                     {o.cantidad_actual.toLocaleString("es-EC")}
                   </span>
-                  <div className="flex gap-2 justify-end">
+                  <div className="flex gap-1.5 justify-end">
+                    <button
+                      onClick={() => imprimirOrden(o)}
+                      className="w-7 h-7 rounded-lg card flex items-center justify-center text-text-dim hover:text-text"
+                      aria-label="Imprimir orden de ingreso"
+                      title="Imprimir orden de ingreso"
+                    >
+                      <FileText size={13} />
+                    </button>
                     <button
                       onClick={() => abrirEditar(o)}
                       className="w-7 h-7 rounded-lg card flex items-center justify-center text-text-dim hover:text-text"
                       aria-label="Editar"
+                      title="Editar"
                     >
                       <Pencil size={13} />
                     </button>
                     <button
-                      onClick={() => eliminar(o.id)}
+                      onClick={() => setAEliminar(o.id)}
                       className="w-7 h-7 rounded-lg card flex items-center justify-center text-red-300 hover:bg-red/10"
                       aria-label="Eliminar"
                     >
@@ -274,7 +517,7 @@ export default function IngresoPage() {
 
       {showForm && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="card w-full max-w-[440px] p-6 relative">
+          <div className="card w-full max-w-[760px] p-6 relative max-h-[92vh] overflow-y-auto">
             <button
               onClick={() => setShowForm(false)}
               className="absolute top-4 right-4 text-text-faint hover:text-text"
@@ -283,34 +526,54 @@ export default function IngresoPage() {
               <X size={18} />
             </button>
             <h2 className="text-[17px] font-semibold mb-4">
-              {form.id ? "Editar ingreso" : "Nuevo ingreso de carga"}
+              {formId ? "Editar ingreso de carga" : "Nuevo ingreso de carga"}
             </h2>
 
-            <div className="flex flex-col gap-3">
+            {/* SECCIÓN 1 */}
+            <p className="text-[11.5px] font-semibold text-text-dim mb-2">
+              1. Datos generales y referencia CDA
+            </p>
+            <div className="grid grid-cols-3 gap-3 mb-4">
               <div>
-                <label className="text-[11.5px] text-text-faint block mb-1">Número de DAP *</label>
+                <label className="text-[11.5px] text-text-faint block mb-1">Número Orden DAP *</label>
                 <input
-                  value={form.numero_dap}
-                  onChange={(e) => setForm({ ...form, numero_dap: e.target.value })}
-                  className="w-full card px-3 py-2 text-[13px] outline-none focus:border-border-2"
+                  value={numeroDap}
+                  onChange={(e) => setNumeroDap(e.target.value)}
                   placeholder="2026-089"
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
                 />
               </div>
               <div>
-                <label className="text-[11.5px] text-text-faint block mb-1">CDA *</label>
+                <label className="text-[11.5px] text-text-faint block mb-1">Fecha emisión *</label>
+                <input
+                  type="date"
+                  value={fechaEmision}
+                  onChange={(e) => setFechaEmision(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Referencia CDA *</label>
                 <select
-                  value={form.cda_id}
-                  onChange={(e) => setForm({ ...form, cda_id: e.target.value })}
-                  className="w-full card px-3 py-2 text-[13px] outline-none focus:border-border-2"
+                  value={cdaId}
+                  onChange={(e) => setCdaId(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
                 >
                   <option value="">Selecciona un CDA…</option>
                   {cdas.map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.numero_orden} · {c.clientes?.nombre ?? "sin cliente"}
+                      CDA #{c.folio} · {c.clientes?.nombre ?? "—"}{" "}
+                      {c.numero_cda ? `(${c.numero_cda})` : "(pendiente)"}
                     </option>
                   ))}
                 </select>
               </div>
+              {cdaSeleccionado && (
+                <div className="col-span-3 text-[11.5px] text-text-faint px-1">
+                  <span>Consignatario: {cdaSeleccionado.clientes?.nombre}</span>
+                  {cdaSeleccionado.bl && <span> · BL: {cdaSeleccionado.bl}</span>}
+                </div>
+              )}
               <div>
                 <label className="text-[11.5px] text-text-faint block mb-1">Régimen *</label>
                 <div className="flex gap-2">
@@ -318,45 +581,292 @@ export default function IngresoPage() {
                     <button
                       key={r}
                       type="button"
-                      onClick={() => setForm({ ...form, regimen: r })}
-                      className={`flex-1 text-[12.5px] font-medium py-2 rounded-lg border ${
-                        form.regimen === r
+                      onClick={() => setRegimen(r)}
+                      className={`flex-1 text-[12px] font-medium py-2 rounded-lg border ${
+                        regimen === r
                           ? "bg-accent/[0.18] text-[#c4b8ff] border-accent-2/30"
                           : "border-border-2 text-text-dim"
                       }`}
                     >
-                      Régimen {r}
+                      Rég. {r}
                     </button>
                   ))}
                 </div>
               </div>
-              <div>
+              <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1">
-                  Cantidad ingresada *
+                  Tipo de espacio * (determina en qué racks se puede ubicar)
                 </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={form.cantidad_ingresada}
-                  onChange={(e) => setForm({ ...form, cantidad_ingresada: e.target.value })}
-                  className="w-full card px-3 py-2 text-[13px] outline-none focus:border-border-2"
-                  placeholder="1240"
-                />
-                {form.id && (
-                  <p className="text-[11px] text-text-faint mt-1">
-                    Editar esto no cambia la cantidad actual en depósito, solo el total declarado.
-                  </p>
-                )}
+                <div className="flex gap-2">
+                  {(Object.keys(espacioLabel) as TipoEspacio[]).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => {
+                        setTipoEspacio(t);
+                        setUbicaciones([]); // reiniciar ubicaciones al cambiar de espacio
+                      }}
+                      className={`flex-1 text-[12px] font-medium py-2 rounded-lg border ${
+                        tipoEspacio === t
+                          ? "bg-accent/[0.18] text-[#c4b8ff] border-accent-2/30"
+                          : "border-border-2 text-text-dim"
+                      }`}
+                    >
+                      {espacioLabel[t]}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
-            <div className="flex gap-2 mt-5">
+            {/* SECCIÓN 2 */}
+            <p className="text-[11.5px] font-semibold text-text-dim mb-2">
+              2. Detalles de carga y transporte
+            </p>
+            <div className="grid grid-cols-4 gap-3 mb-4">
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Total paquetes *</label>
+                <input
+                  type="number"
+                  value={totalPaquetes}
+                  onChange={(e) => setTotalPaquetes(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Total pallets</label>
+                <input
+                  type="number"
+                  value={totalPallets}
+                  onChange={(e) => setTotalPallets(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Total unidades</label>
+                <input
+                  type="number"
+                  value={totalUnidades}
+                  onChange={(e) => setTotalUnidades(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Peso total (Kg)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={pesoTotal}
+                  onChange={(e) => setPesoTotal(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Paletizada</label>
+                <select
+                  value={paletizada}
+                  onChange={(e) => setPaletizada(e.target.value as "si" | "no" | "")}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                >
+                  <option value="">—</option>
+                  <option value="si">Sí</option>
+                  <option value="no">No</option>
+                </select>
+              </div>
+              <div className="col-span-3">
+                <label className="text-[11.5px] text-text-faint block mb-1">Carga llega como</label>
+                <select
+                  value={tipoCarga}
+                  onChange={(e) => setTipoCarga(e.target.value as typeof tipoCarga)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                >
+                  <option value="">Selecciona…</option>
+                  <option value="contenedor">Contenedor</option>
+                  <option value="plataforma">Plataforma</option>
+                  <option value="camion">Camión</option>
+                </select>
+              </div>
+            </div>
+
+            {/* SECCIÓN 3 */}
+            <p className="text-[11.5px] font-semibold text-text-dim mb-2">
+              3. Transportista que trajo la carga
+            </p>
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Nombre(s)</label>
+                <input
+                  value={nombreTransportista}
+                  onChange={(e) => setNombreTransportista(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Cédula / RUC</label>
+                <input
+                  value={cedulaTransportista}
+                  onChange={(e) => setCedulaTransportista(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Transporte</label>
+                <select
+                  value={transporteId}
+                  onChange={(e) => setTransporteId(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                >
+                  <option value="">Selecciona…</option>
+                  {transportes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Placa vehículo</label>
+                <input
+                  value={placa}
+                  onChange={(e) => setPlaca(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Candado(s)</label>
+                <input
+                  value={candados}
+                  onChange={(e) => setCandados(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Sello(s)</label>
+                <input
+                  value={sellos}
+                  onChange={(e) => setSellos(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Operador candado</label>
+                <select
+                  value={operadorId}
+                  onChange={(e) => setOperadorId(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                >
+                  <option value="">Selecciona…</option>
+                  {operadores.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.nombre}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Hora llegada</label>
+                <input
+                  value={horaLlegada}
+                  onChange={(e) => setHoraLlegada(e.target.value)}
+                  placeholder="09:00 AM"
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div className="col-span-3">
+                <label className="text-[11.5px] text-text-faint block mb-1">Observaciones</label>
+                <textarea
+                  value={observaciones}
+                  onChange={(e) => setObservaciones(e.target.value)}
+                  rows={2}
+                  className="w-full card px-3 py-2 text-[13px] outline-none resize-none"
+                />
+              </div>
+            </div>
+
+            {/* SECCIÓN 4: UBICACIONES */}
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[11.5px] font-semibold text-text-dim">
+                4. Asignación de ubicaciones (opcional)
+              </p>
+              <button
+                onClick={agregarUbicacion}
+                disabled={posicionesDisponibles.length === 0}
+                className="btn-secondary flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1 rounded-lg disabled:opacity-40"
+              >
+                <MapPin size={12} /> Ubicación
+              </button>
+            </div>
+
+            {posicionesDisponibles.length === 0 ? (
+              <p className="text-[11px] text-text-faint mb-4">
+                No hay posiciones libres en {espacioLabel[tipoEspacio]}. Puedes guardar sin ubicar y
+                asignarla después, o crear posiciones en Racks.
+              </p>
+            ) : (
+              <>
+                <p className="text-[10.5px] text-text-faint mb-2">
+                  La suma de cantidades debe coincidir con el total de paquetes. Solo se muestran
+                  posiciones libres de {espacioLabel[tipoEspacio]}.
+                </p>
+                <div className="flex flex-col gap-2 mb-2">
+                  {ubicaciones.map((u, idx) => (
+                    <div key={idx} className="grid grid-cols-[1fr_120px_28px] gap-2">
+                      <select
+                        value={u.posicion_id}
+                        onChange={(e) => actualizarUbicacion(idx, "posicion_id", e.target.value)}
+                        className="card px-2 py-1.5 text-[12px] outline-none"
+                      >
+                        <option value="">Selecciona posición…</option>
+                        {posicionesDisponibles.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.niveles_rack?.racks.codigo} · N{p.niveles_rack?.numero_nivel} ·{" "}
+                            {p.codigo_posicion}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        value={u.cantidad}
+                        onChange={(e) => actualizarUbicacion(idx, "cantidad", e.target.value)}
+                        placeholder="Cantidad"
+                        className="card px-2 py-1.5 text-[12px] outline-none"
+                      />
+                      <button
+                        onClick={() => quitarUbicacion(idx)}
+                        className="text-red-300 hover:bg-red/10 rounded-lg flex items-center justify-center"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                {ubicaciones.length > 0 && (
+                  <p
+                    className={`text-[11.5px] mb-4 ${
+                      sumaUbicaciones === Number(totalPaquetes || 0)
+                        ? "text-[#6ee7b7]"
+                        : "text-amber"
+                    }`}
+                  >
+                    Suma ubicada: {sumaUbicaciones} / {totalPaquetes || 0} paquetes
+                  </p>
+                )}
+              </>
+            )}
+
+            {errorMsg && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">
+                {errorMsg}
+              </div>
+            )}
+
+            <div className="flex gap-2">
               <button
                 onClick={guardar}
                 disabled={saving}
                 className="btn-primary flex-1 text-[13px] font-semibold py-2 rounded-lg disabled:opacity-60"
               >
-                {saving ? "Guardando…" : "Guardar"}
+                {saving ? "Guardando…" : "Guardar ingreso"}
               </button>
               <button
                 onClick={() => setShowForm(false)}
@@ -368,6 +878,147 @@ export default function IngresoPage() {
           </div>
         </div>
       )}
+      {/* -------------------- VISTA DE IMPRESIÓN: ORDEN DE INGRESO -------------------- */}
+      {ordenImprimir && (
+        <div className="print-area hidden print:block text-black bg-white p-10">
+          <div className="max-w-[640px] mx-auto">
+            <div className="flex items-center justify-center gap-3 mb-1">
+              <span className="font-bold text-[18px]">ETYECU</span>
+              <span className="text-[14px] font-bold">DEPÓSITO ADUANERO PÚBLICO</span>
+            </div>
+            <p className="text-[15px] font-bold text-center mb-5">
+              ORDEN DE INGRESO DE CARGA {ordenImprimir.numero_dap}
+            </p>
+
+            <table className="w-full text-[10.5px] border border-black/50 border-collapse mb-5">
+              <tbody>
+                <tr>
+                  <td className="border border-black/40 p-1.5 font-bold w-[130px]">DAP:</td>
+                  <td className="border border-black/40 p-1.5 w-[200px]">{ordenImprimir.numero_dap}</td>
+                  <td className="border border-black/40 p-1.5 font-bold w-[80px]">Fecha:</td>
+                  <td className="border border-black/40 p-1.5 text-right">
+                    {ordenImprimir.fecha_emision_ingreso
+                      ? new Date(ordenImprimir.fecha_emision_ingreso).toLocaleDateString("es-EC")
+                      : ""}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="border border-black/40 p-1.5 font-bold">Consignatario:</td>
+                  <td className="border border-black/40 p-1.5" colSpan={3}>
+                    {ordenImprimir.cdas?.clientes?.nombre ?? ""}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="border border-black/40 p-1.5 font-bold">Referencia a CDA:</td>
+                  <td className="border border-black/40 p-1.5" colSpan={3}>
+                    {ordenImprimir.cdas?.numero_cda ?? "Pendiente"}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="border border-black/40 p-1.5 font-bold">BL o Guía:</td>
+                  <td className="border border-black/40 p-1.5" colSpan={3}>
+                    {ordenImprimir.cdas?.bl ?? ""}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="border border-black/40 p-1.5 font-bold">Carga llega:</td>
+                  <td className="border border-black/40 p-1.5 capitalize">
+                    {ordenImprimir.tipo_carga ?? ""}
+                  </td>
+                  <td className="border border-black/40 p-1.5 font-bold">Cod. Transp:</td>
+                  <td className="border border-black/40 p-1.5 text-right">{transporteImprimir}</td>
+                </tr>
+                <tr>
+                  <td className="border border-black/40 p-1.5 font-bold">Paletizada:</td>
+                  <td className="border border-black/40 p-1.5">
+                    {ordenImprimir.paletizada === true
+                      ? "Sí"
+                      : ordenImprimir.paletizada === false
+                      ? "No"
+                      : ""}
+                  </td>
+                  <td className="border border-black/40 p-1.5 font-bold">Peso:</td>
+                  <td className="border border-black/40 p-1.5 text-right">
+                    {ordenImprimir.peso_total_kg ?? 0}
+                  </td>
+                </tr>
+                <tr>
+                  <td className="border border-black/40 p-1.5 font-bold">Candado:</td>
+                  <td className="border border-black/40 p-1.5" colSpan={3}>
+                    {ordenImprimir.candados ?? ""}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            <p className="text-[10.5px] font-bold mb-1.5">
+              Detalle de mercancía nacionalizada según ítems de la declaración aduanera:
+            </p>
+            <table className="w-full text-[10px] border border-black/50 border-collapse mb-10">
+              <thead>
+                <tr>
+                  <th className="border border-black/40 p-1.5 text-left">Descripción General</th>
+                  <th className="border border-black/40 p-1.5 w-[80px]">Cant. Pallets</th>
+                  <th className="border border-black/40 p-1.5 w-[60px]">Cajas</th>
+                  <th className="border border-black/40 p-1.5 w-[70px]">Peso (Kg)</th>
+                  <th className="border border-black/40 p-1.5 text-left w-[190px]">Observaciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td className="border border-black/40 p-1.5 capitalize">
+                    {ordenImprimir.tipo_carga ?? ""}
+                  </td>
+                  <td className="border border-black/40 p-1.5 text-center">
+                    {ordenImprimir.total_pallets ?? ""}
+                  </td>
+                  <td className="border border-black/40 p-1.5 text-center">
+                    {ordenImprimir.cantidad_ingresada}
+                  </td>
+                  <td className="border border-black/40 p-1.5 text-center">
+                    {ordenImprimir.peso_total_kg ?? 0}
+                  </td>
+                  <td className="border border-black/40 p-1.5">
+                    {ordenImprimir.observaciones ?? "Ninguna"}
+                  </td>
+                </tr>
+                {Array.from({ length: 9 }).map((_, i) => (
+                  <tr key={i}>
+                    <td className="border border-black/40 p-1.5">&nbsp;</td>
+                    <td className="border border-black/40 p-1.5"></td>
+                    <td className="border border-black/40 p-1.5"></td>
+                    <td className="border border-black/40 p-1.5"></td>
+                    <td className="border border-black/40 p-1.5"></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <div className="flex justify-between text-[10px] mt-16">
+              <div className="w-[240px] text-center">
+                <p className="border-t border-black pt-1">Entregué Conforme</p>
+                <p className="font-bold mt-1">{ordenImprimir.nombre_transportista ?? ""}</p>
+                {ordenImprimir.cedula_transportista && (
+                  <p>C.C: {ordenImprimir.cedula_transportista}</p>
+                )}
+                {ordenImprimir.placa_vehiculo && <p>Placa: {ordenImprimir.placa_vehiculo}</p>}
+              </div>
+              <div className="w-[240px] text-center">
+                <p className="border-t border-black pt-1">Recibí Conforme (DAP ETYECU)</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ConfirmModal
+        abierto={aEliminar !== null}
+        titulo="¿Eliminar orden DAP?"
+        mensaje="Esta acción no se puede deshacer. Se eliminará la orden de ingreso permanentemente."
+        onConfirmar={confirmarEliminar}
+        onCancelar={() => setAEliminar(null)}
+      />
+      <Toast mensaje={toast} onCerrar={() => setToast(null)} />
     </div>
   );
 }

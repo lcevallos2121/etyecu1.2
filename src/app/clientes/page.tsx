@@ -5,6 +5,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
 import { Plus, Pencil, Trash2, X } from "lucide-react";
+import { ConfirmModal, Toast } from "@/components/Feedback";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,8 @@ export default function ClientesPage() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [aEliminar, setAEliminar] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
   const cargarClientes = useCallback(async () => {
@@ -114,16 +117,23 @@ export default function ClientesPage() {
     }
 
     setShowForm(false);
+    setToast(form.id ? "Cliente actualizado correctamente." : "Cliente creado exitosamente.");
     cargarClientes();
   }
 
-  async function eliminar(id: string) {
-    if (!confirm("¿Eliminar este cliente? Esta acción no se puede deshacer.")) return;
-    const { error } = await supabase.from("clientes").delete().eq("id", id);
+  async function confirmarEliminar() {
+    if (!aEliminar) return;
+    const { error } = await supabase.from("clientes").delete().eq("id", aEliminar);
+    setAEliminar(null);
     if (error) {
-      setErrorMsg(error.message);
+      setErrorMsg(
+        error.message.includes("foreign key") || error.message.includes("violates")
+          ? "No se puede eliminar: este cliente tiene CDAs asociados."
+          : error.message
+      );
       return;
     }
+    setToast("Cliente eliminado correctamente.");
     cargarClientes();
   }
 
@@ -138,7 +148,7 @@ export default function ClientesPage() {
       <Sidebar activePath="/clientes" />
 
       <main className="flex-1 min-w-0">
-        <Topbar userName="Abigail Cobos" userRole="Gerencia General" />
+        <Topbar />
 
         <div className="px-6.5 pt-5.5 pb-10">
           <div className="flex items-center justify-between mb-4.5">
@@ -204,7 +214,7 @@ export default function ClientesPage() {
                       <Pencil size={13} />
                     </button>
                     <button
-                      onClick={() => eliminar(c.id)}
+                      onClick={() => setAEliminar(c.id)}
                       className="w-7 h-7 rounded-lg card flex items-center justify-center text-red-300 hover:bg-red/10"
                       aria-label="Eliminar"
                     >
@@ -298,6 +308,15 @@ export default function ClientesPage() {
           </div>
         </div>
       )}
+
+      <ConfirmModal
+        abierto={aEliminar !== null}
+        titulo="¿Eliminar cliente?"
+        mensaje="Esta acción no se puede deshacer. Se eliminará el cliente permanentemente."
+        onConfirmar={confirmarEliminar}
+        onCancelar={() => setAEliminar(null)}
+      />
+      <Toast mensaje={toast} onCerrar={() => setToast(null)} />
     </div>
   );
 }
