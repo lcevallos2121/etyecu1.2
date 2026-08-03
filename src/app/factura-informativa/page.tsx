@@ -4,12 +4,22 @@ import { useEffect, useState, useCallback } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import { Plus, Pencil, Trash2, X, FileText } from "lucide-react";
+import { Plus, Pencil, Trash2, X, FileText, Upload } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
+import * as XLSX from "xlsx";
 
 export const dynamic = "force-dynamic";
 
 const EMPRESA = { nombre: "ETYECU S.A." };
+
+const ITEM_VACIO = {
+  unidad: "U",
+  cajas: "",
+  cantidad: "",
+  codigo: "",
+  descripcion: "",
+  fobUnitario: "",
+};
 
 type Cliente = {
   id: string;
@@ -21,10 +31,12 @@ type Cliente = {
 
 type ItemFac = {
   id?: string;
-  descripcion: string;
-  cantidad: string;
-  unidad: string;
-  observacion: string;
+  unidad: string;         // UNIDAD/MED (ej. "U")
+  cajas: string;          // CANTIDAD UNIDAD COMERCIAL (EGRESO) CAJAS — multiplica el FOB
+  cantidad: string;       // CANTIDAD UNIDAD COMERCIAL (litros, etc.) — informativa
+  codigo: string;         // CÓDIGO (ej. "S/R", opcional)
+  descripcion: string;    // DESCRIPCIÓN de la mercadería
+  fobUnitario: string;    // FOB UNIT.
 };
 
 type Factura = {
@@ -47,6 +59,8 @@ type Factura = {
   nacionalizacion: string | null;
   conocimiento_embarque: string | null;
   referencia_cliente: string | null;
+  valor_flete: number | null;
+  valor_seguro: number | null;
   observaciones: string | null;
 };
 
@@ -87,7 +101,10 @@ export default function FacturaInformativaPage() {
   const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
   const [campos, setCampos] = useState<Record<string, string>>({});
   const [observaciones, setObservaciones] = useState("");
-  const [items, setItems] = useState<ItemFac[]>([{ descripcion: "", cantidad: "", unidad: "", observacion: "" }]);
+  const [flete, setFlete] = useState("");
+  const [seguro, setSeguro] = useState("");
+  const [avisoExcel, setAvisoExcel] = useState<string | null>(null);
+  const [items, setItems] = useState<ItemFac[]>([{ ...ITEM_VACIO }]);
 
   const [facImprimir, setFacImprimir] = useState<Factura | null>(null);
   const [itemsImprimir, setItemsImprimir] = useState<ItemFac[]>([]);
@@ -166,7 +183,10 @@ export default function FacturaInformativaPage() {
     setCampos({});
     setClienteId("");
     setObservaciones("");
-    setItems([{ descripcion: "", cantidad: "", unidad: "", observacion: "" }]);
+    setFlete("");
+    setSeguro("");
+    setAvisoExcel(null);
+    setItems([{ ...ITEM_VACIO }]);
     setErrorMsg(null);
   }
 
@@ -189,6 +209,8 @@ export default function FacturaInformativaPage() {
     const clienteExistente = clientes.find((cl) => cl.nombre === (f.importador ?? ""));
     setClienteId(clienteExistente?.id ?? "");
     setObservaciones(f.observaciones ?? "");
+    setFlete(f.valor_flete ? String(f.valor_flete) : "");
+    setSeguro(f.valor_seguro ? String(f.valor_seguro) : "");
 
     const { data } = await supabase
       .from("factura_informativa_items")
@@ -198,20 +220,22 @@ export default function FacturaInformativaPage() {
     setItems(
       (data ?? []).map((it) => ({
         id: it.id,
-        descripcion: it.descripcion ?? "",
+        unidad: it.unidad_med ?? "U",
+        cajas: it.cajas != null ? String(it.cajas) : "",
         cantidad: String(it.cantidad ?? ""),
-        unidad: it.unidad ?? "",
-        observacion: it.observacion ?? "",
+        codigo: it.codigo ?? "",
+        descripcion: it.descripcion ?? "",
+        fobUnitario: it.fob_unitario != null ? String(it.fob_unitario) : "",
       }))
     );
     if (!data || data.length === 0) {
-      setItems([{ descripcion: "", cantidad: "", unidad: "", observacion: "" }]);
+      setItems([{ ...ITEM_VACIO }]);
     }
     setShowForm(true);
   }
 
   function agregarItem() {
-    setItems((prev) => [...prev, { descripcion: "", cantidad: "", unidad: "", observacion: "" }]);
+    setItems((prev) => [...prev, { ...ITEM_VACIO }]);
   }
   function actualizarItem(idx: number, campo: keyof ItemFac, valor: string) {
     setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, [campo]: valor } : it)));
@@ -219,6 +243,82 @@ export default function FacturaInformativaPage() {
   function quitarItem(idx: number) {
     setItems((prev) => prev.filter((_, i) => i !== idx));
   }
+
+  // Carga de plantilla Excel: detecta columnas por nombre normalizado
+  function normalizar(s: string) {
+    return String(s)
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]/g, "");
+  }
+
+  async function cargarExcel(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAvisoExcel(null);
+    try {
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(buffer, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const filas = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
+      if (filas.length === 0) {
+        setAvisoExcel("El archivo está vacío.");
+        return;
+      }
+
+      // Mapear encabezados
+      const headers = Object.keys(filas[0]);
+      const mapa: Record<string, string> = {};
+      headers.forEach((h) => {
+        const n = normalizar(h);
+        if (n.includes("descrip")) mapa.descripcion = h;
+        else if (n.includes("fobunit") || n === "fob") mapa.fobUnitario = h;
+        else if (n.includes("codigo")) mapa.codigo = h;
+        // "cantidad unidad comercial" (litros, etc.) — la más específica primero
+        else if (n.includes("cantidad") && n.includes("comercial")) mapa.cantidad = h;
+        // "cantidad" a secas = cajas a egresar (multiplica el FOB)
+        else if (n.includes("cantidad") || n.includes("caja")) mapa.cajas = h;
+        else if (n.includes("unidad") || n.includes("med")) mapa.unidad = h;
+      });
+
+      if (!mapa.descripcion || !mapa.cajas) {
+        setAvisoExcel(
+          "No se reconocieron las columnas. La plantilla debe tener al menos DESCRIPCIÓN y CANTIDAD (cajas)."
+        );
+        return;
+      }
+
+      const nuevos: ItemFac[] = filas
+        .filter((f) => String(f[mapa.descripcion] ?? "").trim())
+        .map((f) => ({
+          unidad: mapa.unidad ? String(f[mapa.unidad] ?? "U") : "U",
+          cajas: String(f[mapa.cajas] ?? ""),
+          cantidad: mapa.cantidad ? String(f[mapa.cantidad] ?? "") : "",
+          codigo: mapa.codigo ? String(f[mapa.codigo] ?? "") : "",
+          descripcion: String(f[mapa.descripcion] ?? ""),
+          fobUnitario: mapa.fobUnitario ? String(f[mapa.fobUnitario] ?? "") : "",
+        }));
+
+      if (nuevos.length === 0) {
+        setAvisoExcel("No se encontraron filas con descripción.");
+        return;
+      }
+      setItems(nuevos);
+      setAvisoExcel(`✓ Se cargaron ${nuevos.length} ítems desde la plantilla.`);
+    } catch {
+      setAvisoExcel("No se pudo leer el archivo. Verifica que sea un Excel válido.");
+    } finally {
+      e.target.value = "";
+    }
+  }
+
+  // Cálculos de mercancía — FOB TOTAL = FOB Unit × Cajas
+  const fobTotal = (it: ItemFac) => Number(it.cajas || 0) * Number(it.fobUnitario || 0);
+  const totalCajas = items.reduce((a, it) => a + Number(it.cajas || 0), 0);
+  const totalFob = items.reduce((a, it) => a + fobTotal(it), 0);
+  const valorCfr = totalFob + Number(flete || 0);
+  const valorCif = valorCfr + Number(seguro || 0);
 
   async function guardar() {
     if (!(campos.importador ?? "").trim() && !(campos.exportador ?? "").trim()) {
@@ -231,6 +331,8 @@ export default function FacturaInformativaPage() {
     const payload: Record<string, unknown> = {
       numero: numero.trim(),
       fecha,
+      valor_flete: Number(flete || 0),
+      valor_seguro: Number(seguro || 0),
       observaciones: observaciones.trim() || null,
       actualizado_en: new Date().toISOString(),
     };
@@ -266,10 +368,12 @@ export default function FacturaInformativaPage() {
       const itemsPayload = itemsValidos.map((it, i) => ({
         factura_id: facId,
         orden: i,
-        descripcion: it.descripcion.trim(),
+        unidad_med: it.unidad.trim() || null,
+        cajas: it.cajas ? Number(it.cajas) : null,
         cantidad: it.cantidad ? Number(it.cantidad) : null,
-        unidad: it.unidad.trim() || null,
-        observacion: it.observacion.trim() || null,
+        codigo: it.codigo.trim() || null,
+        descripcion: it.descripcion.trim(),
+        fob_unitario: it.fobUnitario ? Number(it.fobUnitario) : null,
       }));
       const { error: itemsError } = await supabase
         .from("factura_informativa_items")
@@ -308,14 +412,25 @@ export default function FacturaInformativaPage() {
     setItemsImprimir(
       (data ?? []).map((it) => ({
         id: it.id,
-        descripcion: it.descripcion ?? "",
+        unidad: it.unidad_med ?? "U",
+        cajas: it.cajas != null ? String(it.cajas) : "",
         cantidad: String(it.cantidad ?? ""),
-        unidad: it.unidad ?? "",
-        observacion: it.observacion ?? "",
+        codigo: it.codigo ?? "",
+        descripcion: it.descripcion ?? "",
+        fobUnitario: it.fob_unitario != null ? String(it.fob_unitario) : "",
       }))
     );
     setFacImprimir(f);
   }
+
+  // Cálculos para el PDF — FOB TOTAL = FOB Unit × Cajas
+  const fobTotalImp = (it: ItemFac) => Number(it.cajas || 0) * Number(it.fobUnitario || 0);
+  const totalCajasImp = itemsImprimir.reduce((a, it) => a + Number(it.cajas || 0), 0);
+  const totalFobImp = itemsImprimir.reduce((a, it) => a + fobTotalImp(it), 0);
+  const fleteImp = Number(facImprimir?.valor_flete ?? 0);
+  const seguroImp = Number(facImprimir?.valor_seguro ?? 0);
+  const cfrImp = totalFobImp + fleteImp;
+  const cifImp = cfrImp + seguroImp;
 
   return (
     <div className="flex min-h-screen">
@@ -481,42 +596,93 @@ export default function FacturaInformativaPage() {
 
               {/* Ítems de mercancía */}
               <div className="flex items-center justify-between mb-2">
-                <p className="text-[11.5px] font-semibold text-text-dim">Mercancía (opcional)</p>
-                <button
-                  onClick={agregarItem}
-                  className="btn-secondary flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1 rounded-lg"
-                >
-                  <Plus size={12} /> Ítem
-                </button>
+                <p className="text-[11.5px] font-semibold text-text-dim">Mercancía</p>
+                <div className="flex gap-2">
+                  <label className="btn-secondary flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1 rounded-lg cursor-pointer">
+                    <Upload size={12} /> Cargar plantilla Excel
+                    <input type="file" accept=".xlsx,.xls" onChange={cargarExcel} className="hidden" />
+                  </label>
+                  <button
+                    onClick={agregarItem}
+                    className="btn-secondary flex items-center gap-1 text-[11.5px] font-semibold px-2.5 py-1 rounded-lg"
+                  >
+                    <Plus size={12} /> Ítem
+                  </button>
+                </div>
               </div>
-              <div className="flex flex-col gap-2 mb-4">
+
+              {avisoExcel && (
+                <div
+                  className={`mb-2 px-3 py-2 rounded-lg text-[11.5px] ${
+                    avisoExcel.startsWith("✓")
+                      ? "bg-green/10 border border-green/20 text-[#6ee7b7]"
+                      : "bg-amber/10 border border-amber/20 text-[#fbbf24]"
+                  }`}
+                >
+                  {avisoExcel}
+                </div>
+              )}
+
+              {/* Encabezado de columnas */}
+              <div className="grid grid-cols-[40px_55px_75px_75px_60px_1fr_80px_85px_28px] gap-1.5 mb-1 px-1 text-[9.5px] uppercase text-text-faint">
+                <span>Ítem</span>
+                <span>Unid.</span>
+                <span className="text-right">Cajas (egreso)</span>
+                <span className="text-right">Cant. comercial</span>
+                <span>Código</span>
+                <span>Descripción</span>
+                <span className="text-right">FOB unit.</span>
+                <span className="text-right">FOB total</span>
+                <span></span>
+              </div>
+              <div className="flex flex-col gap-1 mb-3">
                 {items.map((it, idx) => (
-                  <div key={idx} className="grid grid-cols-[1fr_80px_90px_1fr_28px] gap-2">
+                  <div
+                    key={idx}
+                    className="grid grid-cols-[40px_55px_75px_75px_60px_1fr_80px_85px_28px] gap-1.5 items-center"
+                  >
+                    <span className="text-[11px] text-text-faint text-center">{idx + 1}</span>
                     <input
-                      value={it.descripcion}
-                      onChange={(e) => actualizarItem(idx, "descripcion", e.target.value)}
-                      placeholder="Descripción"
-                      className="card px-2 py-1.5 text-[12px] outline-none"
+                      value={it.unidad}
+                      onChange={(e) => actualizarItem(idx, "unidad", e.target.value)}
+                      placeholder="U"
+                      className="card px-1.5 py-1.5 text-[11.5px] outline-none"
+                    />
+                    <input
+                      value={it.cajas}
+                      onChange={(e) => actualizarItem(idx, "cajas", e.target.value)}
+                      type="number"
+                      placeholder="0"
+                      className="card px-1.5 py-1.5 text-[11.5px] outline-none text-right"
                     />
                     <input
                       value={it.cantidad}
                       onChange={(e) => actualizarItem(idx, "cantidad", e.target.value)}
                       type="number"
-                      placeholder="Cant."
-                      className="card px-2 py-1.5 text-[12px] outline-none text-right"
+                      placeholder="0"
+                      className="card px-1.5 py-1.5 text-[11.5px] outline-none text-right"
                     />
                     <input
-                      value={it.unidad}
-                      onChange={(e) => actualizarItem(idx, "unidad", e.target.value)}
-                      placeholder="Unidad"
-                      className="card px-2 py-1.5 text-[12px] outline-none"
+                      value={it.codigo}
+                      onChange={(e) => actualizarItem(idx, "codigo", e.target.value)}
+                      placeholder="S/R"
+                      className="card px-1.5 py-1.5 text-[11.5px] outline-none"
                     />
                     <input
-                      value={it.observacion}
-                      onChange={(e) => actualizarItem(idx, "observacion", e.target.value)}
-                      placeholder="Observación"
-                      className="card px-2 py-1.5 text-[12px] outline-none"
+                      value={it.descripcion}
+                      onChange={(e) => actualizarItem(idx, "descripcion", e.target.value)}
+                      placeholder="Descripción de la mercadería"
+                      className="card px-1.5 py-1.5 text-[11.5px] outline-none"
                     />
+                    <input
+                      value={it.fobUnitario}
+                      onChange={(e) => actualizarItem(idx, "fobUnitario", e.target.value)}
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      className="card px-1.5 py-1.5 text-[11.5px] outline-none text-right"
+                    />
+                    <span className="text-[11px] text-right pr-1">${fobTotal(it).toFixed(2)}</span>
                     <button
                       onClick={() => quitarItem(idx)}
                       className="text-text-faint hover:text-red-300 flex items-center justify-center"
@@ -525,6 +691,50 @@ export default function FacturaInformativaPage() {
                     </button>
                   </div>
                 ))}
+              </div>
+
+              {/* Costeo y totales */}
+              <div className="card p-3.5 mb-4 bg-white/[0.02]">
+                <div className="grid grid-cols-2 gap-x-6 gap-y-1">
+                  <div className="flex justify-between text-[12px]">
+                    <span className="text-text-dim">Total cajas</span>
+                    <span>{totalCajas.toLocaleString("es-EC")}</span>
+                  </div>
+                  <div className="flex justify-between text-[12px]">
+                    <span className="text-text-dim">FOB</span>
+                    <span className="text-[#6ee7b7]">${totalFob.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-[12px]">
+                    <span className="text-text-dim">Valor flete</span>
+                    <input
+                      value={flete}
+                      onChange={(e) => setFlete(e.target.value)}
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      className="card px-2 py-1 text-[11.5px] outline-none text-right w-[110px]"
+                    />
+                  </div>
+                  <div className="flex justify-between text-[12px]">
+                    <span className="text-text-dim">Valor CFR (FOB + flete)</span>
+                    <span>${valorCfr.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center text-[12px]">
+                    <span className="text-text-dim">Valor seguro</span>
+                    <input
+                      value={seguro}
+                      onChange={(e) => setSeguro(e.target.value)}
+                      type="number"
+                      step="0.01"
+                      placeholder="0.00"
+                      className="card px-2 py-1 text-[11.5px] outline-none text-right w-[110px]"
+                    />
+                  </div>
+                  <div className="flex justify-between text-[13px] font-semibold pt-1 border-t border-border mt-1">
+                    <span>Valor CIF</span>
+                    <span className="text-[#c4b8ff]">${valorCif.toFixed(2)}</span>
+                  </div>
+                </div>
               </div>
 
               <div className="mb-4">
@@ -584,29 +794,85 @@ export default function FacturaInformativaPage() {
             </table>
 
             {itemsImprimir.length > 0 && (
-              <>
-                <p className="text-[12px] font-bold mb-1">MERCANCÍA</p>
-                <table className="w-full text-[10.5px] border-collapse mb-4">
-                  <thead>
-                    <tr className="bg-gray-100">
-                      <th className="border border-black/40 p-1.5 text-left">DESCRIPCIÓN</th>
-                      <th className="border border-black/40 p-1.5 text-right w-[80px]">CANTIDAD</th>
-                      <th className="border border-black/40 p-1.5 text-left w-[90px]">UNIDAD</th>
-                      <th className="border border-black/40 p-1.5 text-left">OBSERVACIÓN</th>
+              <table className="w-full text-[9px] border-collapse mb-3">
+                <thead>
+                  <tr className="bg-gray-100">
+                    <th className="border border-black/40 p-1 text-center w-[30px]">ITEM</th>
+                    <th className="border border-black/40 p-1 text-center w-[42px]">UNID./MED.</th>
+                    <th className="border border-black/40 p-1 text-center w-[62px]">CANTIDAD UNIDAD COMERCIAL (EGRESO) CAJAS</th>
+                    <th className="border border-black/40 p-1 text-center w-[62px]">CANTIDAD UNIDAD COMERCIAL</th>
+                    <th className="border border-black/40 p-1 text-center w-[40px]">CÓDIGO</th>
+                    <th className="border border-black/40 p-1 text-center">DESCRIPCIÓN</th>
+                    <th className="border border-black/40 p-1 text-center w-[62px]">FOB UNIT.</th>
+                    <th className="border border-black/40 p-1 text-center w-[72px]">FOB TOTAL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {itemsImprimir.map((it, i) => (
+                    <tr key={i}>
+                      <td className="border border-black/40 p-1 text-center">{i + 1}</td>
+                      <td className="border border-black/40 p-1 text-center">{it.unidad}</td>
+                      <td className="border border-black/40 p-1 text-right">
+                        {Number(it.cajas || 0).toLocaleString("es-EC")}
+                      </td>
+                      <td className="border border-black/40 p-1 text-right">
+                        {it.cantidad
+                          ? Number(it.cantidad).toLocaleString("es-EC", { maximumFractionDigits: 2 })
+                          : ""}
+                      </td>
+                      <td className="border border-black/40 p-1 text-center">{it.codigo || "S/R"}</td>
+                      <td className="border border-black/40 p-1">{it.descripcion}</td>
+                      <td className="border border-black/40 p-1 text-right">
+                        $ {Number(it.fobUnitario || 0).toFixed(2)}
+                      </td>
+                      <td className="border border-black/40 p-1 text-right">
+                        $ {fobTotalImp(it).toLocaleString("es-EC", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {itemsImprimir.map((it, i) => (
-                      <tr key={i}>
-                        <td className="border border-black/40 p-1.5">{it.descripcion}</td>
-                        <td className="border border-black/40 p-1.5 text-right">{it.cantidad}</td>
-                        <td className="border border-black/40 p-1.5">{it.unidad}</td>
-                        <td className="border border-black/40 p-1.5">{it.observacion}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
+                  ))}
+                  <tr className="font-bold">
+                    <td className="border border-black/40 p-1 text-right bg-gray-100" colSpan={2}>
+                      TOTALES
+                    </td>
+                    <td className="border border-black/40 p-1 text-right">
+                      {totalCajasImp.toLocaleString("es-EC")}
+                    </td>
+                    <td className="border-0" colSpan={3}></td>
+                    <td className="border border-black/40 p-1 text-right bg-gray-100">FOB</td>
+                    <td className="border border-black/40 p-1 text-right">
+                      $ {totalFobImp.toLocaleString("es-EC", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                  <tr className="font-bold">
+                    <td className="border-0" colSpan={6}></td>
+                    <td className="border border-black/40 p-1 text-right bg-gray-100">VALOR FLETE</td>
+                    <td className="border border-black/40 p-1 text-right">
+                      $ {fleteImp.toLocaleString("es-EC", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                  <tr className="font-bold">
+                    <td className="border-0" colSpan={6}></td>
+                    <td className="border border-black/40 p-1 text-right bg-gray-100">VALOR CFR</td>
+                    <td className="border border-black/40 p-1 text-right">
+                      $ {cfrImp.toLocaleString("es-EC", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                  <tr className="font-bold">
+                    <td className="border-0" colSpan={6}></td>
+                    <td className="border border-black/40 p-1 text-right bg-gray-100">VALOR SEGURO</td>
+                    <td className="border border-black/40 p-1 text-right">
+                      $ {seguroImp.toLocaleString("es-EC", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                  <tr className="font-bold">
+                    <td className="border-0" colSpan={6}></td>
+                    <td className="border border-black/40 p-1 text-right bg-gray-100">VALOR CIF</td>
+                    <td className="border border-black/40 p-1 text-right">
+                      $ {cifImp.toLocaleString("es-EC", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             )}
 
             {facImprimir.observaciones && (
