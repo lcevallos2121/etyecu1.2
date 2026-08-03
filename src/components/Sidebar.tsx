@@ -10,6 +10,8 @@ import {
   BarChart3,
   UserCog,
   Tag,
+  ReceiptText,
+  FileSpreadsheet,
   type LucideIcon,
 } from "lucide-react";
 
@@ -36,6 +38,13 @@ const navGroups: { label?: string; items: NavItem[] }[] = [
       { href: "/egreso", label: "Egreso de carga", icon: PackageMinus },
       { href: "/racks", label: "Racks y ubicaciones", icon: Warehouse },
       { href: "/novedades", label: "Novedades", icon: AlertTriangle, badge: "3", badgeWarn: true },
+    ],
+  },
+  {
+    label: "Documentos",
+    items: [
+      { href: "/factura-informativa", label: "Factura Informativa", icon: ReceiptText },
+      { href: "/cotizaciones", label: "Cotizaciones", icon: FileSpreadsheet },
     ],
   },
   {

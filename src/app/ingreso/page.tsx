@@ -26,12 +26,23 @@ type CdaRef = {
 
 type Catalogo = { id: string; nombre: string };
 
+type Bodega = {
+  id: string;
+  codigo: string;
+  nombre: string;
+  tipo_espacio: string;
+};
+
 type PosicionLibre = {
   id: string;
   codigo_posicion: string;
   ocupado: boolean;
   nivel_id: string;
-  niveles_rack: { numero_nivel: number; rack_id: string; racks: { codigo: string; tipo_espacio: string } } | null;
+  niveles_rack: {
+    numero_nivel: number;
+    rack_id: string;
+    racks: { codigo: string; tipo_espacio: string; bodega_id: string | null };
+  } | null;
 };
 
 type Ubicacion = { posicion_id: string; cantidad: string };
@@ -44,6 +55,8 @@ type OrdenDap = {
   cantidad_actual: number;
   regimen: string;
   tipo_espacio: string | null;
+  bodega_id: string | null;
+  tipo_carga_regimen: string | null;
   total_pallets: number | null;
   total_unidades: number | null;
   peso_total_kg: number | null;
@@ -82,8 +95,10 @@ export default function IngresoPage() {
   const [numeroDap, setNumeroDap] = useState("");
   const [fechaEmision, setFechaEmision] = useState(new Date().toISOString().slice(0, 10));
   const [cdaId, setCdaId] = useState("");
-  const [regimen, setRegimen] = useState<"10" | "70">("70");
+  const [regimen, setRegimen] = useState<"70" | "10" | "general">("70");
   const [tipoEspacio, setTipoEspacio] = useState<TipoEspacio>("deposito_aduanero_publico");
+  const [bodegas, setBodegas] = useState<Bodega[]>([]);
+  const [bodegaId, setBodegaId] = useState("");
 
   // Sección 2
   const [totalPaquetes, setTotalPaquetes] = useState("");
@@ -130,7 +145,7 @@ export default function IngresoPage() {
     setLoading(true);
     setErrorMsg(null);
 
-    const [ordenRes, cdaRes, transRes, operRes, posRes] = await Promise.all([
+    const [ordenRes, cdaRes, transRes, operRes, posRes, bodegaRes] = await Promise.all([
       supabase
         .from("ordenes_dap")
         .select("*, cdas(id, numero_cda, folio, bl, clientes(nombre))")
@@ -140,13 +155,14 @@ export default function IngresoPage() {
       supabase.from("catalogo_operadores_candado").select("*").order("nombre"),
       supabase
         .from("posiciones_nivel")
-        .select("id, codigo_posicion, ocupado, nivel_id, niveles_rack(numero_nivel, rack_id, racks(codigo, tipo_espacio))"),
+        .select("id, codigo_posicion, ocupado, nivel_id, niveles_rack(numero_nivel, rack_id, racks(codigo, tipo_espacio, bodega_id))"),
+      supabase.from("bodegas").select("id, codigo, nombre, tipo_espacio").order("codigo"),
     ]);
 
     if (ordenRes.error) {
       setErrorMsg(
         ordenRes.error.message.includes("column")
-          ? "Faltan columnas nuevas. ¿Corriste migracion_flujo_real.sql en Supabase?"
+          ? "Faltan columnas nuevas. ¿Corriste migracion_bodegas_tipo_carga.sql en Supabase?"
           : ordenRes.error.message
       );
     } else {
@@ -156,6 +172,7 @@ export default function IngresoPage() {
     setTransportes(transRes.data ?? []);
     setOperadores(operRes.data ?? []);
     setPosiciones((posRes.data as unknown as PosicionLibre[]) ?? []);
+    setBodegas((bodegaRes.data as unknown as Bodega[]) ?? []);
     setLoading(false);
   }, [supabase]);
 
@@ -169,11 +186,11 @@ export default function IngresoPage() {
   // desplegable al editar, aunque figuren como "ocupadas" en la base).
   const idsPosicionesEnForm = ubicaciones.map((u) => u.posicion_id).filter(Boolean);
 
-  // Solo posiciones libres del tipo de espacio elegido, MÁS las que esta orden
+  // Solo posiciones libres de la BODEGA elegida, MÁS las que esta orden
   // ya tiene asignadas (para poder mantenerlas o cambiarlas al editar).
   const posicionesDisponibles = posiciones.filter(
     (p) =>
-      p.niveles_rack?.racks.tipo_espacio === tipoEspacio &&
+      p.niveles_rack?.racks.bodega_id === bodegaId &&
       (!p.ocupado || idsPosicionesEnForm.includes(p.id))
   );
 
@@ -205,10 +222,59 @@ export default function IngresoPage() {
     setErrorMsg(null);
   }
 
-  function abrirNuevo() {
+  async function generarNumeroDap(): Promise<string> {
+    const anio = new Date().getFullYear();
+    // Busca el último número del año actual (formato "AAAA-NNN")
+    const { data } = await supabase
+      .from("ordenes_dap")
+      .select("numero_dap")
+      .ilike("numero_dap", `${anio}-%`)
+      .order("numero_dap", { ascending: false })
+      .limit(1);
+
+    let siguiente = 1;
+    if (data && data.length > 0) {
+      const partes = data[0].numero_dap.split("-");
+      const ultimo = parseInt(partes[1], 10);
+      if (!isNaN(ultimo)) siguiente = ultimo + 1;
+    }
+    return `${anio}-${String(siguiente).padStart(3, "0")}`;
+  }
+
+  async function abrirNuevo() {
     limpiarForm();
+    setNumeroDap(await generarNumeroDap());
+    // Arranca en Rég. 70 -> Depósito Aduanero Público, bodega única auto-asignada
+    const dap = bodegas.find((b) => b.tipo_espacio === "deposito_aduanero_publico");
+    setBodegaId(dap?.id ?? "");
     setShowForm(true);
   }
+
+  // El tipo de carga determina el espacio: Rég.70 -> Depósito; Rég.10 y General -> Bodega
+  function espacioSegunCarga(carga: "70" | "10" | "general"): TipoEspacio {
+    return carga === "70" ? "deposito_aduanero_publico" : "bodega_simple";
+  }
+
+  function cambiarTipoCarga(carga: "70" | "10" | "general") {
+    setRegimen(carga);
+    const espacio = espacioSegunCarga(carga);
+    setTipoEspacio(espacio);
+    setUbicaciones([]); // reiniciar ubicaciones al cambiar de espacio
+
+    if (espacio === "deposito_aduanero_publico") {
+      // Depósito: hay una sola bodega física, se asigna sola
+      const dap = bodegas.find((b) => b.tipo_espacio === "deposito_aduanero_publico");
+      setBodegaId(dap?.id ?? "");
+    } else {
+      // Bodega simple: el usuario debe elegir cuál (BDG-ETY o BDG-VIALACOSTA)
+      setBodegaId("");
+    }
+  }
+
+  // Bodegas simples disponibles para elegir (cuando el tipo de carga es 10 o general)
+  const bodegasSimples = bodegas.filter((b) => b.tipo_espacio === "bodega_simple");
+  const bodegaElegida = bodegas.find((b) => b.id === bodegaId);
+  const nombreBodega = bodegaElegida ? `${bodegaElegida.codigo} · ${bodegaElegida.nombre}` : espacioLabel[tipoEspacio];
 
   async function abrirEditar(o: OrdenDap) {
     limpiarForm();
@@ -216,8 +282,9 @@ export default function IngresoPage() {
     setNumeroDap(o.numero_dap);
     setFechaEmision(o.fecha_emision_ingreso ?? new Date().toISOString().slice(0, 10));
     setCdaId(o.cda_id);
-    setRegimen((o.regimen as "10" | "70") ?? "70");
+    setRegimen((o.tipo_carga_regimen as "70" | "10" | "general") ?? (o.regimen as "70" | "10" | "general") ?? "70");
     setTipoEspacio((o.tipo_espacio as TipoEspacio) ?? "deposito_aduanero_publico");
+    setBodegaId(o.bodega_id ?? "");
     setTotalPaquetes(o.cantidad_ingresada?.toString() ?? "");
     setTotalPallets(o.total_pallets?.toString() ?? "");
     setTotalUnidades(o.total_unidades?.toString() ?? "");
@@ -267,6 +334,15 @@ export default function IngresoPage() {
       return;
     }
 
+    if (!bodegaId) {
+      setErrorMsg(
+        tipoEspacio === "bodega_simple"
+          ? "Selecciona a qué bodega simple entra la carga (BDG-ETY o BDG-VIALACOSTA)."
+          : "No se pudo determinar la bodega. Revisa que existan bodegas creadas."
+      );
+      return;
+    }
+
     const cantidad = Number(totalPaquetes);
 
     // Validar que las ubicaciones (si hay) sumen el total de paquetes
@@ -287,11 +363,28 @@ export default function IngresoPage() {
     setSaving(true);
     setErrorMsg(null);
 
+    // Blindaje contra concurrencia: si es un ingreso nuevo, confirmar que el
+    // número generado no lo haya tomado otra persona entre abrir y guardar.
+    let numeroFinal = numeroDap.trim();
+    if (!formId) {
+      const { data: existe } = await supabase
+        .from("ordenes_dap")
+        .select("id")
+        .eq("numero_dap", numeroFinal)
+        .maybeSingle();
+      if (existe) {
+        numeroFinal = await generarNumeroDap();
+        setNumeroDap(numeroFinal);
+      }
+    }
+
     const payload = {
-      numero_dap: numeroDap.trim(),
+      numero_dap: numeroFinal,
       cda_id: cdaId,
-      regimen,
+      regimen: regimen === "general" ? "10" : regimen,
+      tipo_carga_regimen: regimen,
       tipo_espacio: tipoEspacio,
+      bodega_id: bodegaId,
       cantidad_ingresada: cantidad,
       fecha_emision_ingreso: fechaEmision || null,
       total_pallets: totalPallets ? Number(totalPallets) : null,
@@ -535,12 +628,14 @@ export default function IngresoPage() {
             </p>
             <div className="grid grid-cols-3 gap-3 mb-4">
               <div>
-                <label className="text-[11.5px] text-text-faint block mb-1">Número Orden DAP *</label>
+                <label className="text-[11.5px] text-text-faint block mb-1">
+                  Número Orden DAP (automático)
+                </label>
                 <input
                   value={numeroDap}
-                  onChange={(e) => setNumeroDap(e.target.value)}
-                  placeholder="2026-089"
-                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                  readOnly
+                  tabIndex={-1}
+                  className="w-full card px-3 py-2 text-[13px] outline-none opacity-70 cursor-not-allowed"
                 />
               </div>
               <div>
@@ -575,48 +670,78 @@ export default function IngresoPage() {
                 </div>
               )}
               <div>
-                <label className="text-[11.5px] text-text-faint block mb-1">Régimen *</label>
+                <label className="text-[11.5px] text-text-faint block mb-1">Tipo de carga *</label>
                 <div className="flex gap-2">
-                  {(["70", "10"] as const).map((r) => (
+                  {([
+                    { v: "70", label: "Rég. 70" },
+                    { v: "10", label: "Rég. 10" },
+                    { v: "general", label: "Carga General" },
+                  ] as const).map((r) => (
                     <button
-                      key={r}
+                      key={r.v}
                       type="button"
-                      onClick={() => setRegimen(r)}
+                      onClick={() => cambiarTipoCarga(r.v)}
                       className={`flex-1 text-[12px] font-medium py-2 rounded-lg border ${
-                        regimen === r
+                        regimen === r.v
                           ? "bg-accent/[0.18] text-[#c4b8ff] border-accent-2/30"
                           : "border-border-2 text-text-dim"
                       }`}
                     >
-                      Rég. {r}
+                      {r.label}
                     </button>
                   ))}
                 </div>
               </div>
               <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1">
-                  Tipo de espacio * (determina en qué racks se puede ubicar)
+                  Tipo de espacio (se asigna automáticamente según el tipo de carga)
                 </label>
-                <div className="flex gap-2">
-                  {(Object.keys(espacioLabel) as TipoEspacio[]).map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => {
-                        setTipoEspacio(t);
-                        setUbicaciones([]); // reiniciar ubicaciones al cambiar de espacio
-                      }}
-                      className={`flex-1 text-[12px] font-medium py-2 rounded-lg border ${
-                        tipoEspacio === t
-                          ? "bg-accent/[0.18] text-[#c4b8ff] border-accent-2/30"
-                          : "border-border-2 text-text-dim"
-                      }`}
-                    >
-                      {espacioLabel[t]}
-                    </button>
-                  ))}
+                <div
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-[12.5px] font-medium ${
+                    tipoEspacio === "bodega_simple"
+                      ? "bg-amber/[0.12] text-[#fbbf24] border-amber/25"
+                      : "bg-accent/[0.14] text-[#c4b8ff] border-accent-2/25"
+                  }`}
+                >
+                  <MapPin size={13} />
+                  {espacioLabel[tipoEspacio]}
+                  <span className="ml-auto text-[10.5px] text-text-faint font-normal">
+                    {regimen === "70" ? "Rég. 70" : regimen === "10" ? "Rég. 10" : "Carga General"}
+                  </span>
                 </div>
               </div>
+
+              {tipoEspacio === "bodega_simple" && (
+                <div className="col-span-3">
+                  <label className="text-[11.5px] text-text-faint block mb-1">
+                    ¿A qué bodega entra la carga? *
+                  </label>
+                  <div className="flex gap-2">
+                    {bodegasSimples.map((b) => (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => {
+                          setBodegaId(b.id);
+                          setUbicaciones([]); // cambiar de bodega reinicia ubicaciones
+                        }}
+                        className={`flex-1 text-[12px] font-medium py-2 rounded-lg border ${
+                          bodegaId === b.id
+                            ? "bg-accent/[0.18] text-[#c4b8ff] border-accent-2/30"
+                            : "border-border-2 text-text-dim"
+                        }`}
+                      >
+                        {b.codigo} · {b.nombre}
+                      </button>
+                    ))}
+                    {bodegasSimples.length === 0 && (
+                      <span className="text-[11.5px] text-amber py-2">
+                        No hay bodegas simples creadas. Córrelas en la migración.
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* SECCIÓN 2 */}
@@ -799,14 +924,14 @@ export default function IngresoPage() {
 
             {posicionesDisponibles.length === 0 ? (
               <p className="text-[11px] text-text-faint mb-4">
-                No hay posiciones libres en {espacioLabel[tipoEspacio]}. Puedes guardar sin ubicar y
+                No hay posiciones libres en {nombreBodega}. Puedes guardar sin ubicar y
                 asignarla después, o crear posiciones en Racks.
               </p>
             ) : (
               <>
                 <p className="text-[10.5px] text-text-faint mb-2">
                   La suma de cantidades debe coincidir con el total de paquetes. Solo se muestran
-                  posiciones libres de {espacioLabel[tipoEspacio]}.
+                  posiciones libres de {nombreBodega}.
                 </p>
                 <div className="flex flex-col gap-2 mb-2">
                   {ubicaciones.map((u, idx) => (

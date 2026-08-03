@@ -968,31 +968,31 @@ export default function CdaPage() {
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">GASTOS DE ORIGEN</td>
                   <td className="border border-black/40 p-1 text-right w-[110px]">
-                    {(cdaImprimir.gastos_origen ?? 0).toFixed(2)}
+                    ${(cdaImprimir.gastos_origen ?? 0).toFixed(2)}
                   </td>
                 </tr>
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">TOTAL F.O.B.</td>
                   <td className="border border-black/40 p-1 text-right">
-                    {((totalFob ?? 0) + (cdaImprimir.gastos_origen ?? 0)).toFixed(2)}
+                    ${((totalFob ?? 0) + (cdaImprimir.gastos_origen ?? 0)).toFixed(2)}
                   </td>
                 </tr>
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">FLETE</td>
                   <td className="border border-black/40 p-1 text-right">
-                    {(cdaImprimir.flete ?? 0).toFixed(2)}
+                    ${(cdaImprimir.flete ?? 0).toFixed(2)}
                   </td>
                 </tr>
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">SEGURO</td>
                   <td className="border border-black/40 p-1 text-right">
-                    {(cdaImprimir.seguro ?? 0).toFixed(2)}
+                    ${(cdaImprimir.seguro ?? 0).toFixed(2)}
                   </td>
                 </tr>
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">TOTAL C.I.F.</td>
                   <td className="border border-black/40 p-1 text-right font-bold">
-                    {(
+                    ${(
                       (totalFob ?? 0) +
                       (cdaImprimir.gastos_origen ?? 0) +
                       (cdaImprimir.flete ?? 0) +

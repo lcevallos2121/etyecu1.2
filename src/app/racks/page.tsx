@@ -42,7 +42,8 @@ export default function RacksPage() {
   const [nuevoRackForm, setNuevoRackForm] = useState(false);
   const [codigoRack, setCodigoRack] = useState("");
   const [descRack, setDescRack] = useState("");
-  const [tipoEspacioRack, setTipoEspacioRack] = useState<"deposito_aduanero_publico" | "bodega_simple">("deposito_aduanero_publico");
+  const [bodegas, setBodegas] = useState<{ id: string; codigo: string; nombre: string; tipo_espacio: string }[]>([]);
+  const [bodegaRack, setBodegaRack] = useState("");
 
   const [posicionActiva, setPosicionActiva] = useState<Posicion | null>(null);
   const [ordenElegida, setOrdenElegida] = useState("");
@@ -52,12 +53,19 @@ export default function RacksPage() {
   const [toast, setToast] = useState<string | null>(null);
 
   const cargarRacks = useCallback(async () => {
-    const { data, error } = await supabase.from("racks").select("*").order("codigo");
+    const [{ data, error }, { data: bodegaData }] = await Promise.all([
+      supabase.from("racks").select("*").order("codigo"),
+      supabase.from("bodegas").select("id, codigo, nombre, tipo_espacio").order("codigo"),
+    ]);
     if (error) {
       setErrorMsg(error.message);
       return;
     }
     setRacks(data ?? []);
+    setBodegas(bodegaData ?? []);
+    if (bodegaData && bodegaData.length > 0) {
+      setBodegaRack((prev) => prev || bodegaData[0].id);
+    }
     if (data && data.length > 0 && !rackSeleccionado) {
       setRackSeleccionado(data[0]);
     }
@@ -118,7 +126,12 @@ export default function RacksPage() {
     if (!codigoRack.trim()) return;
     const { data, error } = await supabase
       .from("racks")
-      .insert({ codigo: codigoRack.trim(), descripcion: descRack.trim() || null, tipo_espacio: tipoEspacioRack })
+      .insert({
+        codigo: codigoRack.trim(),
+        descripcion: descRack.trim() || null,
+        bodega_id: bodegaRack || null,
+        tipo_espacio: bodegas.find((b) => b.id === bodegaRack)?.tipo_espacio ?? "deposito_aduanero_publico",
+      })
       .select()
       .single();
     if (error) {
@@ -278,14 +291,15 @@ export default function RacksPage() {
                     className="card px-2 py-1.5 text-[12px] outline-none"
                   />
                   <select
-                    value={tipoEspacioRack}
-                    onChange={(e) =>
-                      setTipoEspacioRack(e.target.value as "deposito_aduanero_publico" | "bodega_simple")
-                    }
+                    value={bodegaRack}
+                    onChange={(e) => setBodegaRack(e.target.value)}
                     className="card px-2 py-1.5 text-[12px] outline-none"
                   >
-                    <option value="deposito_aduanero_publico">Depósito Aduanero Público</option>
-                    <option value="bodega_simple">Bodega Simple</option>
+                    {bodegas.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.codigo} · {b.nombre}
+                      </option>
+                    ))}
                   </select>
                   <button
                     onClick={crearRack}
