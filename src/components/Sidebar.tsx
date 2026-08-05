@@ -56,7 +56,7 @@ const navGroups: { label?: string; items: NavItem[] }[] = [
   },
   {
     label: "Próximamente",
-    items: [{ href: "/etiquetado", label: "Etiquetado", icon: Tag, badge: "Fase 2" }],
+    items: [{ href: "#", label: "Etiquetado", icon: Tag, badge: "Fase 2" }],
   },
 ];
 
