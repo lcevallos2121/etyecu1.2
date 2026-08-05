@@ -21,6 +21,7 @@ type CdaRef = {
   numero_cda: string | null;
   folio: number;
   bl: string | null;
+  cliente_id: string | null;
   clientes: { nombre: string } | null;
 };
 
@@ -50,7 +51,8 @@ type Ubicacion = { posicion_id: string; cantidad: string };
 type OrdenDap = {
   id: string;
   numero_dap: string;
-  cda_id: string;
+  cda_id: string | null;
+  cliente_id: string | null;
   cantidad_ingresada: number;
   cantidad_actual: number;
   regimen: string;
@@ -95,6 +97,8 @@ export default function IngresoPage() {
   const [numeroDap, setNumeroDap] = useState("");
   const [fechaEmision, setFechaEmision] = useState(new Date().toISOString().slice(0, 10));
   const [cdaId, setCdaId] = useState("");
+  const [clienteId, setClienteId] = useState("");
+  const [clientes, setClientes] = useState<{ id: string; nombre: string }[]>([]);
   const [regimen, setRegimen] = useState<"70" | "10" | "general">("70");
   const [tipoEspacio, setTipoEspacio] = useState<TipoEspacio>("deposito_aduanero_publico");
   const [bodegas, setBodegas] = useState<Bodega[]>([]);
@@ -145,18 +149,19 @@ export default function IngresoPage() {
     setLoading(true);
     setErrorMsg(null);
 
-    const [ordenRes, cdaRes, transRes, operRes, posRes, bodegaRes] = await Promise.all([
+    const [ordenRes, cdaRes, transRes, operRes, posRes, bodegaRes, clienteRes] = await Promise.all([
       supabase
         .from("ordenes_dap")
         .select("*, cdas(id, numero_cda, folio, bl, clientes(nombre))")
         .order("creado_en", { ascending: false }),
-      supabase.from("cdas").select("id, numero_cda, folio, bl, clientes(nombre)").order("folio", { ascending: false }),
+      supabase.from("cdas").select("id, numero_cda, folio, bl, cliente_id, clientes(nombre)").order("folio", { ascending: false }),
       supabase.from("catalogo_transportes").select("*").order("nombre"),
       supabase.from("catalogo_operadores_candado").select("*").order("nombre"),
       supabase
         .from("posiciones_nivel")
         .select("id, codigo_posicion, ocupado, nivel_id, niveles_rack(numero_nivel, rack_id, racks(codigo, tipo_espacio, bodega_id))"),
       supabase.from("bodegas").select("id, codigo, nombre, tipo_espacio").order("codigo"),
+      supabase.from("clientes").select("id, nombre").order("nombre"),
     ]);
 
     if (ordenRes.error) {
@@ -173,6 +178,7 @@ export default function IngresoPage() {
     setOperadores(operRes.data ?? []);
     setPosiciones((posRes.data as unknown as PosicionLibre[]) ?? []);
     setBodegas((bodegaRes.data as unknown as Bodega[]) ?? []);
+    setClientes((clienteRes.data as unknown as { id: string; nombre: string }[]) ?? []);
     setLoading(false);
   }, [supabase]);
 
@@ -201,6 +207,7 @@ export default function IngresoPage() {
     setNumeroDap("");
     setFechaEmision(new Date().toISOString().slice(0, 10));
     setCdaId("");
+    setClienteId("");
     setRegimen("70");
     setTipoEspacio("deposito_aduanero_publico");
     setTotalPaquetes("");
@@ -261,6 +268,11 @@ export default function IngresoPage() {
     setTipoEspacio(espacio);
     setUbicaciones([]); // reiniciar ubicaciones al cambiar de espacio
 
+    // El CDA solo aplica a Régimen 70. Al cambiar de régimen, limpiar ambas
+    // selecciones para no arrastrar datos que no corresponden.
+    setCdaId("");
+    setClienteId("");
+
     if (espacio === "deposito_aduanero_publico") {
       // Depósito: hay una sola bodega física, se asigna sola
       const dap = bodegas.find((b) => b.tipo_espacio === "deposito_aduanero_publico");
@@ -270,6 +282,8 @@ export default function IngresoPage() {
       setBodegaId("");
     }
   }
+
+  const esRegimen70 = regimen === "70";
 
   // Bodegas simples disponibles para elegir (cuando el tipo de carga es 10 o general)
   const bodegasSimples = bodegas.filter((b) => b.tipo_espacio === "bodega_simple");
@@ -281,7 +295,8 @@ export default function IngresoPage() {
     setFormId(o.id);
     setNumeroDap(o.numero_dap);
     setFechaEmision(o.fecha_emision_ingreso ?? new Date().toISOString().slice(0, 10));
-    setCdaId(o.cda_id);
+    setCdaId(o.cda_id ?? "");
+    setClienteId(o.cliente_id ?? "");
     setRegimen((o.tipo_carga_regimen as "70" | "10" | "general") ?? (o.regimen as "70" | "10" | "general") ?? "70");
     setTipoEspacio((o.tipo_espacio as TipoEspacio) ?? "deposito_aduanero_publico");
     setBodegaId(o.bodega_id ?? "");
@@ -329,8 +344,18 @@ export default function IngresoPage() {
   }
 
   async function guardar() {
-    if (!numeroDap.trim() || !cdaId || !totalPaquetes) {
-      setErrorMsg("Número de DAP, CDA y total de paquetes son obligatorios.");
+    if (!numeroDap.trim() || !totalPaquetes) {
+      setErrorMsg("Número de DAP y total de paquetes son obligatorios.");
+      return;
+    }
+
+    // El CDA solo aplica a Rég.70. En Rég.10/General se elige el cliente directo.
+    if (esRegimen70 && !cdaId) {
+      setErrorMsg("Para Régimen 70 debes seleccionar el CDA (Solicitud Previa).");
+      return;
+    }
+    if (!esRegimen70 && !clienteId) {
+      setErrorMsg("Selecciona el cliente al que pertenece la carga.");
       return;
     }
 
@@ -380,7 +405,10 @@ export default function IngresoPage() {
 
     const payload = {
       numero_dap: numeroFinal,
-      cda_id: cdaId,
+      cda_id: esRegimen70 ? cdaId : null,
+      cliente_id: esRegimen70
+        ? cdas.find((c) => c.id === cdaId)?.cliente_id ?? null
+        : clienteId,
       regimen: regimen === "general" ? "10" : regimen,
       tipo_carga_regimen: regimen,
       tipo_espacio: tipoEspacio,
@@ -648,22 +676,44 @@ export default function IngresoPage() {
                 />
               </div>
               <div>
-                <label className="text-[11.5px] text-text-faint block mb-1">Referencia CDA *</label>
-                <select
-                  value={cdaId}
-                  onChange={(e) => setCdaId(e.target.value)}
-                  className="w-full card px-3 py-2 text-[13px] outline-none"
-                >
-                  <option value="">Selecciona un CDA…</option>
-                  {cdas.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      CDA #{c.folio} · {c.clientes?.nombre ?? "—"}{" "}
-                      {c.numero_cda ? `(${c.numero_cda})` : "(pendiente)"}
-                    </option>
-                  ))}
-                </select>
+                <label className="text-[11.5px] text-text-faint block mb-1">
+                  {esRegimen70 ? "Referencia CDA *" : "Cliente *"}
+                </label>
+                {esRegimen70 ? (
+                  <select
+                    value={cdaId}
+                    onChange={(e) => setCdaId(e.target.value)}
+                    className="w-full card px-3 py-2 text-[13px] outline-none"
+                  >
+                    <option value="">Selecciona un CDA…</option>
+                    {cdas.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        CDA #{c.folio} · {c.clientes?.nombre ?? "—"}{" "}
+                        {c.numero_cda ? `(${c.numero_cda})` : "(pendiente)"}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value={clienteId}
+                    onChange={(e) => setClienteId(e.target.value)}
+                    className="w-full card px-3 py-2 text-[13px] outline-none"
+                  >
+                    <option value="">Selecciona un cliente…</option>
+                    {clientes.map((cl) => (
+                      <option key={cl.id} value={cl.id}>
+                        {cl.nombre}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {!esRegimen70 && (
+                  <p className="text-[10.5px] text-text-faint mt-1">
+                    El CDA (Solicitud Previa) solo aplica a Régimen 70. Aquí se elige el cliente directamente.
+                  </p>
+                )}
               </div>
-              {cdaSeleccionado && (
+              {esRegimen70 && cdaSeleccionado && (
                 <div className="col-span-3 text-[11.5px] text-text-faint px-1">
                   <span>Consignatario: {cdaSeleccionado.clientes?.nombre}</span>
                   {cdaSeleccionado.bl && <span> · BL: {cdaSeleccionado.bl}</span>}
