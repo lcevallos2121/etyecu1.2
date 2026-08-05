@@ -49,18 +49,48 @@ export default function NovedadesPage() {
   const [ordenId, setOrdenId] = useState("");
   const [tipo, setTipo] = useState<Novedad["tipo"]>("dano");
   const [descripcion, setDescripcion] = useState("");
-  const [archivo, setArchivo] = useState<File | null>(null);
+  const [archivos, setArchivos] = useState<File[]>([]);
+  const [fotosExistentes, setFotosExistentes] = useState<{ id: string; foto_url: string }[]>([]);
   const [saving, setSaving] = useState(false);
   const [novedadImprimir, setNovedadImprimir] = useState<Novedad | null>(null);
+  const [fotosImprimir, setFotosImprimir] = useState<string[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [aEliminar, setAEliminar] = useState<string | null>(null);
 
   useEffect(() => {
-    if (novedadImprimir) {
-      const t = setTimeout(() => window.print(), 300);
-      return () => clearTimeout(t);
+    if (!novedadImprimir) return;
+
+    let cancelado = false;
+
+    async function esperarFotosEImprimir() {
+      // Precargar todas las fotos para que estén listas antes de imprimir
+      if (fotosImprimir.length > 0) {
+        await Promise.all(
+          fotosImprimir.map(
+            (url) =>
+              new Promise<void>((resolve) => {
+                const img = new window.Image();
+                img.crossOrigin = "anonymous";
+                img.onload = () => resolve();
+                img.onerror = () => resolve(); // si una falla, no bloquea las demás
+                img.src = url;
+              })
+          )
+        );
+      }
+      // Pequeño margen para que el navegador pinte las imágenes ya descargadas
+      if (!cancelado) {
+        setTimeout(() => {
+          if (!cancelado) window.print();
+        }, 250);
+      }
     }
-  }, [novedadImprimir]);
+
+    esperarFotosEImprimir();
+    return () => {
+      cancelado = true;
+    };
+  }, [novedadImprimir, fotosImprimir]);
 
   const cargarDatos = useCallback(async () => {
     setLoading(true);
@@ -97,18 +127,27 @@ export default function NovedadesPage() {
     setOrdenId("");
     setTipo("dano");
     setDescripcion("");
-    setArchivo(null);
+    setArchivos([]);
+    setFotosExistentes([]);
     setErrorMsg(null);
     setShowForm(true);
   }
 
-  function abrirEditar(n: Novedad) {
+  async function abrirEditar(n: Novedad) {
     setEditId(n.id);
     setOrdenId(n.ordenes_dap?.id ?? "");
     setTipo(n.tipo);
     setDescripcion(n.descripcion ?? "");
-    setArchivo(null);
+    setArchivos([]);
     setErrorMsg(null);
+
+    const { data } = await supabase
+      .from("novedad_fotos")
+      .select("id, foto_url")
+      .eq("novedad_id", n.id)
+      .order("orden");
+    setFotosExistentes(data ?? []);
+
     setShowForm(true);
   }
 
@@ -120,10 +159,13 @@ export default function NovedadesPage() {
     setSaving(true);
     setErrorMsg(null);
 
-    let fotoUrl: string | null = null;
-
-    if (archivo) {
-      const nombreArchivo = `${Date.now()}_${archivo.name.replace(/\s+/g, "_")}`;
+    // Subir todas las fotos nuevas al storage
+    const urlsNuevas: string[] = [];
+    for (const archivo of archivos) {
+      const nombreArchivo = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${archivo.name.replace(
+        /\s+/g,
+        "_"
+      )}`;
       const { error: uploadError } = await supabase.storage
         .from("novedades")
         .upload(nombreArchivo, archivo);
@@ -137,37 +179,80 @@ export default function NovedadesPage() {
         );
         return;
       }
-
       const { data: urlData } = supabase.storage.from("novedades").getPublicUrl(nombreArchivo);
-      fotoUrl = urlData.publicUrl;
+      urlsNuevas.push(urlData.publicUrl);
     }
 
-    const payload: {
-      orden_dap_id: string;
-      tipo: Novedad["tipo"];
-      descripcion: string | null;
-      foto_url?: string | null;
-    } = {
+    // La primera foto (existente o nueva) queda también en foto_url para la miniatura de la lista
+    const primeraFoto = fotosExistentes[0]?.foto_url ?? urlsNuevas[0] ?? null;
+
+    const payload = {
       orden_dap_id: ordenId,
       tipo,
       descripcion: descripcion.trim() || null,
+      foto_url: primeraFoto,
     };
-    if (fotoUrl) payload.foto_url = fotoUrl;
 
-    const { error } = editId
-      ? await supabase.from("novedades").update(payload).eq("id", editId)
-      : await supabase.from("novedades").insert({ ...payload, foto_url: fotoUrl, resuelto: false });
-
-    setSaving(false);
-
-    if (error) {
-      setErrorMsg(error.message);
-      return;
+    let novedadId = editId;
+    if (editId) {
+      const { error } = await supabase.from("novedades").update(payload).eq("id", editId);
+      if (error) {
+        setSaving(false);
+        setErrorMsg(error.message);
+        return;
+      }
+    } else {
+      const { data, error } = await supabase
+        .from("novedades")
+        .insert({ ...payload, resuelto: false })
+        .select()
+        .single();
+      if (error) {
+        setSaving(false);
+        setErrorMsg(error.message);
+        return;
+      }
+      novedadId = data.id;
     }
 
+    // Guardar las fotos nuevas en la tabla relacionada
+    if (urlsNuevas.length > 0 && novedadId) {
+      const base = fotosExistentes.length;
+      const fotosPayload = urlsNuevas.map((url, i) => ({
+        novedad_id: novedadId,
+        foto_url: url,
+        orden: base + i,
+      }));
+      const { error: fotosError } = await supabase.from("novedad_fotos").insert(fotosPayload);
+      if (fotosError) {
+        setSaving(false);
+        setErrorMsg(fotosError.message);
+        return;
+      }
+    }
+
+    setSaving(false);
     setShowForm(false);
     setToast(editId ? "Novedad actualizada correctamente." : "Novedad registrada exitosamente.");
     cargarDatos();
+  }
+
+  async function quitarFotoExistente(id: string) {
+    await supabase.from("novedad_fotos").delete().eq("id", id);
+    setFotosExistentes((prev) => prev.filter((f) => f.id !== id));
+  }
+
+  async function imprimirReporte(n: Novedad) {
+    const { data } = await supabase
+      .from("novedad_fotos")
+      .select("foto_url")
+      .eq("novedad_id", n.id)
+      .order("orden");
+    let urls = (data ?? []).map((f) => f.foto_url);
+    // Compatibilidad: si no hay fotos en la tabla nueva pero sí en foto_url
+    if (urls.length === 0 && n.foto_url) urls = [n.foto_url];
+    setFotosImprimir(urls);
+    setNovedadImprimir(n);
   }
 
   async function marcarResuelto(n: Novedad) {
@@ -291,7 +376,7 @@ export default function NovedadesPage() {
                         <Check size={12} /> {n.resuelto ? "Reabrir" : "Resolver"}
                       </button>
                       <button
-                        onClick={() => setNovedadImprimir(n)}
+                        onClick={() => imprimirReporte(n)}
                         className="w-8 h-8 rounded-lg card flex items-center justify-center text-text-dim hover:text-text"
                         aria-label="Reporte PDF"
                         title="Reporte PDF"
@@ -382,13 +467,44 @@ export default function NovedadesPage() {
                 />
               </div>
               <div>
-                <label className="text-[11.5px] text-text-faint block mb-1">Foto (opcional)</label>
+                <label className="text-[11.5px] text-text-faint block mb-1">
+                  Fotos (opcional, puedes subir varias)
+                </label>
                 <input
                   type="file"
                   accept="image/*"
-                  onChange={(e) => setArchivo(e.target.files?.[0] ?? null)}
+                  multiple
+                  onChange={(e) => setArchivos(Array.from(e.target.files ?? []))}
                   className="w-full text-[12px] text-text-dim"
                 />
+
+                {/* Fotos ya guardadas (al editar) */}
+                {fotosExistentes.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {fotosExistentes.map((f) => (
+                      <div key={f.id} className="relative w-16 h-16 rounded-lg overflow-hidden border border-border">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={f.foto_url} alt="foto" className="w-full h-full object-cover" />
+                        <button
+                          type="button"
+                          onClick={() => quitarFotoExistente(f.id)}
+                          className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-black/70 text-white flex items-center justify-center"
+                          title="Quitar foto"
+                        >
+                          <X size={10} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Fotos nuevas seleccionadas (aún sin subir) */}
+                {archivos.length > 0 && (
+                  <p className="text-[11px] text-[#6ee7b7] mt-2">
+                    {archivos.length} foto{archivos.length !== 1 ? "s" : ""} nueva
+                    {archivos.length !== 1 ? "s" : ""} lista{archivos.length !== 1 ? "s" : ""} para subir.
+                  </p>
+                )}
               </div>
             </div>
 
@@ -461,15 +577,26 @@ export default function NovedadesPage() {
               {novedadImprimir.descripcion || "Sin descripción."}
             </div>
 
-            {novedadImprimir.foto_url && (
+            {fotosImprimir.length > 0 && (
               <>
-                <p className="text-[10.5px] font-bold mb-1">Evidencia fotográfica:</p>
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={novedadImprimir.foto_url}
-                  alt="Evidencia"
-                  className="max-w-[400px] border border-black/40 mb-6"
-                />
+                <p className="text-[10.5px] font-bold mb-1.5">
+                  Evidencia fotográfica{fotosImprimir.length > 1 ? ` (${fotosImprimir.length} fotos)` : ""}:
+                </p>
+                <div className="grid grid-cols-2 gap-2 mb-6">
+                  {fotosImprimir.map((url, i) => (
+                    <div
+                      key={i}
+                      className="border border-black/40 flex items-center justify-center h-[190px] overflow-hidden bg-gray-50"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={url}
+                        alt={`Evidencia ${i + 1}`}
+                        className="max-w-full max-h-full object-contain"
+                      />
+                    </div>
+                  ))}
+                </div>
               </>
             )}
 
