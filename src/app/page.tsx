@@ -11,9 +11,11 @@ export const dynamic = "force-dynamic";
 type OrdenReciente = {
   numero_dap: string;
   regimen: string;
+  tipo_carga_regimen: string | null;
   cantidad_actual: number;
   actualizado_en: string | null;
   creado_en: string;
+  clientes: { nombre: string } | null;
   cdas: { clientes: { nombre: string } | null } | null;
 };
 
@@ -36,7 +38,7 @@ export default function DashboardPage() {
       supabase.from("novedades").select("id", { count: "exact", head: true }).eq("resuelto", false),
       supabase
         .from("ordenes_dap")
-        .select("numero_dap, regimen, cantidad_actual, actualizado_en, creado_en, cdas(clientes(nombre))")
+        .select("numero_dap, regimen, tipo_carga_regimen, cantidad_actual, actualizado_en, creado_en, clientes(nombre), cdas(clientes(nombre))")
         .gt("cantidad_actual", 0)
         .order("actualizado_en", { ascending: false })
         .limit(1)
@@ -112,10 +114,14 @@ export default function DashboardPage() {
                   <div className="flex items-center gap-2.5 mb-4 flex-wrap">
                     <h3 className="text-[15px] font-semibold">
                       Orden DAP {ordenReciente.numero_dap} ·{" "}
-                      {ordenReciente.cdas?.clientes?.nombre ?? "—"}
+                      {ordenReciente.clientes?.nombre ?? ordenReciente.cdas?.clientes?.nombre ?? "—"}
                     </h3>
                     <span className="text-[10.5px] px-2 py-0.5 rounded-full bg-accent/[0.18] text-[#c4b8ff]">
-                      Régimen {ordenReciente.regimen}
+                      {ordenReciente.tipo_carga_regimen === "carga_general"
+                        ? "Carga General"
+                        : ordenReciente.tipo_carga_regimen === "70" || ordenReciente.regimen === "70"
+                        ? "Régimen 70"
+                        : "Régimen 10"}
                     </span>
                     <span className="ml-auto text-[11px] text-text-faint">
                       Última actualización · {tiempoRelativo(ordenReciente.actualizado_en ?? ordenReciente.creado_en)}
