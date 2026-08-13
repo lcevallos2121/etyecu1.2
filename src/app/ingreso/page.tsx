@@ -75,6 +75,7 @@ type OrdenDap = {
   transporte_id: string | null;
   operador_candado_id: string | null;
   cdas: CdaRef | null;
+  clientes: { nombre: string } | null;
 };
 
 export default function IngresoPage() {
@@ -152,7 +153,7 @@ export default function IngresoPage() {
     const [ordenRes, cdaRes, transRes, operRes, posRes, bodegaRes, clienteRes] = await Promise.all([
       supabase
         .from("ordenes_dap")
-        .select("*, cdas(id, numero_cda, folio, bl, clientes(nombre))")
+        .select("*, cdas(id, numero_cda, folio, bl, clientes(nombre)), clientes(nombre)")
         .order("creado_en", { ascending: false }),
       supabase.from("cdas").select("id, numero_cda, folio, bl, cliente_id, clientes(nombre)").order("folio", { ascending: false }),
       supabase.from("catalogo_transportes").select("*").order("nombre"),
@@ -187,6 +188,11 @@ export default function IngresoPage() {
   }, [cargarDatos]);
 
   const cdaSeleccionado = cdas.find((c) => c.id === cdaId);
+
+  // Nombre del cliente: primero el directo de la orden, si no el del CDA.
+  function nombreCliente(o: OrdenDap): string {
+    return o.clientes?.nombre ?? o.cdas?.clientes?.nombre ?? "—";
+  }
 
   // Posiciones que ya están seleccionadas en el formulario (para no perderlas del
   // desplegable al editar, aunque figuren como "ocupadas" en la base).
@@ -509,7 +515,7 @@ export default function IngresoPage() {
   const ordenesFiltradas = ordenes.filter(
     (o) =>
       o.numero_dap.toLowerCase().includes(search.toLowerCase()) ||
-      o.cdas?.clientes?.nombre.toLowerCase().includes(search.toLowerCase())
+      nombreCliente(o).toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -584,7 +590,7 @@ export default function IngresoPage() {
                 >
                   <span className="text-[13px] font-medium">{o.numero_dap}</span>
                   <span className="text-[12.5px] text-text-dim truncate">
-                    {o.cdas?.clientes?.nombre ?? "—"}
+                    {nombreCliente(o)}
                   </span>
                   <span
                     className={`text-[10.5px] px-2 py-0.5 rounded-full w-fit ${
@@ -1079,23 +1085,34 @@ export default function IngresoPage() {
                   </td>
                 </tr>
                 <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">Consignatario:</td>
+                  <td className="border border-black/40 p-1.5 font-bold">Cliente:</td>
                   <td className="border border-black/40 p-1.5" colSpan={3}>
-                    {ordenImprimir.cdas?.clientes?.nombre ?? ""}
+                    {ordenImprimir.clientes?.nombre ?? ordenImprimir.cdas?.clientes?.nombre ?? ""}
                   </td>
                 </tr>
-                <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">Referencia a CDA:</td>
-                  <td className="border border-black/40 p-1.5" colSpan={3}>
-                    {ordenImprimir.cdas?.numero_cda ?? "Pendiente"}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">BL o Guía:</td>
-                  <td className="border border-black/40 p-1.5" colSpan={3}>
-                    {ordenImprimir.cdas?.bl ?? ""}
-                  </td>
-                </tr>
+                {ordenImprimir.tipo_espacio === "deposito_aduanero_publico" ? (
+                  <>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Referencia a CDA:</td>
+                      <td className="border border-black/40 p-1.5" colSpan={3}>
+                        {ordenImprimir.cdas?.numero_cda ?? "Pendiente"}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">BL o Guía:</td>
+                      <td className="border border-black/40 p-1.5" colSpan={3}>
+                        {ordenImprimir.cdas?.bl ?? ""}
+                      </td>
+                    </tr>
+                  </>
+                ) : (
+                  <tr>
+                    <td className="border border-black/40 p-1.5 font-bold">Espacio:</td>
+                    <td className="border border-black/40 p-1.5" colSpan={3}>
+                      Bodega Simple
+                    </td>
+                  </tr>
+                )}
                 <tr>
                   <td className="border border-black/40 p-1.5 font-bold">Carga llega:</td>
                   <td className="border border-black/40 p-1.5 capitalize">
@@ -1128,7 +1145,9 @@ export default function IngresoPage() {
             </table>
 
             <p className="text-[10.5px] font-bold mb-1.5">
-              Detalle de mercancía nacionalizada según ítems de la declaración aduanera:
+              {ordenImprimir.tipo_espacio === "deposito_aduanero_publico"
+                ? "Detalle de mercancía nacionalizada según ítems de la declaración aduanera:"
+                : "Detalle de la carga:"}
             </p>
             <table className="w-full text-[10px] border border-black/50 border-collapse mb-10">
               <thead>
