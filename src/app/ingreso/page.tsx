@@ -1066,7 +1066,11 @@ export default function IngresoPage() {
           <div className="max-w-[640px] mx-auto">
             <div className="flex items-center justify-center gap-3 mb-1">
               <span className="font-bold text-[18px]">ETYECU</span>
-              <span className="text-[14px] font-bold">DEPÓSITO ADUANERO PÚBLICO</span>
+              <span className="text-[14px] font-bold">
+                {ordenImprimir.tipo_espacio === "deposito_aduanero_publico"
+                  ? "DEPÓSITO ADUANERO PÚBLICO"
+                  : "BODEGA SIMPLE"}
+              </span>
             </div>
             <p className="text-[15px] font-bold text-center mb-5">
               ORDEN DE INGRESO DE CARGA {ordenImprimir.numero_dap}

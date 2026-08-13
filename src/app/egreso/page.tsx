@@ -35,6 +35,8 @@ type Egreso = {
   creado_en: string;
   ordenes_dap: {
     numero_dap: string;
+    tipo_espacio: string | null;
+    clientes: { nombre: string } | null;
     cdas: { numero_cda: string | null; clientes: { nombre: string } | null } | null;
   } | null;
 };
@@ -73,7 +75,7 @@ export default function EgresoPage() {
         .order("numero_dap"),
       supabase
         .from("egreso_transacciones")
-        .select("id, cantidad, salida_parcial, creado_en, ordenes_dap(numero_dap, cdas(numero_cda, clientes(nombre)))")
+        .select("id, cantidad, salida_parcial, creado_en, ordenes_dap(numero_dap, tipo_espacio, clientes(nombre), cdas(numero_cda, clientes(nombre)))")
         .order("creado_en", { ascending: false }),
     ]);
 
@@ -158,7 +160,7 @@ export default function EgresoPage() {
     // Buscar el egreso recién creado para poder imprimir su orden de inmediato
     const { data: ultimo } = await supabase
       .from("egreso_transacciones")
-      .select("id, cantidad, salida_parcial, creado_en, ordenes_dap(numero_dap, cdas(numero_cda, clientes(nombre)))")
+      .select("id, cantidad, salida_parcial, creado_en, ordenes_dap(numero_dap, tipo_espacio, clientes(nombre), cdas(numero_cda, clientes(nombre)))")
       .eq("orden_dap_id", ordenSeleccionada.id)
       .order("creado_en", { ascending: false })
       .limit(1)
@@ -227,7 +229,7 @@ export default function EgresoPage() {
   const egresosFiltrados = egresos.filter(
     (e) =>
       (e.ordenes_dap?.numero_dap ?? "").toLowerCase().includes(search.toLowerCase()) ||
-      (e.ordenes_dap?.cdas?.clientes?.nombre ?? "").toLowerCase().includes(search.toLowerCase())
+      (e.ordenes_dap?.clientes?.nombre ?? e.ordenes_dap?.cdas?.clientes?.nombre ?? "").toLowerCase().includes(search.toLowerCase())
   );
 
   return (
@@ -331,7 +333,7 @@ export default function EgresoPage() {
                     {e.ordenes_dap?.numero_dap ?? "—"}
                   </span>
                   <span className="text-[12.5px] text-text-dim truncate">
-                    {e.ordenes_dap?.cdas?.clientes?.nombre ?? "—"}
+                    {e.ordenes_dap?.clientes?.nombre ?? e.ordenes_dap?.cdas?.clientes?.nombre ?? "—"}
                   </span>
                   <span className="text-[12.5px]">
                     {e.cantidad.toLocaleString("es-EC")}
@@ -485,7 +487,11 @@ export default function EgresoPage() {
           <div className="max-w-[640px] mx-auto">
             <div className="flex items-center justify-center gap-3 mb-1">
               <span className="font-bold text-[18px]">ETYECU</span>
-              <span className="text-[14px] font-bold">DEPÓSITO ADUANERO PÚBLICO</span>
+              <span className="text-[14px] font-bold">
+                {egresoImprimir.ordenes_dap?.tipo_espacio === "deposito_aduanero_publico"
+                  ? "DEPÓSITO ADUANERO PÚBLICO"
+                  : "BODEGA SIMPLE"}
+              </span>
             </div>
             <p className="text-[15px] font-bold text-center mb-5">
               ORDEN DE EGRESO DE CARGA · {egresoImprimir.ordenes_dap?.numero_dap}
@@ -504,17 +510,21 @@ export default function EgresoPage() {
                   </td>
                 </tr>
                 <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">Consignatario:</td>
+                  <td className="border border-black/40 p-1.5 font-bold">Cliente:</td>
                   <td className="border border-black/40 p-1.5" colSpan={3}>
-                    {egresoImprimir.ordenes_dap?.cdas?.clientes?.nombre ?? ""}
+                    {egresoImprimir.ordenes_dap?.clientes?.nombre ??
+                      egresoImprimir.ordenes_dap?.cdas?.clientes?.nombre ??
+                      ""}
                   </td>
                 </tr>
-                <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">Referencia a CDA:</td>
-                  <td className="border border-black/40 p-1.5" colSpan={3}>
-                    {egresoImprimir.ordenes_dap?.cdas?.numero_cda ?? "Pendiente"}
-                  </td>
-                </tr>
+                {egresoImprimir.ordenes_dap?.tipo_espacio === "deposito_aduanero_publico" && (
+                  <tr>
+                    <td className="border border-black/40 p-1.5 font-bold">Referencia a CDA:</td>
+                    <td className="border border-black/40 p-1.5" colSpan={3}>
+                      {egresoImprimir.ordenes_dap?.cdas?.numero_cda ?? "Pendiente"}
+                    </td>
+                  </tr>
+                )}
                 <tr>
                   <td className="border border-black/40 p-1.5 font-bold">Cantidad egresada:</td>
                   <td className="border border-black/40 p-1.5" colSpan={3}>
