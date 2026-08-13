@@ -297,7 +297,8 @@ export default function IngresoPage() {
     setFechaEmision(o.fecha_emision_ingreso ?? new Date().toISOString().slice(0, 10));
     setCdaId(o.cda_id ?? "");
     setClienteId(o.cliente_id ?? "");
-    setRegimen((o.tipo_carga_regimen as "70" | "10" | "general") ?? (o.regimen as "70" | "10" | "general") ?? "70");
+    const tcr = o.tipo_carga_regimen === "carga_general" ? "general" : o.tipo_carga_regimen;
+    setRegimen((tcr as "70" | "10" | "general") ?? (o.regimen as "70" | "10" | "general") ?? "70");
     setTipoEspacio((o.tipo_espacio as TipoEspacio) ?? "deposito_aduanero_publico");
     setBodegaId(o.bodega_id ?? "");
     setTotalPaquetes(o.cantidad_ingresada?.toString() ?? "");
@@ -410,7 +411,7 @@ export default function IngresoPage() {
         ? cdas.find((c) => c.id === cdaId)?.cliente_id ?? null
         : clienteId,
       regimen: regimen === "general" ? "10" : regimen,
-      tipo_carga_regimen: regimen,
+      tipo_carga_regimen: regimen === "general" ? "carga_general" : regimen,
       tipo_espacio: tipoEspacio,
       bodega_id: bodegaId,
       cantidad_ingresada: cantidad,
