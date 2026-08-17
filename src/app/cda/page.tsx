@@ -275,14 +275,35 @@ export default function CdaPage() {
     setSeguro(c.seguro?.toString() ?? "");
     setErrorMsg(null);
 
-    const { data: itemsData } = await supabase
-      .from("cda_items")
-      .select("*")
-      .eq("cda_id", c.id)
-      .order("creado_en");
+    // Traer TODOS los ítems paginando: Supabase limita cada SELECT a 1000
+    // filas por defecto. Con CDAs de más de 1000 ítems, un select("*") simple
+    // corta silenciosamente el resto — se pagina hasta agotar los datos.
+    const TAMANO_PAGINA = 1000;
+    let itemsData: {
+      id: string;
+      partida_arancelaria: string | null;
+      modelo: string | null;
+      descripcion: string | null;
+      unidad_comercial: string | null;
+      cantidad: number | null;
+      precio_unitario_exw: number | null;
+    }[] = [];
+    let desde = 0;
+    while (true) {
+      const { data: pagina, error } = await supabase
+        .from("cda_items")
+        .select("*")
+        .eq("cda_id", c.id)
+        .order("creado_en")
+        .range(desde, desde + TAMANO_PAGINA - 1);
+      if (error || !pagina || pagina.length === 0) break;
+      itemsData = itemsData.concat(pagina);
+      if (pagina.length < TAMANO_PAGINA) break;
+      desde += TAMANO_PAGINA;
+    }
 
     setItems(
-      itemsData && itemsData.length > 0
+      itemsData.length > 0
         ? itemsData.map((i) => ({
             id: i.id,
             partida_arancelaria: i.partida_arancelaria ?? "",
@@ -315,6 +336,24 @@ export default function CdaPage() {
       setErrorMsg("Selecciona un cliente (importador).");
       return;
     }
+
+    // Avisar ANTES de guardar si algún ítem quedaría fuera (para que el
+    // usuario no se lleve la sorpresa de un total distinto después de guardar)
+    const itemsConDatos = items.filter(
+      (it) =>
+        it.modelo.trim() ||
+        it.descripcion.trim() ||
+        Number(it.cantidad || 0) > 0 ||
+        Number(it.precio_unitario_exw || 0) > 0
+    );
+    const itemsVacios = items.length - itemsConDatos.length;
+    if (itemsVacios > 0 && items.length > 0) {
+      const seguro = window.confirm(
+        `${itemsVacios} línea(s) de mercancía están completamente vacías y no se guardarán. ¿Continuar?`
+      );
+      if (!seguro) return;
+    }
+
     setSaving(true);
     setErrorMsg(null);
 
@@ -361,7 +400,16 @@ export default function CdaPage() {
       cdaId = data.id;
     }
 
-    const itemsValidos = items.filter((it) => it.modelo.trim() || it.descripcion.trim());
+    // Un ítem es válido si tiene datos identificables (modelo/descripción)
+    // O datos numéricos de costeo (cantidad/precio) — así no se pierden filas
+    // cargadas del Excel que traen cantidad y precio pero el modelo viene vacío.
+    const itemsValidos = items.filter(
+      (it) =>
+        it.modelo.trim() ||
+        it.descripcion.trim() ||
+        Number(it.cantidad || 0) > 0 ||
+        Number(it.precio_unitario_exw || 0) > 0
+    );
     if (itemsValidos.length > 0 && cdaId) {
       const itemsPayload = itemsValidos.map((it) => ({
         cda_id: cdaId,
@@ -376,11 +424,21 @@ export default function CdaPage() {
             ? Number(it.cantidad) * Number(it.precio_unitario_exw)
             : null,
       }));
-      const { error: itemsError } = await supabase.from("cda_items").insert(itemsPayload);
-      if (itemsError) {
-        setSaving(false);
-        setErrorMsg(itemsError.message);
-        return;
+
+      // Insertar en lotes: con listas muy largas (Excel de cientos/miles de
+      // filas) un solo insert puede perder filas silenciosamente. Se inserta
+      // de a 400 y se verifica cada lote antes de continuar.
+      const TAMANO_LOTE = 400;
+      for (let i = 0; i < itemsPayload.length; i += TAMANO_LOTE) {
+        const lote = itemsPayload.slice(i, i + TAMANO_LOTE);
+        const { error: itemsError } = await supabase.from("cda_items").insert(lote);
+        if (itemsError) {
+          setSaving(false);
+          setErrorMsg(
+            `Error guardando ítems (fila ${i + 1} a ${i + lote.length}): ${itemsError.message}`
+          );
+          return;
+        }
       }
     }
 
@@ -407,14 +465,35 @@ export default function CdaPage() {
   }
 
   async function abrirSolicitud(c: Cda) {
-    const { data: itemsData } = await supabase
-      .from("cda_items")
-      .select("*")
-      .eq("cda_id", c.id)
-      .order("creado_en");
+    // Traer TODOS los ítems paginando: Supabase limita cada SELECT a 1000
+    // filas por defecto. Con CDAs de más de 1000 ítems, un select("*") simple
+    // corta silenciosamente el resto — por eso se pagina hasta agotar los datos.
+    const TAMANO_PAGINA = 1000;
+    let itemsData: {
+      id: string;
+      partida_arancelaria: string | null;
+      modelo: string | null;
+      descripcion: string | null;
+      unidad_comercial: string | null;
+      cantidad: number | null;
+      precio_unitario_exw: number | null;
+    }[] = [];
+    let desde = 0;
+    while (true) {
+      const { data: pagina, error } = await supabase
+        .from("cda_items")
+        .select("*")
+        .eq("cda_id", c.id)
+        .order("creado_en")
+        .range(desde, desde + TAMANO_PAGINA - 1);
+      if (error || !pagina || pagina.length === 0) break;
+      itemsData = itemsData.concat(pagina);
+      if (pagina.length < TAMANO_PAGINA) break; // última página
+      desde += TAMANO_PAGINA;
+    }
     setCdaImprimir({
       ...c,
-      itemsImpresion: (itemsData ?? []).map((i) => ({
+      itemsImpresion: itemsData.map((i) => ({
         id: i.id,
         partida_arancelaria: i.partida_arancelaria ?? "",
         modelo: i.modelo ?? "",
