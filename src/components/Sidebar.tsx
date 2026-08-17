@@ -48,15 +48,18 @@ const navGroups: { label?: string; items: NavItem[] }[] = [
     ],
   },
   {
+    label: "Etiquetado",
+    items: [
+      { href: "/etiquetado", label: "Órdenes de etiquetado", icon: Tag },
+      { href: "/etiquetado/clientes", label: "Clientes de etiquetado", icon: Users },
+    ],
+  },
+  {
     label: "Análisis",
     items: [
       { href: "/reportes", label: "Reportes", icon: BarChart3 },
       { href: "/usuarios", label: "Usuarios", icon: UserCog },
     ],
-  },
-  {
-    label: "Próximamente",
-    items: [{ href: "#", label: "Etiquetado", icon: Tag, badge: "Fase 2" }],
   },
 ];
 
