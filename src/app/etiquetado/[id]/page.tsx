@@ -387,6 +387,12 @@ export default function DetalleEtiquetadoPage() {
       setErrorMsg("Ingresa al menos el código o las cajas.");
       return;
     }
+    // Cantidad contada ANTES de guardar (para saber cuánto se agregó realmente,
+    // así el movimiento que se registra refleja el incremento neto, no el total)
+    const cantidadAntes = editId ? items.find((it) => it.id === editId)?.cantidad_contada ?? 0 : 0;
+    const cantidadNueva = sumarCajas(fCajas);
+    const incremento = cantidadNueva - cantidadAntes;
+
     const payload = {
       orden_id: id,
       palet: fPalet.trim() || null,
@@ -395,17 +401,39 @@ export default function DetalleEtiquetadoPage() {
       marca: fMarca.trim() || null,
       color: fColor.trim() || null,
       cajas: fCajas.trim() || null,
-      cantidad_contada: sumarCajas(fCajas),
+      cantidad_contada: cantidadNueva,
       cantidad_factura: Number(fFactura) || 0,
       tipo_etiqueta: fTipoEtiqueta.trim() || null,
       novedad: fNovedad.trim() || null,
       tallas_detalle: fTallas,
       actualizado_en: new Date().toISOString(),
     };
-    const { error } = editId
-      ? await supabase.from("etq_items").update(payload).eq("id", editId)
-      : await supabase.from("etq_items").insert({ ...payload, orden_fila: items.length });
-    if (error) { setErrorMsg(error.message); return; }
+    let itemId = editId;
+    if (editId) {
+      const { error } = await supabase.from("etq_items").update(payload).eq("id", editId);
+      if (error) { setErrorMsg(error.message); return; }
+    } else {
+      const { data, error } = await supabase
+        .from("etq_items")
+        .insert({ ...payload, orden_fila: items.length })
+        .select()
+        .single();
+      if (error) { setErrorMsg(error.message); return; }
+      itemId = data?.id;
+    }
+
+    // Registrar el movimiento (mesa + hora) si hubo un incremento real de unidades
+    if (itemId && incremento > 0) {
+      await supabase.from("etq_movimientos").insert({
+        orden_id: id,
+        item_id: itemId,
+        mesa_id: mesaActivaId || null,
+        codigo: fCodigo.trim() || null,
+        caja: fCajas.trim() || null,
+        cantidad: incremento,
+      });
+    }
+
     setShowForm(false);
     setToast(editId ? "Código actualizado." : "Código agregado.");
     cargar();
