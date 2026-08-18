@@ -982,7 +982,8 @@ export default function CdaPage() {
         <div className="print-area hidden print:block text-black bg-white p-8">
           <div className="flex justify-between items-start border-b-2 border-black pb-3 mb-4">
             <div>
-              <p className="text-[20px] font-bold">ETYECU S.A.</p>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="logo-etyecu.png" alt="ETYECU" className="h-14 mb-1" />
               <p className="text-[11px]">CONTRATO DE SOLICITUD PREVIA A DEPÓSITO ADUANERO PÚBLICO</p>
             </div>
             <p className="text-[11px] text-right">N° CDA: {cdaImprimir.numero_cda ?? "Pendiente"}</p>
