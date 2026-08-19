@@ -28,6 +28,9 @@ type Item = {
   descripcion: string | null;
   marca: string | null;
   color: string | null;
+  composicion: string | null;
+  pais: string | null;
+  tienda: string | null;
   tallas: string | null;
   tallas_detalle: Record<string, number> | null;
   cajas: string | null;
@@ -87,6 +90,9 @@ export default function DetalleEtiquetadoPage() {
   const [fDescripcion, setFDescripcion] = useState("");
   const [fMarca, setFMarca] = useState("");
   const [fColor, setFColor] = useState("");
+  const [fComposicion, setFComposicion] = useState("");
+  const [fPais, setFPais] = useState("");
+  const [fTienda, setFTienda] = useState("");
   const [fCajas, setFCajas] = useState("");
   const [fFactura, setFFactura] = useState("");
   const [fTipoEtiqueta, setFTipoEtiqueta] = useState("COSIDO");
@@ -322,6 +328,9 @@ export default function DetalleEtiquetadoPage() {
         else if (n === "codigo") mapa.codigo = h;
         else if (n.includes("descrip")) mapa.descripcion = h;
         else if (n === "marca") mapa.marca = h;
+        else if (n.includes("composicion")) mapa.composicion = h;
+        else if (n === "pais" || n.includes("paisorigen")) mapa.pais = h;
+        else if (n === "tienda" || n.includes("nombretienda")) mapa.tienda = h;
         else if (n.includes("cantidadfactura") || n === "cantidaddefactura") mapa.factura = h;
         else if (n.includes("tipodeetiqueta") || n === "tipoetiqueta") mapa.tipo = h;
         else if (n.includes("novedad")) mapa.novedad = h;
@@ -342,6 +351,9 @@ export default function DetalleEtiquetadoPage() {
             codigo: mapa.codigo ? String(f[mapa.codigo] ?? "") : null,
             descripcion: mapa.descripcion ? String(f[mapa.descripcion] ?? "") : null,
             marca: mapa.marca ? String(f[mapa.marca] ?? "") : null,
+            composicion: mapa.composicion ? String(f[mapa.composicion] ?? "") : null,
+            pais: mapa.pais ? String(f[mapa.pais] ?? "") : null,
+            tienda: mapa.tienda ? String(f[mapa.tienda] ?? "") : null,
             cajas: cajasTxt || null,
             cantidad_contada: sumarCajas(cajasTxt),
             cantidad_factura: mapa.factura ? Number(f[mapa.factura]) || 0 : 0,
@@ -365,7 +377,8 @@ export default function DetalleEtiquetadoPage() {
 
   function limpiar() {
     setEditId(undefined); setFPalet(""); setFCodigo(""); setFDescripcion("");
-    setFMarca(""); setFColor(""); setFCajas(""); setFFactura("");
+    setFMarca(""); setFColor(""); setFComposicion(""); setFPais(""); setFTienda("");
+    setFCajas(""); setFFactura("");
     setFTipoEtiqueta("COSIDO"); setFNovedad(""); setFTallas({}); setErrorMsg(null);
   }
 
@@ -376,6 +389,7 @@ export default function DetalleEtiquetadoPage() {
     setEditId(it.id);
     setFPalet(it.palet ?? ""); setFCodigo(it.codigo ?? ""); setFDescripcion(it.descripcion ?? "");
     setFMarca(it.marca ?? ""); setFColor(it.color ?? ""); setFCajas(it.cajas ?? "");
+    setFComposicion(it.composicion ?? ""); setFPais(it.pais ?? ""); setFTienda(it.tienda ?? "");
     setFFactura(it.cantidad_factura ? String(it.cantidad_factura) : "");
     setFTipoEtiqueta(it.tipo_etiqueta ?? "COSIDO"); setFNovedad(it.novedad ?? "");
     setFTallas(it.tallas_detalle ?? {});
@@ -400,6 +414,9 @@ export default function DetalleEtiquetadoPage() {
       descripcion: fDescripcion.trim() || null,
       marca: fMarca.trim() || null,
       color: fColor.trim() || null,
+      composicion: fComposicion.trim() || null,
+      pais: fPais.trim() || null,
+      tienda: fTienda.trim() || null,
       cajas: fCajas.trim() || null,
       cantidad_contada: cantidadNueva,
       cantidad_factura: Number(fFactura) || 0,
@@ -453,6 +470,7 @@ export default function DetalleEtiquetadoPage() {
   // Producción por mesa (para el reporte del día)
   const [movimientos, setMovimientos] = useState<{ mesa_id: string | null; cantidad: number; creado_en: string }[]>([]);
   const [showReporte, setShowReporte] = useState(false);
+  const [diaReporte, setDiaReporte] = useState(new Date().toISOString().slice(0, 10));
 
   async function cargarReporte() {
     const { data } = await supabase
@@ -463,8 +481,15 @@ export default function DetalleEtiquetadoPage() {
     setShowReporte(true);
   }
 
+  // Días que realmente tienen movimientos (para el selector)
+  const diasConMovimientos = Array.from(
+    new Set(movimientos.map((m) => m.creado_en.slice(0, 10)))
+  ).sort((a, b) => b.localeCompare(a));
+
   function produccionMesa(mesaId: string) {
-    const movs = movimientos.filter((m) => m.mesa_id === mesaId);
+    const movs = movimientos.filter(
+      (m) => m.mesa_id === mesaId && m.creado_en.slice(0, 10) === diaReporte
+    );
     const unidades = movs.reduce((a, m) => a + Number(m.cantidad || 0), 0);
     const cajas = movs.length;
     let minutos = 0;
@@ -678,6 +703,9 @@ export default function DetalleEtiquetadoPage() {
               <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Descripción</label><input value={fDescripcion} onChange={(e) => setFDescripcion(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Marca</label><input value={fMarca} onChange={(e) => setFMarca(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Color</label><input value={fColor} onChange={(e) => setFColor(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div><label className="text-[11.5px] text-text-faint block mb-1">País de origen</label><input value={fPais} onChange={(e) => setFPais(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div><label className="text-[11.5px] text-text-faint block mb-1">Tienda</label><input value={fTienda} onChange={(e) => setFTienda(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Composición</label><input value={fComposicion} onChange={(e) => setFComposicion(e.target.value)} placeholder="Ej. 95% Algodón, 5% Elastano" className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1">Cajas (con cantidad en paréntesis)</label>
                 <input value={fCajas} onChange={(e) => setFCajas(e.target.value)} placeholder="164(24) 165(24) 166(24)" className="w-full card px-3 py-2 text-[13px] outline-none font-mono" />
@@ -827,9 +855,27 @@ export default function DetalleEtiquetadoPage() {
         <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
           <div className="card w-full max-w-[620px] my-6 p-6">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-[16px] font-semibold">Producción del día por mesa</h2>
+              <h2 className="text-[16px] font-semibold">Producción por mesa</h2>
               <button onClick={() => setShowReporte(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
             </div>
+
+            {/* Selector de día: muestra solo la producción de esa fecha */}
+            <div className="flex items-center gap-2 mb-4">
+              <label className="text-[11.5px] text-text-faint">Día:</label>
+              <select
+                value={diaReporte}
+                onChange={(e) => setDiaReporte(e.target.value)}
+                className="card px-2.5 py-1.5 text-[12.5px] outline-none"
+              >
+                {!diasConMovimientos.includes(diaReporte) && (
+                  <option value={diaReporte}>{diaReporte} (sin datos)</option>
+                )}
+                {diasConMovimientos.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+            </div>
+
             {mesas.length === 0 ? (
               <p className="text-[12.5px] text-text-faint">
                 No hay mesas configuradas. Agrégalas para medir la producción.
