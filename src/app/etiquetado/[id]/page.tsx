@@ -107,6 +107,13 @@ export default function DetalleEtiquetadoPage() {
   const [fNovedad, setFNovedad] = useState("");
   const [fTallas, setFTallas] = useState<Record<string, number>>({});
 
+  // Modal "Agregar tallas": suma tallas de una caja NUEVA al total existente
+  // del código, sin tener que recalcular a mano lo que ya había.
+  const [showAgregarTallas, setShowAgregarTallas] = useState(false);
+  const [itemAgregarTallas, setItemAgregarTallas] = useState<Item | null>(null);
+  const [cajaNuevaTallas, setCajaNuevaTallas] = useState("");
+  const [tallasNuevas, setTallasNuevas] = useState<Record<string, number>>({});
+
   // Configuración de tallas de la orden
   const [showTallasConfig, setShowTallasConfig] = useState(false);
 
@@ -553,6 +560,68 @@ export default function DetalleEtiquetadoPage() {
     cargar();
   }
 
+  function abrirAgregarTallas(it: Item) {
+    setItemAgregarTallas(it);
+    setCajaNuevaTallas("");
+    setTallasNuevas({});
+    setErrorMsg(null);
+    setShowAgregarTallas(true);
+  }
+
+  async function guardarAgregarTallas() {
+    if (!itemAgregarTallas) return;
+    const sumaTallasNuevas = sumarTallas(tallasNuevas);
+    if (sumaTallasNuevas === 0) {
+      setErrorMsg("Ingresa al menos una talla con cantidad.");
+      return;
+    }
+
+    // Sumar las tallas nuevas a las que ya tenía el código
+    const tallasCombinadas: Record<string, number> = { ...(itemAgregarTallas.tallas_detalle ?? {}) };
+    Object.entries(tallasNuevas).forEach(([talla, cant]) => {
+      tallasCombinadas[talla] = (tallasCombinadas[talla] ?? 0) + cant;
+    });
+
+    // Si además escribió la caja nueva, se suma también a las cajas existentes
+    const nuevasCajas = cajaNuevaTallas.trim()
+      ? ((itemAgregarTallas.cajas ?? "") + " " + cajaNuevaTallas.trim()).trim()
+      : itemAgregarTallas.cajas;
+    const nuevaCantidadContada = cajaNuevaTallas.trim()
+      ? sumarCajas(nuevasCajas)
+      : itemAgregarTallas.cantidad_contada;
+
+    const { error } = await supabase
+      .from("etq_items")
+      .update({
+        tallas_detalle: tallasCombinadas,
+        cajas: nuevasCajas,
+        cantidad_contada: nuevaCantidadContada,
+        actualizado_en: new Date().toISOString(),
+      })
+      .eq("id", itemAgregarTallas.id);
+
+    if (error) {
+      setErrorMsg(error.message);
+      return;
+    }
+
+    // Registrar el movimiento (mesa + hora) si se agregó una caja nueva
+    if (cajaNuevaTallas.trim()) {
+      await supabase.from("etq_movimientos").insert({
+        orden_id: id,
+        item_id: itemAgregarTallas.id,
+        mesa_id: mesaActivaId || null,
+        codigo: itemAgregarTallas.codigo,
+        caja: cajaNuevaTallas.trim(),
+        cantidad: sumarCajas(cajaNuevaTallas),
+      });
+    }
+
+    setShowAgregarTallas(false);
+    setToast(`Tallas sumadas a ${itemAgregarTallas.codigo}.`);
+    cargar();
+  }
+
   // Vista previa de la suma mientras se escribe
   const previewSuma = sumarCajas(fCajas);
 
@@ -728,6 +797,17 @@ export default function DetalleEtiquetadoPage() {
                                   onClick={() => {
                                     setSugerencias([]);
                                     setQCodigo("");
+                                    abrirAgregarTallas(s);
+                                  }}
+                                  className="text-[10.5px] px-2 py-0.5 rounded-md bg-green/[0.15] text-[#6ee7b7] hover:bg-green/[0.25]"
+                                  title="Agregar tallas de una caja nueva"
+                                >
+                                  + Tallas
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setSugerencias([]);
+                                    setQCodigo("");
                                     abrirEditar(s);
                                   }}
                                   className="text-[10.5px] px-2 py-0.5 rounded-md bg-accent/[0.15] text-[#c4b8ff] hover:bg-accent/[0.25]"
@@ -807,6 +887,7 @@ export default function DetalleEtiquetadoPage() {
                         <span className="text-right font-medium">{it.cantidad_contada}</span>
                         <span className="flex justify-center"><span className={`text-[10px] px-2 py-0.5 rounded-full ${est.clase}`}>{est.texto}</span></span>
                         <span className="flex items-center justify-end gap-1.5">
+                          <button onClick={() => abrirAgregarTallas(it)} className="text-[11px] px-2 py-1 rounded-md bg-green/[0.15] text-[#6ee7b7] hover:bg-green/[0.25]">+ Tallas</button>
                           <button onClick={() => abrirEditar(it)} className="text-[11px] px-2 py-1 rounded-md bg-accent/[0.15] text-[#c4b8ff] hover:bg-accent/[0.25]">Editar</button>
                           <button onClick={() => setAEliminar(it.id)} className="text-text-faint hover:text-red-300"><Trash2 size={13} /></button>
                         </span>
@@ -1040,6 +1121,93 @@ export default function DetalleEtiquetadoPage() {
             <p className="text-[10.5px] text-text-faint mt-3">
               El tiempo se calcula entre el primer y último movimiento de cada mesa. Unidades = suma de cajas capturadas por esa mesa.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: agregar tallas de una caja nueva (suma al total del código) */}
+      {showAgregarTallas && itemAgregarTallas && (
+        <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
+          <div className="card w-full max-w-[480px] my-6 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-[16px] font-semibold">Agregar tallas</h2>
+              <button onClick={() => setShowAgregarTallas(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+            </div>
+            <p className="text-[12.5px] text-text-dim mb-3">
+              Código <span className="font-medium text-text">{itemAgregarTallas.codigo}</span> — escribe
+              solo las tallas de la caja nueva que acabas de contar. El sistema las suma al total que
+              ya tenía este código, no hace falta calcular nada a mano.
+            </p>
+
+            {errorMsg && <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">{errorMsg}</div>}
+
+            {Object.keys(itemAgregarTallas.tallas_detalle ?? {}).length > 0 && (
+              <p className="text-[11px] text-text-faint mb-3">
+                Ya tenía: {Object.entries(itemAgregarTallas.tallas_detalle ?? {}).map(([t, c]) => `${t}:${c}`).join(" ")}
+              </p>
+            )}
+
+            <div className="mb-3">
+              <label className="text-[11.5px] text-text-faint block mb-1">
+                Caja nueva (opcional, se suma a las cajas del código)
+              </label>
+              <input
+                value={cajaNuevaTallas}
+                onChange={(e) => setCajaNuevaTallas(e.target.value)}
+                placeholder="Ej. 245(12)"
+                className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
+              />
+            </div>
+
+            <label className="text-[11.5px] text-text-faint block mb-1">Tallas de esta caja</label>
+            {tallasOrden.length === 0 ? (
+              <p className="text-[11px] text-amber mb-2">
+                Esta orden no tiene tallas configuradas todavía.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {tallasOrden.map((t) => (
+                  <div key={t} className="flex flex-col items-center">
+                    <span className="text-[10px] text-text-faint mb-0.5">{t}</span>
+                    <input
+                      value={tallasNuevas[t] ?? ""}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setTallasNuevas((prev) => {
+                          const nuevo = { ...prev };
+                          if (v === "" || Number(v) === 0) delete nuevo[t];
+                          else nuevo[t] = Number(v);
+                          return nuevo;
+                        });
+                      }}
+                      type="number"
+                      className="w-[52px] card px-1.5 py-1.5 text-[12px] outline-none text-center"
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Aviso de cuadre: tallas de la caja nueva vs cantidad de la caja nueva */}
+            {(() => {
+              const sumaTallasNuevas = sumarTallas(tallasNuevas);
+              const sumaCajaNueva = sumarCajas(cajaNuevaTallas);
+              if (sumaTallasNuevas === 0 || sumaCajaNueva === 0) return null;
+              if (sumaTallasNuevas === sumaCajaNueva) {
+                return <p className="text-[11px] text-[#6ee7b7] mb-3">✓ Las tallas cuadran con la caja ({sumaTallasNuevas}).</p>;
+              }
+              return (
+                <p className="text-[11px] text-[#fbbf24] mb-3">
+                  ⚠ Las tallas suman {sumaTallasNuevas} pero la caja nueva trae {sumaCajaNueva}. Revisa
+                  (puedes guardar igual).
+                </p>
+              );
+            })()}
+
+            <div className="flex gap-2 justify-end mt-2">
+              <button onClick={() => setShowAgregarTallas(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cancelar</button>
+              <button onClick={guardarAgregarTallas} className="btn-primary text-[13px] font-semibold px-4 py-2 rounded-lg">Sumar al código</button>
+            </div>
           </div>
         </div>
       )}

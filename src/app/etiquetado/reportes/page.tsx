@@ -34,6 +34,8 @@ type OrdenEtq = {
 
 type ItemEtq = {
   orden_id: string;
+  palet: string | null;
+  cajas: string | null;
   codigo: string | null;
   descripcion: string | null;
   cantidad_contada: number;
@@ -81,6 +83,9 @@ export default function ReportesEtiquetadoPage() {
   const [filtroOrigen, setFiltroOrigen] = useState<"todos" | "etyecu" | "externo">("todos");
   const [ordenSeleccionadaId, setOrdenSeleccionadaId] = useState<string>("");
   const [busquedaInventario, setBusquedaInventario] = useState("");
+  const [tipoBusqueda, setTipoBusqueda] = useState<
+    "todos" | "palet" | "codigo" | "descripcion" | "tallas" | "composicion" | "pais"
+  >("todos");
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -91,7 +96,7 @@ export default function ReportesEtiquetadoPage() {
       supabase
         .from("etq_items")
         .select(
-          "orden_id, codigo, descripcion, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais"
+          "orden_id, palet, cajas, codigo, descripcion, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais"
         ),
       supabase.from("etq_movimientos").select("orden_id, mesa_id, cantidad, creado_en"),
       supabase.from("etq_mesas").select("id, orden_id, nombre"),
@@ -221,12 +226,33 @@ export default function ReportesEtiquetadoPage() {
     const q = busquedaInventario.trim().toLowerCase();
     if (!q) return itemsOrdenSeleccionada;
     return itemsOrdenSeleccionada.filter((it) => {
+      const palet = (it.palet ?? "").toLowerCase();
       const codigo = (it.codigo ?? "").toLowerCase();
       const descripcion = (it.descripcion ?? "").toLowerCase();
       const tallas = formatoTallas(it.tallas_detalle).toLowerCase();
-      return codigo.includes(q) || descripcion.includes(q) || tallas.includes(q);
+      const composicion = (it.composicion ?? "").toLowerCase();
+      const pais = (it.pais ?? "").toLowerCase();
+
+      // Palet: coincidencia EXACTA (si no, "1" traería también "11", "12"...)
+      if (tipoBusqueda === "palet") return palet === q;
+      if (tipoBusqueda === "codigo") return codigo.includes(q);
+      if (tipoBusqueda === "descripcion") return descripcion.includes(q);
+      if (tipoBusqueda === "tallas") return tallas.includes(q);
+      if (tipoBusqueda === "composicion") return composicion.includes(q);
+      if (tipoBusqueda === "pais") return pais.includes(q);
+
+      // "todos los campos": palet sigue siendo exacto para no traer resultados
+      // mezclados (1 no debe traer 11), el resto por coincidencia parcial
+      return (
+        palet === q ||
+        codigo.includes(q) ||
+        descripcion.includes(q) ||
+        tallas.includes(q) ||
+        composicion.includes(q) ||
+        pais.includes(q)
+      );
     });
-  }, [itemsOrdenSeleccionada, busquedaInventario]);
+  }, [itemsOrdenSeleccionada, busquedaInventario, tipoBusqueda]);
 
   const totalesOrdenSeleccionada = itemsOrdenSeleccionada.reduce(
     (acc, it) => ({
@@ -534,17 +560,36 @@ export default function ReportesEtiquetadoPage() {
                         </div>
                       </div>
 
-                      <div className="card p-3 mb-4">
+                      <div className="card p-3 mb-4 flex gap-2">
+                        <select
+                          value={tipoBusqueda}
+                          onChange={(e) => setTipoBusqueda(e.target.value as typeof tipoBusqueda)}
+                          className="card px-3 py-2 text-[12.5px] outline-none w-[170px] shrink-0"
+                        >
+                          <option value="todos">Todos los campos</option>
+                          <option value="palet">Palet (exacto)</option>
+                          <option value="codigo">Código</option>
+                          <option value="descripcion">Descripción</option>
+                          <option value="tallas">Talla</option>
+                          <option value="composicion">Composición</option>
+                          <option value="pais">País</option>
+                        </select>
                         <input
                           value={busquedaInventario}
                           onChange={(e) => setBusquedaInventario(e.target.value)}
-                          placeholder="Buscar por código, descripción o talla…"
+                          placeholder={
+                            tipoBusqueda === "palet"
+                              ? "Escribe el número de palet exacto, ej. 1…"
+                              : "Escribe el texto a buscar…"
+                          }
                           className="w-full card px-3 py-2 text-[12.5px] outline-none"
                         />
                       </div>
 
                       <div className="card overflow-hidden">
-                        <div className="grid grid-cols-[110px_1fr_130px_150px_100px_90px_90px_90px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                        <div className="grid grid-cols-[70px_100px_110px_180px_170px_190px_100px_90px_90px_90px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                          <span>Palet</span>
+                          <span>Cajas</span>
                           <span>Código</span>
                           <span>Descripción</span>
                           <span>Tallas</span>
@@ -564,19 +609,23 @@ export default function ReportesEtiquetadoPage() {
                             return (
                               <div
                                 key={i}
-                                className="grid grid-cols-[110px_1fr_130px_150px_100px_90px_90px_90px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px]"
+                                className="grid grid-cols-[70px_100px_110px_180px_170px_190px_100px_90px_90px_90px] gap-3 px-5 py-2.5 items-start border-b border-border last:border-b-0 text-[12.5px]"
                               >
-                                <span className="font-medium">{it.codigo ?? "—"}</span>
-                                <span className="truncate text-text-dim">{it.descripcion ?? "—"}</span>
-                                <span className="truncate text-text-dim text-[11px] font-mono">
+                                <span className="text-text-dim pt-0.5">{it.palet ?? "—"}</span>
+                                <span className="text-text-dim leading-snug font-mono text-[11px]">
+                                  {it.cajas ?? "—"}
+                                </span>
+                                <span className="font-medium pt-0.5">{it.codigo ?? "—"}</span>
+                                <span className="text-text-dim pt-0.5">{it.descripcion ?? "—"}</span>
+                                <span className="text-text-dim text-[11px] font-mono leading-snug">
                                   {formatoTallas(it.tallas_detalle)}
                                 </span>
-                                <span className="truncate text-text-dim">{it.composicion ?? "—"}</span>
-                                <span className="truncate text-text-dim">{it.pais ?? "—"}</span>
-                                <span className="text-right">{it.cantidad_factura}</span>
-                                <span className="text-right">{it.cantidad_contada}</span>
+                                <span className="text-text-dim leading-snug">{it.composicion ?? "—"}</span>
+                                <span className="text-text-dim pt-0.5">{it.pais ?? "—"}</span>
+                                <span className="text-right pt-0.5">{it.cantidad_factura}</span>
+                                <span className="text-right pt-0.5">{it.cantidad_contada}</span>
                                 <span
-                                  className={`text-right font-medium ${
+                                  className={`text-right font-medium pt-0.5 ${
                                     dif === 0 ? "text-[#6ee7b7]" : dif < 0 ? "text-[#fca5a5]" : "text-[#fbbf24]"
                                   }`}
                                 >
