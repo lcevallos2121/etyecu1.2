@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
 import {
-  ArrowLeft, Package, Building2, Plus, Upload, Trash2, RefreshCw, X, Users, BarChart3,
+  ArrowLeft, Package, Building2, Plus, Upload, Trash2, RefreshCw, X, Users, BarChart3, FileText,
 } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import * as XLSX from "xlsx";
@@ -19,6 +19,14 @@ type EtqOrden = {
   cliente_nombre: string | null; tipo_producto: string | null;
   estado: string; observaciones: string | null; fecha: string;
   tallas: string[] | null;
+  proveedor_factura: string | null;
+  bodega_proceso: string | null;
+  reglamento_tecnico: string | null;
+  supervisora: string | null;
+  // Datos de contacto del cliente (para la cabecera del informe): pueden venir
+  // del cliente de etiquetado externo, o del cliente de la orden DAP (ETYECU)
+  ruc_cliente: string | null;
+  direccion_cliente: string | null;
 };
 
 type Item = {
@@ -101,6 +109,14 @@ export default function DetalleEtiquetadoPage() {
 
   // Configuración de tallas de la orden
   const [showTallasConfig, setShowTallasConfig] = useState(false);
+
+  // Datos del informe final (proveedor/factura, bodega, reglamento, supervisora)
+  const [showDatosInforme, setShowDatosInforme] = useState(false);
+  const [fProveedorFactura, setFProveedorFactura] = useState("");
+  const [fBodegaProceso, setFBodegaProceso] = useState("");
+  const [fReglamento, setFReglamento] = useState("");
+  const [fSupervisora, setFSupervisora] = useState("");
+  const [showInforme, setShowInforme] = useState(false);
   const [tallasOrden, setTallasOrden] = useState<string[]>([]);
   const [tallasInput, setTallasInput] = useState("");
 
@@ -117,6 +133,30 @@ export default function DetalleEtiquetadoPage() {
     if (!id) return;
     const { data: ord } = await supabase.from("etq_ordenes").select("*").eq("id", id).single();
     const ordTyped = (ord as EtqOrden) ?? null;
+
+    // Traer RUC/dirección del cliente según el origen (etq_clientes o clientes vía orden DAP)
+    if (ordTyped) {
+      if (ordTyped.origen === "externo") {
+        const { data: etqCli } = await supabase
+          .from("etq_clientes")
+          .select("ruc_ci, direccion")
+          .eq("id", (ord as { etq_cliente_id: string | null }).etq_cliente_id ?? "")
+          .single();
+        ordTyped.ruc_cliente = etqCli?.ruc_ci ?? null;
+        ordTyped.direccion_cliente = etqCli?.direccion ?? null;
+      } else {
+        const { data: ordenDap } = await supabase
+          .from("ordenes_dap")
+          .select("clientes(ruc_ci)")
+          .eq("id", (ord as { orden_dap_id: string | null }).orden_dap_id ?? "")
+          .single();
+        const clienteDap = (ordenDap as unknown as { clientes: { ruc_ci: string | null } | null })
+          ?.clientes;
+        ordTyped.ruc_cliente = clienteDap?.ruc_ci ?? null;
+        ordTyped.direccion_cliente = null;
+      }
+    }
+
     setOrden(ordTyped);
     setTallasOrden(ordTyped?.tallas ?? []);
     const { data: it } = await supabase
@@ -184,7 +224,39 @@ export default function DetalleEtiquetadoPage() {
     setToast("Tallas configuradas.");
   }
 
+  function abrirDatosInforme() {
+    setFProveedorFactura(orden?.proveedor_factura ?? "");
+    setFBodegaProceso(orden?.bodega_proceso ?? "");
+    setFReglamento(orden?.reglamento_tecnico ?? "");
+    setFSupervisora(orden?.supervisora ?? "Isabel Garcia");
+    setShowDatosInforme(true);
+  }
+
+  async function guardarDatosInforme() {
+    const { error } = await supabase
+      .from("etq_ordenes")
+      .update({
+        proveedor_factura: fProveedorFactura.trim() || null,
+        bodega_proceso: fBodegaProceso.trim() || null,
+        reglamento_tecnico: fReglamento.trim() || null,
+        supervisora: fSupervisora.trim() || null,
+      })
+      .eq("id", id);
+    if (error) { setErrorMsg(error.message); return; }
+    setShowDatosInforme(false);
+    setToast("Datos del informe actualizados.");
+    cargar();
+  }
+
   useEffect(() => { cargar(); }, [cargar]);
+
+  // Al abrir el informe final, dispara la impresión
+  useEffect(() => {
+    if (showInforme) {
+      const t = setTimeout(() => window.print(), 250);
+      return () => clearTimeout(t);
+    }
+  }, [showInforme]);
 
   // Búsqueda inteligente de códigos mientras se escribe
   useEffect(() => {
@@ -341,6 +413,21 @@ export default function DetalleEtiquetadoPage() {
         return;
       }
 
+      // --- DIAGNÓSTICO TEMPORAL: muestra qué columnas y valores detectó ---
+      // (quitar este bloque una vez resuelto el problema de cantidad_factura)
+      const diagCols = `Encabezados vistos: [${headers.join(" | ")}]`;
+      const diagMapa = `Mapa detectado: ${JSON.stringify(mapa)}`;
+      const primeraFila = filas[0] as Record<string, unknown>;
+      const diagValor = mapa.factura
+        ? `Valor crudo de factura en fila 1 (columna "${mapa.factura}"): ${JSON.stringify(
+            primeraFila[mapa.factura]
+          )} (tipo: ${typeof primeraFila[mapa.factura]})`
+        : "mapa.factura es undefined: no se detectó ninguna columna de factura";
+      console.log(diagCols);
+      console.log(diagMapa);
+      console.log(diagValor);
+      // --- FIN DIAGNÓSTICO TEMPORAL ---
+
       const nuevos = filas
         .filter((f) => String(f[mapa.codigo ?? ""] ?? "").trim() !== "" || String(f[mapa.cajas ?? ""] ?? "").trim() !== "")
         .map((f, i) => {
@@ -366,7 +453,9 @@ export default function DetalleEtiquetadoPage() {
       if (nuevos.length === 0) { setAvisoExcel("No se encontraron renglones con código o cajas."); return; }
       const { error } = await supabase.from("etq_items").insert(nuevos);
       if (error) { setAvisoExcel(error.message); return; }
-      setAvisoExcel(`✓ Se cargaron ${nuevos.length} códigos desde el inventario.`);
+      setAvisoExcel(
+        `✓ Se cargaron ${nuevos.length} códigos. [DIAGNÓSTICO] ${diagMapa} · ${diagValor}`
+      );
       cargar();
     } catch {
       setAvisoExcel("No se pudo leer el archivo. Verifica que sea un Excel válido.");
@@ -467,6 +556,34 @@ export default function DetalleEtiquetadoPage() {
   // Vista previa de la suma mientras se escribe
   const previewSuma = sumarCajas(fCajas);
 
+  // Resumen agrupado por descripción, para el Informe Final (lo que factura contabilidad)
+  const resumenPorDescripcion = useMemo(() => {
+    const grupos = new Map<
+      string,
+      { descripcion: string; cantidadFactura: number; cantidadInventario: number }
+    >();
+    items.forEach((it) => {
+      const clave = (it.descripcion ?? it.codigo ?? "Sin descripción").trim() || "Sin descripción";
+      const actual = grupos.get(clave) ?? {
+        descripcion: clave,
+        cantidadFactura: 0,
+        cantidadInventario: 0,
+      };
+      actual.cantidadFactura += Number(it.cantidad_factura || 0);
+      actual.cantidadInventario += Number(it.cantidad_contada || 0);
+      grupos.set(clave, actual);
+    });
+    return Array.from(grupos.values()).sort((a, b) => a.descripcion.localeCompare(b.descripcion));
+  }, [items]);
+
+  const totalesInforme = resumenPorDescripcion.reduce(
+    (acc, g) => ({
+      factura: acc.factura + g.cantidadFactura,
+      inventario: acc.inventario + g.cantidadInventario,
+    }),
+    { factura: 0, inventario: 0 }
+  );
+
   // Producción por mesa (para el reporte del día)
   const [movimientos, setMovimientos] = useState<{ mesa_id: string | null; cantidad: number; creado_en: string }[]>([]);
   const [showReporte, setShowReporte] = useState(false);
@@ -519,10 +636,24 @@ export default function DetalleEtiquetadoPage() {
               <div className="flex items-center gap-3 mb-5 flex-wrap">
                 <h1 className="text-[21px] font-semibold">{orden.numero_etq}</h1>
                 <span className="text-[10.5px] px-2 py-0.5 rounded-full bg-accent/[0.18] text-[#c4b8ff] capitalize">{orden.estado}</span>
-                <span className="flex items-center gap-1.5 text-[12.5px] text-text-dim ml-auto">
+                <span className="flex items-center gap-1.5 text-[12.5px] text-text-dim">
                   {orden.origen === "etyecu" ? <Package size={14} /> : <Building2 size={14} />}
                   {orden.cliente_nombre} · <span className="capitalize">{orden.tipo_producto}</span>
                 </span>
+                <div className="ml-auto flex gap-2">
+                  <button
+                    onClick={abrirDatosInforme}
+                    className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                  >
+                    Datos del informe
+                  </button>
+                  <button
+                    onClick={() => setShowInforme(true)}
+                    className="btn-primary flex items-center gap-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                  >
+                    <FileText size={13} /> Generar informe final
+                  </button>
+                </div>
               </div>
 
               {errorMsg && <div className="mb-4 px-4 py-2.5 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">{errorMsg}</div>}
@@ -949,6 +1080,170 @@ export default function DetalleEtiquetadoPage() {
             <div className="flex gap-2 justify-end">
               <button onClick={() => setShowTallasConfig(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cancelar</button>
               <button onClick={guardarTallasOrden} className="btn-primary text-[13px] font-semibold px-4 py-2 rounded-lg">Guardar tallas</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: datos del informe final */}
+      {showDatosInforme && (
+        <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
+          <div className="card w-full max-w-[560px] my-6 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-[16px] font-semibold">Datos del informe final</h2>
+              <button onClick={() => setShowDatosInforme(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+            </div>
+            <p className="text-[12px] text-text-dim mb-3">
+              Estos datos aparecen en el Informe Final de etiquetado (el que usa contabilidad para facturar).
+            </p>
+            <div className="flex flex-col gap-3 mb-4">
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Proveedor y N° de factura</label>
+                <input
+                  value={fProveedorFactura}
+                  onChange={(e) => setFProveedorFactura(e.target.value)}
+                  placeholder="Ej. C&J CLARK LATIN AMERICA"
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Bodega del proceso</label>
+                <input
+                  value={fBodegaProceso}
+                  onChange={(e) => setFBodegaProceso(e.target.value)}
+                  placeholder="Ej. ETYECU Km 11 Vía Daule, Lot. Parque Industrial El Sauce Galpón #4"
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Reglamento técnico aplicado</label>
+                <input
+                  value={fReglamento}
+                  onChange={(e) => setFReglamento(e.target.value)}
+                  placeholder="Ej. RTE INEN 2107 para el etiquetado de calzado y marroquinería"
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Supervisora</label>
+                <input
+                  value={fSupervisora}
+                  onChange={(e) => setFSupervisora(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <button onClick={() => setShowDatosInforme(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cancelar</button>
+              <button onClick={guardarDatosInforme} className="btn-primary text-[13px] font-semibold px-4 py-2 rounded-lg">Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PDF: Informe Final de Etiquetado (lo que factura contabilidad) */}
+      {showInforme && orden && (
+        <div className="fixed inset-0 z-[70] print:static print:z-auto">
+          <div className="print:hidden fixed top-4 right-4 z-10">
+            <button
+              onClick={() => setShowInforme(false)}
+              className="bg-white text-black rounded-lg px-3 py-2 text-[13px] font-semibold shadow-lg"
+            >
+              Cerrar
+            </button>
+          </div>
+          <div className="print-area hidden print:block text-black bg-white p-10">
+            <div className="max-w-[720px] mx-auto">
+              <div className="flex items-center justify-center gap-3 mb-1">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/logo-etyecu.png" alt="ETYECU" className="h-14" />
+              </div>
+              <p className="text-[14px] font-bold text-center mb-0.5">ETIQUETADO EN ECUADOR</p>
+              <p className="text-[11px] text-center mb-5">Según Res. 16049</p>
+
+              <table className="w-full text-[10.5px] border border-black/50 border-collapse mb-4">
+                <tbody>
+                  <tr>
+                    <td className="border border-black/40 p-1.5 font-bold w-[170px]">Número de Orden:</td>
+                    <td className="border border-black/40 p-1.5 w-[200px]">{orden.numero_etq}</td>
+                    <td className="border border-black/40 p-1.5 font-bold w-[170px]">Fecha de Emisión:</td>
+                    <td className="border border-black/40 p-1.5">
+                      {new Date().toISOString().slice(0, 10)}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="border border-black/40 p-1.5 font-bold">Importador:</td>
+                    <td className="border border-black/40 p-1.5" colSpan={3}>{orden.cliente_nombre ?? "—"}</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-black/40 p-1.5 font-bold">RUC:</td>
+                    <td className="border border-black/40 p-1.5">{orden.ruc_cliente ?? "—"}</td>
+                    <td className="border border-black/40 p-1.5 font-bold">Dirección:</td>
+                    <td className="border border-black/40 p-1.5">{orden.direccion_cliente ?? "—"}</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-black/40 p-1.5 font-bold">Proveedor y Factura N°:</td>
+                    <td className="border border-black/40 p-1.5" colSpan={3}>
+                      {orden.proveedor_factura ?? "—"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="border border-black/40 p-1.5 font-bold">Bodega del Proceso:</td>
+                    <td className="border border-black/40 p-1.5" colSpan={3}>
+                      {orden.bodega_proceso ?? "—"}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <p className="text-[11px] font-bold mb-1">REGLAMENTOS ETIQUETADOS DURANTE EL PROCESO</p>
+              <p className="text-[10.5px] border border-black/40 p-2 mb-4">
+                {orden.reglamento_tecnico ?? "—"}
+              </p>
+
+              <p className="text-[10.5px] mb-3">
+                Hemos procedido a realizar el etiquetado de su mercadería, correspondiente a los
+                reglamentos señalados en el párrafo anterior. A continuación detallamos el total de
+                prendas etiquetadas:
+              </p>
+
+              <table className="w-full text-[10px] border border-black/50 border-collapse mb-2">
+                <thead>
+                  <tr className="bg-gray-100">
+                    <th className="border border-black/40 p-1.5 text-left">DESCRIPCIÓN</th>
+                    <th className="border border-black/40 p-1.5 text-right w-[110px]">CANTIDAD DE FACTURA</th>
+                    <th className="border border-black/40 p-1.5 text-right w-[120px]">CANTIDAD DE INVENTARIO</th>
+                    <th className="border border-black/40 p-1.5 text-right w-[110px]">TOTAL DE ETIQUETAS</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resumenPorDescripcion.map((g) => (
+                    <tr key={g.descripcion}>
+                      <td className="border border-black/40 p-1.5">{g.descripcion}</td>
+                      <td className="border border-black/40 p-1.5 text-right">{g.cantidadFactura}</td>
+                      <td className="border border-black/40 p-1.5 text-right">{g.cantidadInventario}</td>
+                      <td className="border border-black/40 p-1.5 text-right">{g.cantidadInventario}</td>
+                    </tr>
+                  ))}
+                  <tr className="font-bold">
+                    <td className="border border-black/40 p-1.5 bg-gray-100">TOTALES</td>
+                    <td className="border border-black/40 p-1.5 text-right">{totalesInforme.factura}</td>
+                    <td className="border border-black/40 p-1.5 text-right">{totalesInforme.inventario}</td>
+                    <td className="border border-black/40 p-1.5 text-right">{totalesInforme.inventario}</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div className="mt-16 grid grid-cols-2 gap-10 text-center text-[10.5px]">
+                <div>
+                  <div className="border-t border-black pt-1">Supervisora ETYECU S.A.</div>
+                  <p className="mt-0.5">{orden.supervisora ?? "—"}</p>
+                  <p>Etiquetado@etyecu.ec</p>
+                </div>
+                <div>
+                  <div className="border-t border-black pt-1">Recibí Conforme</div>
+                </div>
+              </div>
             </div>
           </div>
         </div>

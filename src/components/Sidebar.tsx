@@ -52,6 +52,7 @@ const navGroups: { label?: string; items: NavItem[] }[] = [
     items: [
       { href: "/etiquetado", label: "Órdenes de etiquetado", icon: Tag },
       { href: "/etiquetado/clientes", label: "Clientes de etiquetado", icon: Users },
+      { href: "/etiquetado/reportes", label: "Reportes de etiquetado", icon: BarChart3 },
     ],
   },
   {
