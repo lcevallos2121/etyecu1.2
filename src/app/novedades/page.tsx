@@ -9,13 +9,29 @@ import { ConfirmModal, Toast } from "@/components/Feedback";
 
 export const dynamic = "force-dynamic";
 
-type OrdenRef = { id: string; numero_dap: string; cdas: { clientes: { nombre: string } | null } | null };
+type OrdenRef = {
+  id: string;
+  numero_dap: string;
+  regimen: string | null;
+  tipo_carga_regimen: string | null;
+  tipo_carga: string | null;
+  cantidad_actual: number | null;
+  nombre_transportista: string | null;
+  placa_vehiculo: string | null;
+  candados: string | null;
+  clientes: { nombre: string; ruc_ci: string | null } | null;
+  cdas: {
+    numero_cda: string | null;
+    clientes: { nombre: string; ruc_ci: string | null } | null;
+  } | null;
+};
 
 type Novedad = {
   id: string;
   tipo: "faltante" | "dano" | "sello_roto" | "otro";
   descripcion: string | null;
   foto_url: string | null;
+  mrn: string | null;
   resuelto: boolean;
   creado_en: string;
   ordenes_dap: OrdenRef | null;
@@ -49,6 +65,7 @@ export default function NovedadesPage() {
   const [ordenId, setOrdenId] = useState("");
   const [tipo, setTipo] = useState<Novedad["tipo"]>("dano");
   const [descripcion, setDescripcion] = useState("");
+  const [mrn, setMrn] = useState("");
   const [archivos, setArchivos] = useState<File[]>([]);
   const [fotosExistentes, setFotosExistentes] = useState<{ id: string; foto_url: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -99,7 +116,9 @@ export default function NovedadesPage() {
     const [{ data: novData, error: novError }, { data: ordenData }] = await Promise.all([
       supabase
         .from("novedades")
-        .select("*, ordenes_dap(id, numero_dap, cdas(clientes(nombre)))")
+        .select(
+          "*, ordenes_dap(id, numero_dap, regimen, tipo_carga_regimen, tipo_carga, cantidad_actual, nombre_transportista, placa_vehiculo, candados, clientes(nombre, ruc_ci), cdas(numero_cda, clientes(nombre, ruc_ci)))"
+        )
         .order("creado_en", { ascending: false }),
       supabase.from("ordenes_dap").select("id, numero_dap, cdas(clientes(nombre))").order("numero_dap"),
     ]);
@@ -127,6 +146,7 @@ export default function NovedadesPage() {
     setOrdenId("");
     setTipo("dano");
     setDescripcion("");
+    setMrn("");
     setArchivos([]);
     setFotosExistentes([]);
     setErrorMsg(null);
@@ -138,6 +158,7 @@ export default function NovedadesPage() {
     setOrdenId(n.ordenes_dap?.id ?? "");
     setTipo(n.tipo);
     setDescripcion(n.descripcion ?? "");
+    setMrn(n.mrn ?? "");
     setArchivos([]);
     setErrorMsg(null);
 
@@ -190,6 +211,7 @@ export default function NovedadesPage() {
       orden_dap_id: ordenId,
       tipo,
       descripcion: descripcion.trim() || null,
+      mrn: mrn.trim() || null,
       foto_url: primeraFoto,
     };
 
@@ -467,6 +489,15 @@ export default function NovedadesPage() {
                 />
               </div>
               <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">MRN (opcional)</label>
+                <input
+                  value={mrn}
+                  onChange={(e) => setMrn(e.target.value)}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                  placeholder="Déjalo vacío si no lo tienes"
+                />
+              </div>
+              <div>
                 <label className="text-[11.5px] text-text-faint block mb-1">
                   Fotos (opcional, puedes subir varias)
                 </label>
@@ -532,45 +563,80 @@ export default function NovedadesPage() {
         <div className="print-area hidden print:block text-black bg-white p-10">
           <div className="max-w-[640px] mx-auto">
             <div className="flex items-center justify-center gap-3 mb-1">
-              <span className="font-bold text-[18px]">ETYECU</span>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logo-etyecu.png" alt="ETYECU" className="h-12" />
               <span className="text-[14px] font-bold">DEPÓSITO ADUANERO PÚBLICO</span>
             </div>
             <p className="text-[15px] font-bold text-center mb-5">REPORTE DE NOVEDAD</p>
 
-            <table className="w-full text-[10.5px] border border-black/50 border-collapse mb-5">
-              <tbody>
-                <tr>
-                  <td className="border border-black/40 p-1.5 font-bold w-[150px]">
-                    Orden DAP:
-                  </td>
-                  <td className="border border-black/40 p-1.5">
-                    {novedadImprimir.ordenes_dap?.numero_dap ?? "—"}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">Cliente:</td>
-                  <td className="border border-black/40 p-1.5">
-                    {novedadImprimir.ordenes_dap?.cdas?.clientes?.nombre ?? "—"}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">Tipo de novedad:</td>
-                  <td className="border border-black/40 p-1.5">{tipoLabel[novedadImprimir.tipo]}</td>
-                </tr>
-                <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">Estado:</td>
-                  <td className="border border-black/40 p-1.5">
-                    {novedadImprimir.resuelto ? "Resuelto" : "Pendiente"}
-                  </td>
-                </tr>
-                <tr>
-                  <td className="border border-black/40 p-1.5 font-bold">Fecha de registro:</td>
-                  <td className="border border-black/40 p-1.5">
-                    {new Date(novedadImprimir.creado_en).toLocaleDateString("es-EC")}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+            {(() => {
+              const orden = novedadImprimir.ordenes_dap;
+              const cliente = orden?.clientes ?? orden?.cdas?.clientes ?? null;
+              const regimenLabel =
+                orden?.tipo_carga_regimen === "carga_general"
+                  ? "Carga General"
+                  : orden?.tipo_carga_regimen === "70" || orden?.regimen === "70"
+                  ? "Régimen 70"
+                  : orden?.tipo_carga_regimen === "10" || orden?.regimen === "10"
+                  ? "Régimen 10"
+                  : "—";
+              return (
+                <table className="w-full text-[10.5px] border border-black/50 border-collapse mb-5">
+                  <tbody>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold w-[120px]">Cliente:</td>
+                      <td className="border border-black/40 p-1.5 w-[220px]">{cliente?.nombre ?? "—"}</td>
+                      <td className="border border-black/40 p-1.5 font-bold w-[120px]">RUC:</td>
+                      <td className="border border-black/40 p-1.5">{cliente?.ruc_ci ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">N° de CDA:</td>
+                      <td className="border border-black/40 p-1.5">{orden?.cdas?.numero_cda ?? "—"}</td>
+                      <td className="border border-black/40 p-1.5 font-bold">MRN:</td>
+                      <td className="border border-black/40 p-1.5">{novedadImprimir.mrn ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Orden DAP / Régimen:</td>
+                      <td className="border border-black/40 p-1.5">
+                        {orden?.numero_dap ?? "—"} · {regimenLabel}
+                      </td>
+                      <td className="border border-black/40 p-1.5 font-bold">Carga llega:</td>
+                      <td className="border border-black/40 p-1.5">{orden?.tipo_carga ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Transportista:</td>
+                      <td className="border border-black/40 p-1.5">
+                        {orden?.nombre_transportista ?? "—"}
+                      </td>
+                      <td className="border border-black/40 p-1.5 font-bold">Placa:</td>
+                      <td className="border border-black/40 p-1.5">{orden?.placa_vehiculo ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Cantidad:</td>
+                      <td className="border border-black/40 p-1.5">
+                        {orden?.cantidad_actual != null ? orden.cantidad_actual : "—"}
+                      </td>
+                      <td className="border border-black/40 p-1.5 font-bold">Candado satelital #:</td>
+                      <td className="border border-black/40 p-1.5">{orden?.candados ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Tipo de novedad:</td>
+                      <td className="border border-black/40 p-1.5">{tipoLabel[novedadImprimir.tipo]}</td>
+                      <td className="border border-black/40 p-1.5 font-bold">Estado:</td>
+                      <td className="border border-black/40 p-1.5">
+                        {novedadImprimir.resuelto ? "Resuelto" : "Pendiente"}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Fecha de registro:</td>
+                      <td className="border border-black/40 p-1.5" colSpan={3}>
+                        {new Date(novedadImprimir.creado_en).toLocaleDateString("es-EC")}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              );
+            })()}
 
             <p className="text-[10.5px] font-bold mb-1">Descripción:</p>
             <div className="border border-black/40 p-2 text-[10.5px] min-h-[60px] mb-4">
