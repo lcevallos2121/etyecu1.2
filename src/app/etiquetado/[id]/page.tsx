@@ -58,6 +58,16 @@ type Mesa = {
   activa: boolean;
 };
 
+type Variante = {
+  id: string;
+  item_id: string;
+  color: string | null;
+  composicion: string | null;
+  cajas: string | null;
+  cantidad: number;
+  tallas_detalle: Record<string, number> | null;
+};
+
 // Suma lo que está dentro de paréntesis: "164(24) 165(24)" -> 48
 // También maneja rangos de calzado "179 A 182(96)" -> 96
 function sumarCajas(texto: string | null | undefined): number {
@@ -80,6 +90,8 @@ export default function DetalleEtiquetadoPage() {
 
   const [orden, setOrden] = useState<EtqOrden | null>(null);
   const [items, setItems] = useState<Item[]>([]);
+  const [variantes, setVariantes] = useState<Variante[]>([]);
+  const [itemExpandidoId, setItemExpandidoId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -113,6 +125,15 @@ export default function DetalleEtiquetadoPage() {
   const [itemAgregarTallas, setItemAgregarTallas] = useState<Item | null>(null);
   const [cajaNuevaTallas, setCajaNuevaTallas] = useState("");
   const [tallasNuevas, setTallasNuevas] = useState<Record<string, number>>({});
+
+  // Modal "+ Variante": agrega una variante de color/composición distinta
+  // del mismo código, sin descuadrar el total contra factura.
+  const [showAgregarVariante, setShowAgregarVariante] = useState(false);
+  const [itemVarianteId, setItemVarianteId] = useState<string | null>(null);
+  const [vColor, setVColor] = useState("");
+  const [vComposicion, setVComposicion] = useState("");
+  const [vCajas, setVCajas] = useState("");
+  const [vTallas, setVTallas] = useState<Record<string, number>>({});
 
   // Configuración de tallas de la orden
   const [showTallasConfig, setShowTallasConfig] = useState(false);
@@ -168,7 +189,21 @@ export default function DetalleEtiquetadoPage() {
     setTallasOrden(ordTyped?.tallas ?? []);
     const { data: it } = await supabase
       .from("etq_items").select("*").eq("orden_id", id).order("orden_fila");
-    setItems((it as Item[]) ?? []);
+    const itemsData = (it as Item[]) ?? [];
+    setItems(itemsData);
+
+    // Variantes de todos los items de esta orden (para el desglose por color)
+    const idsItems = itemsData.map((i) => i.id);
+    if (idsItems.length > 0) {
+      const { data: vars } = await supabase
+        .from("etq_variantes")
+        .select("*")
+        .in("item_id", idsItems)
+        .order("creado_en");
+      setVariantes((vars as Variante[]) ?? []);
+    } else {
+      setVariantes([]);
+    }
 
     const { data: ms } = await supabase
       .from("etq_mesas").select("*").eq("orden_id", id).order("nombre");
@@ -622,6 +657,72 @@ export default function DetalleEtiquetadoPage() {
     cargar();
   }
 
+  function abrirAgregarVariante(it: Item) {
+    setItemVarianteId(it.id);
+    setVColor("");
+    setVComposicion("");
+    setVCajas("");
+    setVTallas({});
+    setErrorMsg(null);
+    setShowAgregarVariante(true);
+  }
+
+  async function guardarAgregarVariante() {
+    if (!itemVarianteId) return;
+    const cantidadVariante = sumarCajas(vCajas);
+    if (cantidadVariante === 0) {
+      setErrorMsg("Ingresa la caja de esta variante con su cantidad, ej. 245(12).");
+      return;
+    }
+
+    const item = items.find((i) => i.id === itemVarianteId);
+    if (!item) return;
+
+    // 1. Guardar la variante con su propia caja, composición, color y tallas
+    const { error: errVar } = await supabase.from("etq_variantes").insert({
+      item_id: itemVarianteId,
+      color: vColor.trim() || null,
+      composicion: vComposicion.trim() || null,
+      cajas: vCajas.trim(),
+      cantidad: cantidadVariante,
+      tallas_detalle: vTallas,
+    });
+    if (errVar) {
+      setErrorMsg(errVar.message);
+      return;
+    }
+
+    // 2. Sumar esa cantidad al TOTAL del código (lo que se cuadra contra factura)
+    const nuevasCajas = ((item.cajas ?? "") + " " + vCajas.trim()).trim();
+    const { error: errItem } = await supabase
+      .from("etq_items")
+      .update({
+        cajas: nuevasCajas,
+        cantidad_contada: sumarCajas(nuevasCajas),
+        actualizado_en: new Date().toISOString(),
+      })
+      .eq("id", itemVarianteId);
+    if (errItem) {
+      setErrorMsg(errItem.message);
+      return;
+    }
+
+    // Registrar el movimiento (mesa + hora) para la medición de producción
+    await supabase.from("etq_movimientos").insert({
+      orden_id: id,
+      item_id: itemVarianteId,
+      mesa_id: mesaActivaId || null,
+      codigo: item.codigo,
+      caja: vCajas.trim(),
+      cantidad: cantidadVariante,
+    });
+
+    setShowAgregarVariante(false);
+    setToast(`Variante agregada a ${item.codigo}.`);
+    setItemExpandidoId(itemVarianteId);
+    cargar();
+  }
+
   // Vista previa de la suma mientras se escribe
   const previewSuma = sumarCajas(fCajas);
 
@@ -781,7 +882,7 @@ export default function DetalleEtiquetadoPage() {
                           return (
                             <div
                               key={s.id}
-                              className="w-full flex items-center justify-between px-3 py-2 text-[12px] hover:bg-white/[0.04] border-b border-border last:border-b-0"
+                              className="w-full flex items-center justify-between gap-2 px-3 py-2 text-[12px] hover:bg-white/[0.04] border-b border-border last:border-b-0 flex-wrap"
                             >
                               <button
                                 onClick={() => elegirSugerencia(s)}
@@ -793,6 +894,17 @@ export default function DetalleEtiquetadoPage() {
                               <span className="flex items-center gap-2 shrink-0">
                                 <span className="text-text-faint">{s.cantidad_contada}/{s.cantidad_factura}</span>
                                 <span className={`text-[9.5px] px-1.5 py-0.5 rounded-full ${est.clase}`}>{est.texto}</span>
+                                <button
+                                  onClick={() => {
+                                    setSugerencias([]);
+                                    setQCodigo("");
+                                    abrirAgregarVariante(s);
+                                  }}
+                                  className="text-[10.5px] px-2 py-0.5 rounded-md bg-amber/[0.15] text-[#fbbf24] hover:bg-amber/[0.25]"
+                                  title="Agregar variante de color/composición"
+                                >
+                                  + Variante
+                                </button>
                                 <button
                                   onClick={() => {
                                     setSugerencias([]);
@@ -870,27 +982,65 @@ export default function DetalleEtiquetadoPage() {
                 </div>
               ) : (
                 <div className="card overflow-hidden">
-                  <div className="grid grid-cols-[50px_110px_1fr_130px_80px_80px_120px_70px] gap-2 px-4 py-2.5 text-[10.5px] uppercase tracking-wide text-text-faint border-b border-border">
+                  <div className="grid grid-cols-[45px_105px_1fr_120px_75px_75px_105px_260px] gap-2 px-4 py-2.5 text-[10.5px] uppercase tracking-wide text-text-faint border-b border-border">
                     <span>Palet</span><span>Código</span><span>Cajas (cantidad)</span><span>Descripción</span>
                     <span className="text-right">Factura</span><span className="text-right">Contado</span>
                     <span className="text-center">Estado</span><span className="text-right">Acción</span>
                   </div>
                   {items.map((it) => {
                     const est = estadoItem(it);
+                    const variantesDelItem = variantes.filter((v) => v.item_id === it.id);
+                    const expandido = itemExpandidoId === it.id;
                     return (
-                      <div key={it.id} className={`grid grid-cols-[50px_110px_1fr_130px_80px_80px_120px_70px] gap-2 px-4 py-2.5 items-center border-b border-border last:border-b-0 text-[12px] transition-colors ${flashId === it.id ? "bg-green/[0.12]" : ""}`}>
-                        <span className="text-text-dim">{it.palet ?? "—"}</span>
-                        <span className="font-medium">{it.codigo ?? "—"}</span>
-                        <span className="text-text-dim truncate" title={it.cajas ?? ""}>{it.cajas ?? "—"}</span>
-                        <span className="text-text-dim truncate">{it.descripcion ?? "—"}</span>
-                        <span className="text-right">{it.cantidad_factura}</span>
-                        <span className="text-right font-medium">{it.cantidad_contada}</span>
-                        <span className="flex justify-center"><span className={`text-[10px] px-2 py-0.5 rounded-full ${est.clase}`}>{est.texto}</span></span>
-                        <span className="flex items-center justify-end gap-1.5">
-                          <button onClick={() => abrirAgregarTallas(it)} className="text-[11px] px-2 py-1 rounded-md bg-green/[0.15] text-[#6ee7b7] hover:bg-green/[0.25]">+ Tallas</button>
-                          <button onClick={() => abrirEditar(it)} className="text-[11px] px-2 py-1 rounded-md bg-accent/[0.15] text-[#c4b8ff] hover:bg-accent/[0.25]">Editar</button>
-                          <button onClick={() => setAEliminar(it.id)} className="text-text-faint hover:text-red-300"><Trash2 size={13} /></button>
-                        </span>
+                      <div key={it.id}>
+                        <div className={`grid grid-cols-[45px_105px_1fr_120px_75px_75px_105px_260px] gap-2 px-4 py-2.5 items-center border-b border-border last:border-b-0 text-[12px] transition-colors ${flashId === it.id ? "bg-green/[0.12]" : ""}`}>
+                          <span className="text-text-dim">{it.palet ?? "—"}</span>
+                          <button
+                            onClick={() => setItemExpandidoId(expandido ? null : it.id)}
+                            className="font-medium text-left flex items-center gap-1 hover:text-[#c4b8ff]"
+                            title={variantesDelItem.length > 0 ? "Ver variantes" : "Sin variantes"}
+                          >
+                            {it.codigo ?? "—"}
+                            {variantesDelItem.length > 0 && (
+                              <span className="text-[9.5px] px-1.5 rounded-full bg-accent/[0.18] text-[#c4b8ff]">
+                                {variantesDelItem.length}
+                              </span>
+                            )}
+                          </button>
+                          <span className="text-text-dim truncate" title={it.cajas ?? ""}>{it.cajas ?? "—"}</span>
+                          <span className="text-text-dim truncate">{it.descripcion ?? "—"}</span>
+                          <span className="text-right">{it.cantidad_factura}</span>
+                          <span className="text-right font-medium">{it.cantidad_contada}</span>
+                          <span className="flex justify-center"><span className={`text-[10px] px-2 py-0.5 rounded-full ${est.clase}`}>{est.texto}</span></span>
+                          <span className="flex items-center justify-end gap-1 flex-wrap">
+                            <button onClick={() => abrirAgregarVariante(it)} className="text-[11px] px-2 py-1 rounded-md bg-amber/[0.15] text-[#fbbf24] hover:bg-amber/[0.25] whitespace-nowrap">+ Variante</button>
+                            <button onClick={() => abrirAgregarTallas(it)} className="text-[11px] px-2 py-1 rounded-md bg-green/[0.15] text-[#6ee7b7] hover:bg-green/[0.25] whitespace-nowrap">+ Tallas</button>
+                            <button onClick={() => abrirEditar(it)} className="text-[11px] px-2 py-1 rounded-md bg-accent/[0.15] text-[#c4b8ff] hover:bg-accent/[0.25] whitespace-nowrap">Editar</button>
+                            <button onClick={() => setAEliminar(it.id)} className="text-text-faint hover:text-red-300 shrink-0 pl-1"><Trash2 size={13} /></button>
+                          </span>
+                        </div>
+
+                        {/* Fila expandida: variantes de color/composición de este código */}
+                        {expandido && variantesDelItem.length > 0 && (
+                          <div className="px-4 py-2 bg-white/[0.02] border-b border-border last:border-b-0">
+                            <p className="text-[10px] uppercase tracking-wide text-text-faint mb-1.5 pl-1">
+                              Variantes de {it.codigo}
+                            </p>
+                            <div className="flex flex-col gap-1">
+                              {variantesDelItem.map((v) => (
+                                <div
+                                  key={v.id}
+                                  className="grid grid-cols-[100px_1fr_1fr_70px] gap-2 px-2 py-1.5 rounded-md bg-white/[0.03] text-[11.5px] items-start"
+                                >
+                                  <span className="font-medium">{v.color ?? "—"}</span>
+                                  <span className="text-text-dim">{v.composicion ?? "—"}</span>
+                                  <span className="text-text-dim font-mono text-[10.5px]">{v.cajas ?? "—"}</span>
+                                  <span className="text-right font-medium">{v.cantidad}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1124,6 +1274,89 @@ export default function DetalleEtiquetadoPage() {
           </div>
         </div>
       )}
+
+      {/* Modal: agregar variante (color/composición distinta del mismo código) */}
+      {showAgregarVariante && itemVarianteId && (() => {
+        const item = items.find((i) => i.id === itemVarianteId);
+        const sumaTallasVariante = sumarTallas(vTallas);
+        const sumaCajaVariante = sumarCajas(vCajas);
+        return (
+          <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
+            <div className="card w-full max-w-[520px] my-6 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-[16px] font-semibold">Agregar variante</h2>
+                <button onClick={() => setShowAgregarVariante(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+              </div>
+              <p className="text-[12.5px] text-text-dim mb-3">
+                Código <span className="font-medium text-text">{item?.codigo}</span> — usa esto cuando el
+                mismo código viene en otro color o composición. Se suma al total contra factura, pero
+                queda registrado por separado para el informe.
+              </p>
+
+              {errorMsg && <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">{errorMsg}</div>}
+
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="text-[11.5px] text-text-faint block mb-1">Color</label>
+                  <input value={vColor} onChange={(e) => setVColor(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" />
+                </div>
+                <div>
+                  <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
+                  <input value={vComposicion} onChange={(e) => setVComposicion(e.target.value)} placeholder="Ej. 95% Algodón, 5% Elastano" className="w-full card px-3 py-2 text-[13px] outline-none" />
+                </div>
+              </div>
+
+              <div className="mb-3">
+                <label className="text-[11.5px] text-text-faint block mb-1">Caja(s) de esta variante *</label>
+                <input value={vCajas} onChange={(e) => setVCajas(e.target.value)} placeholder="245(12)" className="w-full card px-3 py-2 text-[13px] outline-none font-mono" />
+                <p className="text-[11px] text-[#6ee7b7] mt-1">Suma automática: {sumaCajaVariante} unidades</p>
+              </div>
+
+              <label className="text-[11.5px] text-text-faint block mb-1">Tallas de esta variante (opcional)</label>
+              {tallasOrden.length === 0 ? (
+                <p className="text-[11px] text-amber mb-2">Esta orden no tiene tallas configuradas todavía.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {tallasOrden.map((t) => (
+                    <div key={t} className="flex flex-col items-center">
+                      <span className="text-[10px] text-text-faint mb-0.5">{t}</span>
+                      <input
+                        value={vTallas[t] ?? ""}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setVTallas((prev) => {
+                            const nuevo = { ...prev };
+                            if (v === "" || Number(v) === 0) delete nuevo[t];
+                            else nuevo[t] = Number(v);
+                            return nuevo;
+                          });
+                        }}
+                        type="number"
+                        className="w-[52px] card px-1.5 py-1.5 text-[12px] outline-none text-center"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {sumaTallasVariante > 0 && sumaCajaVariante > 0 && (
+                sumaTallasVariante === sumaCajaVariante ? (
+                  <p className="text-[11px] text-[#6ee7b7] mb-3">✓ Las tallas cuadran con la caja ({sumaTallasVariante}).</p>
+                ) : (
+                  <p className="text-[11px] text-[#fbbf24] mb-3">
+                    ⚠ Las tallas suman {sumaTallasVariante} pero la caja trae {sumaCajaVariante}. Revisa (puedes guardar igual).
+                  </p>
+                )
+              )}
+
+              <div className="flex gap-2 justify-end mt-2">
+                <button onClick={() => setShowAgregarVariante(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cancelar</button>
+                <button onClick={guardarAgregarVariante} className="btn-primary text-[13px] font-semibold px-4 py-2 rounded-lg">Agregar variante</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Modal: agregar tallas de una caja nueva (suma al total del código) */}
       {showAgregarTallas && itemAgregarTallas && (
