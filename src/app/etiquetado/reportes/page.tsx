@@ -39,6 +39,8 @@ type ItemEtq = {
   cantidad_contada: number;
   cantidad_factura: number;
   tallas_detalle: Record<string, number> | null;
+  composicion: string | null;
+  pais: string | null;
 };
 
 type Movimiento = {
@@ -88,7 +90,9 @@ export default function ReportesEtiquetadoPage() {
         .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en"),
       supabase
         .from("etq_items")
-        .select("orden_id, codigo, descripcion, cantidad_contada, cantidad_factura, tallas_detalle"),
+        .select(
+          "orden_id, codigo, descripcion, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais"
+        ),
       supabase.from("etq_movimientos").select("orden_id, mesa_id, cantidad, creado_en"),
       supabase.from("etq_mesas").select("id, orden_id, nombre"),
     ]);
@@ -540,10 +544,12 @@ export default function ReportesEtiquetadoPage() {
                       </div>
 
                       <div className="card overflow-hidden">
-                        <div className="grid grid-cols-[110px_1fr_150px_90px_90px_90px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                        <div className="grid grid-cols-[110px_1fr_130px_150px_100px_90px_90px_90px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
                           <span>Código</span>
                           <span>Descripción</span>
                           <span>Tallas</span>
+                          <span>Composición</span>
+                          <span>País</span>
                           <span className="text-right">Factura</span>
                           <span className="text-right">Contado</span>
                           <span className="text-right">Diferencia</span>
@@ -558,13 +564,15 @@ export default function ReportesEtiquetadoPage() {
                             return (
                               <div
                                 key={i}
-                                className="grid grid-cols-[110px_1fr_150px_90px_90px_90px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px]"
+                                className="grid grid-cols-[110px_1fr_130px_150px_100px_90px_90px_90px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px]"
                               >
                                 <span className="font-medium">{it.codigo ?? "—"}</span>
                                 <span className="truncate text-text-dim">{it.descripcion ?? "—"}</span>
                                 <span className="truncate text-text-dim text-[11px] font-mono">
                                   {formatoTallas(it.tallas_detalle)}
                                 </span>
+                                <span className="truncate text-text-dim">{it.composicion ?? "—"}</span>
+                                <span className="truncate text-text-dim">{it.pais ?? "—"}</span>
                                 <span className="text-right">{it.cantidad_factura}</span>
                                 <span className="text-right">{it.cantidad_contada}</span>
                                 <span
