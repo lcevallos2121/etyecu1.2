@@ -5,7 +5,8 @@ import Link from "next/link";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import { Printer } from "lucide-react";
+import { Printer, X } from "lucide-react";
+import { ConfirmModal, Toast } from "@/components/Feedback";
 import {
   BarChart,
   Bar,
@@ -30,6 +31,7 @@ type OrdenEtq = {
   estado: string;
   fecha: string;
   creado_en: string;
+  tallas: string[] | null;
 };
 
 type ItemEtq = {
@@ -57,6 +59,7 @@ type VarianteEtq = {
 };
 
 type TallasPorCaja = {
+  id: string;
   item_id: string;
   variante_id: string | null;
   caja: string;
@@ -84,6 +87,7 @@ const tabs = [
   { id: "ordenes", label: "Órdenes" },
   { id: "produccion", label: "Producción por mesa" },
   { id: "inventario", label: "Inventario" },
+  { id: "inconsistencias", label: "Inconsistencias" },
 ] as const;
 
 export default function ReportesEtiquetadoPage() {
@@ -98,6 +102,7 @@ export default function ReportesEtiquetadoPage() {
   const [mesas, setMesas] = useState<Mesa[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const [fechaDesde, setFechaDesde] = useState("");
   const [fechaHasta, setFechaHasta] = useState("");
@@ -105,6 +110,19 @@ export default function ReportesEtiquetadoPage() {
   const [ordenSeleccionadaId, setOrdenSeleccionadaId] = useState<string>("");
   const [paletSeleccionado, setPaletSeleccionado] = useState<string>("todos");
   const [cajaFiltro, setCajaFiltro] = useState("");
+
+  // Módulo de Inconsistencias
+  const [tipoInconsistencia, setTipoInconsistencia] = useState<
+    "todas" | "completo" | "faltante" | "sobrante"
+  >(
+    "todas"
+  );
+  const [busquedaInconsistencias, setBusquedaInconsistencias] = useState("");
+  const [itemRevisarId, setItemRevisarId] = useState<string | null>(null);
+  const [cajaEditId, setCajaEditId] = useState<string | null>(null);
+  const [cajaEditTexto, setCajaEditTexto] = useState("");
+  const [cajaEditTallas, setCajaEditTallas] = useState<Record<string, number>>({});
+  const [cajaAEliminarId, setCajaAEliminarId] = useState<string | null>(null);
   const [busquedaInventario, setBusquedaInventario] = useState("");
   const [tipoBusqueda, setTipoBusqueda] = useState<
     "todos" | "codigo" | "descripcion" | "tallas" | "composicion" | "pais"
@@ -115,7 +133,7 @@ export default function ReportesEtiquetadoPage() {
     const [ordRes, itemsRes, movRes, mesasRes, varRes, tallasCajaRes] = await Promise.all([
       supabase
         .from("etq_ordenes")
-        .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en"),
+        .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en, tallas"),
       supabase
         .from("etq_items")
         .select(
@@ -126,7 +144,7 @@ export default function ReportesEtiquetadoPage() {
       supabase.from("etq_variantes").select("item_id, color, composicion, cajas, cantidad, tallas_detalle"),
       supabase
         .from("etq_tallas_por_caja")
-        .select("item_id, variante_id, caja, numero_caja, tallas_detalle"),
+        .select("id, item_id, variante_id, caja, numero_caja, tallas_detalle"),
     ]);
 
     if (ordRes.error) {
@@ -468,6 +486,129 @@ export default function ReportesEtiquetadoPage() {
     }),
     { factura: 0, contado: 0 }
   );
+
+  // ---- Módulo de Inconsistencias ----
+
+  // Códigos de la orden seleccionada con diferencia contra factura
+  // Todos los códigos con factura de la orden (completos e inconsistentes),
+  // para que el filtro pueda mostrar cualquiera de los tres estados.
+  const inconsistencias = useMemo(() => {
+    return itemsOrdenSeleccionada
+      .map((it) => ({ ...it, diferencia: it.cantidad_contada - it.cantidad_factura }))
+      .filter((it) => it.cantidad_factura > 0);
+  }, [itemsOrdenSeleccionada]);
+
+  const inconsistenciasFiltradas = useMemo(() => {
+    const q = busquedaInconsistencias.trim().toLowerCase();
+    return inconsistencias.filter((it) => {
+      if (tipoInconsistencia === "completo" && it.diferencia !== 0) return false;
+      if (tipoInconsistencia === "faltante" && it.diferencia >= 0) return false;
+      if (tipoInconsistencia === "sobrante" && it.diferencia <= 0) return false;
+      if (!q) return true;
+      const codigo = (it.codigo ?? "").toLowerCase();
+      const descripcion = (it.descripcion ?? "").toLowerCase();
+      const marca = (it.marca ?? "").toLowerCase();
+      return codigo.includes(q) || descripcion.includes(q) || marca.includes(q);
+    });
+  }, [inconsistencias, tipoInconsistencia, busquedaInconsistencias]);
+
+  const itemEnRevision = items.find((it) => it.id === itemRevisarId) ?? null;
+  const tallasOrdenDeLaOrdenSeleccionada =
+    ordenes.find((o) => o.id === ordenSeleccionadaId)?.tallas ?? [];
+
+  // Todas las cajas registradas de ese código (del código simple Y de sus variantes)
+  const cajasDelItemEnRevision: TallasPorCaja[] = useMemo(() => {
+    if (!itemRevisarId) return [];
+    return tallasPorCajaTodas.filter((t) => t.item_id === itemRevisarId);
+  }, [itemRevisarId, tallasPorCajaTodas]);
+
+  async function abrirRevisarCajas(itemId: string) {
+    setItemRevisarId(itemId);
+    setCajaEditId(null);
+  }
+
+  function abrirEditarCaja(reg: TallasPorCaja) {
+    setCajaEditId(reg.id);
+    setCajaEditTexto(reg.caja);
+    setCajaEditTallas(reg.tallas_detalle ?? {});
+  }
+
+  // Recalcula y guarda el total del código (o variante) a partir de TODAS
+  // sus cajas registradas, después de editar o eliminar una de ellas.
+  async function recalcularTotalDesdeRegistros(itemId: string, varianteId: string | null) {
+    const query = supabase
+      .from("etq_tallas_por_caja")
+      .select("caja, tallas_detalle")
+      .eq("item_id", itemId);
+    const { data: registros } = varianteId
+      ? await query.eq("variante_id", varianteId)
+      : await query.is("variante_id", null);
+
+    const regs = (registros as { caja: string; tallas_detalle: Record<string, number> }[]) ?? [];
+    const cajasTexto = regs.map((r) => r.caja).join(" ").trim();
+    const tallasCombinadas: Record<string, number> = {};
+    regs.forEach((r) => {
+      Object.entries(r.tallas_detalle ?? {}).forEach(([talla, cant]) => {
+        tallasCombinadas[talla] = (tallasCombinadas[talla] ?? 0) + Number(cant || 0);
+      });
+    });
+    const nuevaCantidad = sumarCajasTexto(cajasTexto);
+
+    if (varianteId) {
+      await supabase
+        .from("etq_variantes")
+        .update({ cajas: cajasTexto || null, cantidad: nuevaCantidad, tallas_detalle: tallasCombinadas })
+        .eq("id", varianteId);
+    } else {
+      await supabase
+        .from("etq_items")
+        .update({
+          cajas: cajasTexto || null,
+          cantidad_contada: nuevaCantidad,
+          tallas_detalle: tallasCombinadas,
+        })
+        .eq("id", itemId);
+    }
+  }
+
+  function sumarCajasTexto(texto: string): number {
+    if (!texto) return 0;
+    const nums = texto.match(/\((\d+)\)/g);
+    if (!nums) return 0;
+    return nums.reduce((a, n) => a + Number(n.replace(/[()]/g, "")), 0);
+  }
+
+  async function guardarEdicionCaja() {
+    if (!cajaEditId || !itemRevisarId) return;
+    const reg = cajasDelItemEnRevision.find((r) => r.id === cajaEditId);
+
+    const { error } = await supabase
+      .from("etq_tallas_por_caja")
+      .update({ caja: cajaEditTexto.trim(), tallas_detalle: cajaEditTallas })
+      .eq("id", cajaEditId);
+    if (error) {
+      setErrorMsg(error.message);
+      return;
+    }
+
+    await recalcularTotalDesdeRegistros(itemRevisarId, reg?.variante_id ?? null);
+    setCajaEditId(null);
+    setToast("Caja actualizada.");
+    cargar();
+  }
+
+  async function confirmarEliminarCaja() {
+    if (!cajaAEliminarId || !itemRevisarId) return;
+    const reg = cajasDelItemEnRevision.find(
+      (r) => r.id === cajaAEliminarId
+    );
+
+    await supabase.from("etq_tallas_por_caja").delete().eq("id", cajaAEliminarId);
+    await recalcularTotalDesdeRegistros(itemRevisarId, reg?.variante_id ?? null);
+    setCajaAEliminarId(null);
+    setToast("Caja eliminada y total recalculado.");
+    cargar();
+  }
 
   function exportarCSV() {
     const filas = [
@@ -947,10 +1088,278 @@ export default function ReportesEtiquetadoPage() {
                   )}
                 </>
               )}
+
+              {tab === "inconsistencias" && (
+                <>
+                  <div className="card p-3 mb-3">
+                    <label className="text-[11px] text-text-faint block mb-1">Orden</label>
+                    <select
+                      value={ordenSeleccionadaId}
+                      onChange={(e) => {
+                        setOrdenSeleccionadaId(e.target.value);
+                        setItemRevisarId(null);
+                      }}
+                      className="card px-3 py-2 text-[12.5px] outline-none min-w-[280px]"
+                    >
+                      <option value="">Selecciona una orden…</option>
+                      {ordenesFiltradas.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.numero_etq} · {o.cliente_nombre ?? "—"}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {!ordenSeleccionadaId ? (
+                    <div className="card p-8 text-center">
+                      <p className="text-[13px] text-text-faint">
+                        Elige una orden arriba para ver sus inconsistencias.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="card p-3 mb-4 flex items-center gap-2 flex-wrap">
+                        <select
+                          value={tipoInconsistencia}
+                          onChange={(e) =>
+                            setTipoInconsistencia(e.target.value as typeof tipoInconsistencia)
+                          }
+                          className="card px-3 py-2 text-[12.5px] outline-none w-[160px] shrink-0"
+                        >
+                          <option value="todas">Todas</option>
+                          <option value="completo">Solo completos</option>
+                          <option value="faltante">Solo faltantes</option>
+                          <option value="sobrante">Solo sobrantes</option>
+                        </select>
+                        <input
+                          value={busquedaInconsistencias}
+                          onChange={(e) => setBusquedaInconsistencias(e.target.value)}
+                          placeholder="Buscar por código, descripción o marca…"
+                          className="w-full card px-3 py-2 text-[12.5px] outline-none"
+                        />
+                      </div>
+
+                      {inconsistenciasFiltradas.length === 0 ? (
+                        <div className="card p-8 text-center">
+                          <p className="text-[13px] text-text-faint">
+                            {inconsistencias.length === 0
+                              ? "Esta orden aún no tiene códigos con cantidad de factura registrada."
+                              : "Ningún código coincide con el filtro."}
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="card overflow-hidden">
+                          <div className="grid grid-cols-[110px_1fr_100px_80px_80px_80px_120px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                            <span>Código</span>
+                            <span>Descripción</span>
+                            <span>Marca</span>
+                            <span className="text-right">Factura</span>
+                            <span className="text-right">Contado</span>
+                            <span className="text-right">Diferencia</span>
+                            <span className="text-right">Acción</span>
+                          </div>
+                          {inconsistenciasFiltradas.map((it) => (
+                            <div
+                              key={it.id}
+                              className="grid grid-cols-[110px_1fr_100px_80px_80px_80px_120px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px]"
+                            >
+                              <span className="font-medium">{it.codigo ?? "—"}</span>
+                              <span className="text-text-dim truncate">{it.descripcion ?? "—"}</span>
+                              <span className="text-text-dim truncate">{it.marca ?? "—"}</span>
+                              <span className="text-right">{it.cantidad_factura}</span>
+                              <span className="text-right">{it.cantidad_contada}</span>
+                              <span
+                                className={`text-right font-semibold ${
+                                  it.diferencia === 0
+                                    ? "text-[#6ee7b7]"
+                                    : it.diferencia < 0
+                                    ? "text-[#fca5a5]"
+                                    : "text-[#fbbf24]"
+                                }`}
+                              >
+                                {it.diferencia === 0
+                                  ? "Completo"
+                                  : it.diferencia > 0
+                                  ? `+${it.diferencia}`
+                                  : it.diferencia}
+                              </span>
+                              <span className="text-right">
+                                <button
+                                  onClick={() => abrirRevisarCajas(it.id)}
+                                  className="text-[11.5px] text-[#c4b8ff] hover:underline"
+                                >
+                                  Revisar cajas →
+                                </button>
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
             </>
           )}
         </div>
       </main>
+
+      {/* Modal: Revisar cajas de un código con inconsistencia */}
+      {itemRevisarId && itemEnRevision && (
+        <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
+          <div className="card w-full max-w-[680px] my-6 p-6">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h2 className="text-[16px] font-semibold">{itemEnRevision.codigo}</h2>
+                <p className="text-[12px] text-text-dim">{itemEnRevision.descripcion}</p>
+              </div>
+              <button onClick={() => setItemRevisarId(null)} className="text-text-faint hover:text-text">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3 mb-4">
+              <div className="card p-2.5 bg-white/[0.02]">
+                <p className="text-[10px] text-text-faint">Factura</p>
+                <p className="text-[16px] font-semibold">{itemEnRevision.cantidad_factura}</p>
+              </div>
+              <div className="card p-2.5 bg-white/[0.02]">
+                <p className="text-[10px] text-text-faint">Contado (total)</p>
+                <p className="text-[16px] font-semibold">{itemEnRevision.cantidad_contada}</p>
+              </div>
+              <div className="card p-2.5 bg-white/[0.02]">
+                <p className="text-[10px] text-text-faint">Diferencia</p>
+                <p
+                  className={`text-[16px] font-semibold ${
+                    itemEnRevision.cantidad_contada - itemEnRevision.cantidad_factura < 0
+                      ? "text-[#fca5a5]"
+                      : "text-[#fbbf24]"
+                  }`}
+                >
+                  {itemEnRevision.cantidad_contada - itemEnRevision.cantidad_factura > 0 ? "+" : ""}
+                  {itemEnRevision.cantidad_contada - itemEnRevision.cantidad_factura}
+                </p>
+              </div>
+            </div>
+
+            {errorMsg && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">
+                {errorMsg}
+              </div>
+            )}
+
+            <p className="text-[11.5px] font-semibold text-text-dim mb-2">
+              Todas las cajas capturadas de este código ({cajasDelItemEnRevision.length})
+            </p>
+
+            {cajasDelItemEnRevision.length === 0 ? (
+              <p className="text-[12px] text-amber mb-2">
+                Este código no tiene historial de cajas individuales (se capturó antes de que
+                existiera este detalle). Solo se puede editar el total desde el módulo de Inventario.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2 mb-2">
+                {cajasDelItemEnRevision.map((reg) =>
+                  cajaEditId === reg.id ? (
+                    <div key={reg.id} className="card p-3 border-accent-2/40">
+                      <div className="mb-2">
+                        <label className="text-[10.5px] text-text-faint block mb-1">Caja</label>
+                        <input
+                          value={cajaEditTexto}
+                          onChange={(e) => setCajaEditTexto(e.target.value)}
+                          className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none font-mono"
+                        />
+                      </div>
+                      <label className="text-[10.5px] text-text-faint block mb-1">Tallas</label>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {tallasOrdenDeLaOrdenSeleccionada.map((t) => (
+                          <div key={t} className="flex flex-col items-center">
+                            <span className="text-[9.5px] text-text-faint mb-0.5">{t}</span>
+                            <input
+                              value={cajaEditTallas[t] ?? ""}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setCajaEditTallas((prev) => {
+                                  const nuevo = { ...prev };
+                                  if (v === "" || Number(v) === 0) delete nuevo[t];
+                                  else nuevo[t] = Number(v);
+                                  return nuevo;
+                                });
+                              }}
+                              type="number"
+                              className="w-[48px] card px-1 py-1 text-[11.5px] outline-none text-center"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          onClick={() => setCajaEditId(null)}
+                          className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                        >
+                          Cancelar
+                        </button>
+                        <button
+                          onClick={guardarEdicionCaja}
+                          className="btn-primary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                        >
+                          Guardar
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div
+                      key={reg.id}
+                      className="grid grid-cols-[110px_1fr_130px] gap-2 px-3 py-2 rounded-md bg-white/[0.03] items-center text-[12px]"
+                    >
+                      <span className="font-mono">{reg.caja}</span>
+                      <span className="text-text-dim font-mono text-[11.5px]">
+                        {formatoTallas(reg.tallas_detalle)}
+                      </span>
+                      <span className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => abrirEditarCaja(reg)}
+                          className="text-[11px] px-2 py-1 rounded-md bg-accent/[0.15] text-[#c4b8ff] hover:bg-accent/[0.25]"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          onClick={() => setCajaAEliminarId(reg.id)}
+                          className="text-[11px] px-2 py-1 rounded-md bg-red/[0.15] text-[#fca5a5] hover:bg-red/[0.25]"
+                        >
+                          Eliminar
+                        </button>
+                      </span>
+                    </div>
+                  )
+                )}
+              </div>
+            )}
+
+            <p className="text-[10.5px] text-text-faint mt-2">
+              Al editar o eliminar una caja, el total del código se recalcula automáticamente.
+            </p>
+
+            <div className="flex justify-end mt-3">
+              <button
+                onClick={() => setItemRevisarId(null)}
+                className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <ConfirmModal
+        abierto={cajaAEliminarId !== null}
+        titulo="¿Eliminar esta caja?"
+        mensaje="Se eliminará el registro de esta caja y el total del código se recalculará sin ella."
+        onConfirmar={confirmarEliminarCaja}
+        onCancelar={() => setCajaAEliminarId(null)}
+      />
+      <Toast mensaje={toast} onCerrar={() => setToast(null)} />
     </div>
   );
 }
