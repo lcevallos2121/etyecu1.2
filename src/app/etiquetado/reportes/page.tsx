@@ -33,16 +33,27 @@ type OrdenEtq = {
 };
 
 type ItemEtq = {
+  id: string;
   orden_id: string;
   palet: string | null;
   cajas: string | null;
   codigo: string | null;
   descripcion: string | null;
+  marca: string | null;
   cantidad_contada: number;
   cantidad_factura: number;
   tallas_detalle: Record<string, number> | null;
   composicion: string | null;
   pais: string | null;
+};
+
+type VarianteEtq = {
+  item_id: string;
+  color: string | null;
+  composicion: string | null;
+  cajas: string | null;
+  cantidad: number;
+  tallas_detalle: Record<string, number> | null;
 };
 
 type Movimiento = {
@@ -73,6 +84,7 @@ export default function ReportesEtiquetadoPage() {
   const [tab, setTab] = useState<(typeof tabs)[number]["id"]>("resumen");
   const [ordenes, setOrdenes] = useState<OrdenEtq[]>([]);
   const [items, setItems] = useState<ItemEtq[]>([]);
+  const [variantesTodas, setVariantesTodas] = useState<VarianteEtq[]>([]);
   const [movimientos, setMovimientos] = useState<Movimiento[]>([]);
   const [mesas, setMesas] = useState<Mesa[]>([]);
   const [loading, setLoading] = useState(true);
@@ -82,24 +94,27 @@ export default function ReportesEtiquetadoPage() {
   const [fechaHasta, setFechaHasta] = useState("");
   const [filtroOrigen, setFiltroOrigen] = useState<"todos" | "etyecu" | "externo">("todos");
   const [ordenSeleccionadaId, setOrdenSeleccionadaId] = useState<string>("");
+  const [paletSeleccionado, setPaletSeleccionado] = useState<string>("todos");
+  const [cajaFiltro, setCajaFiltro] = useState("");
   const [busquedaInventario, setBusquedaInventario] = useState("");
   const [tipoBusqueda, setTipoBusqueda] = useState<
-    "todos" | "palet" | "codigo" | "descripcion" | "tallas" | "composicion" | "pais"
+    "todos" | "codigo" | "descripcion" | "tallas" | "composicion" | "pais"
   >("todos");
 
   const cargar = useCallback(async () => {
     setLoading(true);
-    const [ordRes, itemsRes, movRes, mesasRes] = await Promise.all([
+    const [ordRes, itemsRes, movRes, mesasRes, varRes] = await Promise.all([
       supabase
         .from("etq_ordenes")
         .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en"),
       supabase
         .from("etq_items")
         .select(
-          "orden_id, palet, cajas, codigo, descripcion, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais"
+          "id, orden_id, palet, cajas, codigo, descripcion, marca, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais"
         ),
       supabase.from("etq_movimientos").select("orden_id, mesa_id, cantidad, creado_en"),
       supabase.from("etq_mesas").select("id, orden_id, nombre"),
+      supabase.from("etq_variantes").select("item_id, color, composicion, cajas, cantidad, tallas_detalle"),
     ]);
 
     if (ordRes.error) {
@@ -116,6 +131,7 @@ export default function ReportesEtiquetadoPage() {
     setItems((itemsRes.data as ItemEtq[]) ?? []);
     setMovimientos((movRes.data as Movimiento[]) ?? []);
     setMesas((mesasRes.data as Mesa[]) ?? []);
+    setVariantesTodas((varRes.data as VarianteEtq[]) ?? []);
     setLoading(false);
   }, [supabase]);
 
@@ -221,38 +237,177 @@ export default function ReportesEtiquetadoPage() {
       .join(" ");
   }
 
+  // Total de etiquetas a imprimir: suma de las cantidades dentro de cada talla
+  function sumarTallasDetalle(detalle: Record<string, number> | null): number {
+    if (!detalle) return 0;
+    return Object.values(detalle).reduce((a, n) => a + Number(n || 0), 0);
+  }
+
+  // ¿El texto de cajas ("164(24) 165(24)" o "179 A 182(96)") contiene ese
+  // número de caja exacto, suelto o dentro de un rango "A"?
+  function textoContieneCaja(cajasTexto: string | null, numeroCaja: string): boolean {
+    if (!cajasTexto || !numeroCaja) return false;
+    const objetivo = Number(numeroCaja);
+    if (Number.isNaN(objetivo)) return false;
+
+    // Rango: "179 A 182(96)" -> caja 179,180,181,182
+    const regexRango = /(\d+)\s*A\s*(\d+)\s*\(/gi;
+    let match;
+    while ((match = regexRango.exec(cajasTexto)) !== null) {
+      const desde = Number(match[1]);
+      const hasta = Number(match[2]);
+      if (objetivo >= desde && objetivo <= hasta) return true;
+    }
+
+    // Números sueltos: "164(24) 165(24)" -> caja 164, 165
+    const regexSuelto = /(\d+)\s*\(/g;
+    while ((match = regexSuelto.exec(cajasTexto)) !== null) {
+      if (Number(match[1]) === objetivo) return true;
+    }
+    return false;
+  }
+
   // Filtro de búsqueda: código, descripción o tallas
+  // Lista de palets disponibles en la orden (para el selector)
+  const paletsDisponibles = useMemo(() => {
+    const set = new Set(
+      itemsOrdenSeleccionada.map((it) => (it.palet ?? "").trim()).filter(Boolean)
+    );
+    return Array.from(set).sort((a, b) => {
+      const na = Number(a), nb = Number(b);
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+      return a.localeCompare(b);
+    });
+  }, [itemsOrdenSeleccionada]);
+
+  // Paso 1: filtrar por el palet elegido
+  const itemsDelPalet = useMemo(() => {
+    if (paletSeleccionado === "todos") return itemsOrdenSeleccionada;
+    return itemsOrdenSeleccionada.filter((it) => (it.palet ?? "").trim() === paletSeleccionado);
+  }, [itemsOrdenSeleccionada, paletSeleccionado]);
+
+  // Paso 2: dentro del palet, filtrar por número de caja exacto (tipo Excel)
+  const itemsDeLaCaja = useMemo(() => {
+    const caja = cajaFiltro.trim();
+    if (!caja) return itemsDelPalet;
+    return itemsDelPalet.filter((it) => textoContieneCaja(it.cajas, caja));
+  }, [itemsDelPalet, cajaFiltro]);
+
+  // Paso 3: búsqueda de texto libre (código, descripción, tallas, etc.)
   const itemsInventarioFiltrados = useMemo(() => {
     const q = busquedaInventario.trim().toLowerCase();
-    if (!q) return itemsOrdenSeleccionada;
-    return itemsOrdenSeleccionada.filter((it) => {
-      const palet = (it.palet ?? "").toLowerCase();
+    if (!q) return itemsDeLaCaja;
+    return itemsDeLaCaja.filter((it) => {
       const codigo = (it.codigo ?? "").toLowerCase();
+      const marca = (it.marca ?? "").toLowerCase();
       const descripcion = (it.descripcion ?? "").toLowerCase();
       const tallas = formatoTallas(it.tallas_detalle).toLowerCase();
       const composicion = (it.composicion ?? "").toLowerCase();
       const pais = (it.pais ?? "").toLowerCase();
 
-      // Palet: coincidencia EXACTA (si no, "1" traería también "11", "12"...)
-      if (tipoBusqueda === "palet") return palet === q;
       if (tipoBusqueda === "codigo") return codigo.includes(q);
       if (tipoBusqueda === "descripcion") return descripcion.includes(q);
       if (tipoBusqueda === "tallas") return tallas.includes(q);
       if (tipoBusqueda === "composicion") return composicion.includes(q);
       if (tipoBusqueda === "pais") return pais.includes(q);
 
-      // "todos los campos": palet sigue siendo exacto para no traer resultados
-      // mezclados (1 no debe traer 11), el resto por coincidencia parcial
       return (
-        palet === q ||
         codigo.includes(q) ||
+        marca.includes(q) ||
         descripcion.includes(q) ||
         tallas.includes(q) ||
         composicion.includes(q) ||
         pais.includes(q)
       );
     });
-  }, [itemsOrdenSeleccionada, busquedaInventario, tipoBusqueda]);
+  }, [itemsDeLaCaja, busquedaInventario, tipoBusqueda]);
+
+  // Extrae SOLO la caja buscada del texto completo: "164(24) 165(24)" + "165"
+  // -> "165(24)". Si no hay filtro de caja activo, muestra el texto completo.
+  function textoCajaFiltrada(cajasTexto: string | null): string {
+    if (!cajasTexto) return "—";
+    const caja = cajaFiltro.trim();
+    if (!caja) return cajasTexto;
+    const objetivo = Number(caja);
+    if (Number.isNaN(objetivo)) return cajasTexto;
+
+    // Si viene de un rango "179 A 182(96)", se muestra el rango completo
+    // (no se puede aislar solo un número dentro del rango).
+    const regexRango = /(\d+)\s*A\s*(\d+)\s*\((\d+)\)/gi;
+    let match;
+    while ((match = regexRango.exec(cajasTexto)) !== null) {
+      const desde = Number(match[1]);
+      const hasta = Number(match[2]);
+      if (objetivo >= desde && objetivo <= hasta) return match[0];
+    }
+
+    // Número suelto: extraer solo "165(24)"
+    const regexSuelto = new RegExp(`\\b${objetivo}\\s*\\(\\d+\\)`, "g");
+    const encontrado = cajasTexto.match(regexSuelto);
+    return encontrado ? encontrado[0] : cajasTexto;
+  }
+
+
+  // tiene variantes). Así Isabel ve por separado cada color/composición con
+  // su propio desglose de tallas, listo para saber qué imprimir de cada uno.
+  type FilaInventario = {
+    key: string;
+    palet: string | null;
+    codigo: string | null;
+    marca: string | null;
+    descripcion: string | null;
+    color: string | null;
+    composicion: string | null;
+    pais: string | null;
+    cajas: string | null;
+    cantidad: number;
+    tallasTexto: string;
+    totalTallas: number;
+    esVariante: boolean;
+  };
+
+  const filasInventario: FilaInventario[] = useMemo(() => {
+    const filas: FilaInventario[] = [];
+    itemsInventarioFiltrados.forEach((it) => {
+      const variantesDelItem = variantesTodas.filter((v) => v.item_id === it.id);
+      if (variantesDelItem.length === 0) {
+        filas.push({
+          key: it.id,
+          palet: it.palet,
+          codigo: it.codigo,
+          marca: it.marca,
+          descripcion: it.descripcion,
+          color: null,
+          composicion: it.composicion,
+          pais: it.pais,
+          cajas: it.cajas,
+          cantidad: it.cantidad_contada,
+          tallasTexto: formatoTallas(it.tallas_detalle),
+          totalTallas: sumarTallasDetalle(it.tallas_detalle),
+          esVariante: false,
+        });
+      } else {
+        variantesDelItem.forEach((v, i) => {
+          filas.push({
+            key: `${it.id}-${i}`,
+            palet: it.palet,
+            codigo: it.codigo,
+            marca: it.marca,
+            descripcion: it.descripcion,
+            color: v.color,
+            composicion: v.composicion ?? it.composicion,
+            pais: it.pais,
+            cajas: v.cajas,
+            cantidad: v.cantidad,
+            tallasTexto: formatoTallas(v.tallas_detalle),
+            totalTallas: sumarTallasDetalle(v.tallas_detalle),
+            esVariante: true,
+          });
+        });
+      }
+    });
+    return filas;
+  }, [itemsInventarioFiltrados, variantesTodas]);
 
   const totalesOrdenSeleccionada = itemsOrdenSeleccionada.reduce(
     (acc, it) => ({
@@ -499,6 +654,8 @@ export default function ReportesEtiquetadoPage() {
                       onChange={(e) => {
                         setOrdenSeleccionadaId(e.target.value);
                         setBusquedaInventario("");
+                        setPaletSeleccionado("todos");
+                        setCajaFiltro("");
                       }}
                       className="card px-3 py-1.5 text-[12.5px] outline-none min-w-[280px]"
                     >
@@ -560,6 +717,55 @@ export default function ReportesEtiquetadoPage() {
                         </div>
                       </div>
 
+                      {/* Selector de PALET + filtro de CAJA (para imprimir caja por caja) */}
+                      <div className="card p-3 mb-3 flex items-center gap-3 flex-wrap">
+                        <div>
+                          <label className="text-[11px] text-text-faint block mb-1">Palet</label>
+                          <select
+                            value={paletSeleccionado}
+                            onChange={(e) => {
+                              setPaletSeleccionado(e.target.value);
+                              setCajaFiltro("");
+                            }}
+                            className="card px-3 py-2 text-[12.5px] outline-none min-w-[140px]"
+                          >
+                            <option value="todos">Todos los palets</option>
+                            {paletsDisponibles.map((p) => (
+                              <option key={p} value={p}>
+                                Palet {p}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[11px] text-text-faint block mb-1">
+                            Caja (dentro del palet)
+                          </label>
+                          <input
+                            value={cajaFiltro}
+                            onChange={(e) => setCajaFiltro(e.target.value)}
+                            placeholder="Ej. 1, 12…"
+                            className="card px-3 py-2 text-[12.5px] outline-none w-[160px] font-mono"
+                          />
+                        </div>
+                        {(paletSeleccionado !== "todos" || cajaFiltro) && (
+                          <button
+                            onClick={() => {
+                              setPaletSeleccionado("todos");
+                              setCajaFiltro("");
+                            }}
+                            className="text-[11.5px] text-text-faint hover:text-text underline self-end pb-2"
+                          >
+                            Limpiar palet/caja
+                          </button>
+                        )}
+                        {cajaFiltro && (
+                          <span className="text-[11px] text-[#fbbf24] self-end pb-2">
+                            Mostrando solo la caja {cajaFiltro} de cada código — listo para imprimir.
+                          </span>
+                        )}
+                      </div>
+
                       <div className="card p-3 mb-4 flex gap-2">
                         <select
                           value={tipoBusqueda}
@@ -567,7 +773,6 @@ export default function ReportesEtiquetadoPage() {
                           className="card px-3 py-2 text-[12.5px] outline-none w-[170px] shrink-0"
                         >
                           <option value="todos">Todos los campos</option>
-                          <option value="palet">Palet (exacto)</option>
                           <option value="codigo">Código</option>
                           <option value="descripcion">Descripción</option>
                           <option value="tallas">Talla</option>
@@ -577,65 +782,103 @@ export default function ReportesEtiquetadoPage() {
                         <input
                           value={busquedaInventario}
                           onChange={(e) => setBusquedaInventario(e.target.value)}
-                          placeholder={
-                            tipoBusqueda === "palet"
-                              ? "Escribe el número de palet exacto, ej. 1…"
-                              : "Escribe el texto a buscar…"
-                          }
+                          placeholder="Escribe el texto a buscar (código, descripción, talla...)…"
                           className="w-full card px-3 py-2 text-[12.5px] outline-none"
                         />
                       </div>
 
-                      <div className="card overflow-hidden">
-                        <div className="grid grid-cols-[70px_100px_110px_180px_170px_190px_100px_90px_90px_90px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
-                          <span>Palet</span>
-                          <span>Cajas</span>
-                          <span>Código</span>
-                          <span>Descripción</span>
-                          <span>Tallas</span>
-                          <span>Composición</span>
-                          <span>País</span>
-                          <span className="text-right">Factura</span>
-                          <span className="text-right">Contado</span>
-                          <span className="text-right">Diferencia</span>
-                        </div>
-                        {itemsInventarioFiltrados.length === 0 ? (
-                          <p className="text-[12.5px] text-text-faint p-5">
-                            Ningún código coincide con la búsqueda.
-                          </p>
-                        ) : (
-                          itemsInventarioFiltrados.map((it, i) => {
-                            const dif = it.cantidad_contada - it.cantidad_factura;
-                            return (
-                              <div
-                                key={i}
-                                className="grid grid-cols-[70px_100px_110px_180px_170px_190px_100px_90px_90px_90px] gap-3 px-5 py-2.5 items-start border-b border-border last:border-b-0 text-[12.5px]"
-                              >
-                                <span className="text-text-dim pt-0.5">{it.palet ?? "—"}</span>
-                                <span className="text-text-dim leading-snug font-mono text-[11px]">
-                                  {it.cajas ?? "—"}
-                                </span>
-                                <span className="font-medium pt-0.5">{it.codigo ?? "—"}</span>
-                                <span className="text-text-dim pt-0.5">{it.descripcion ?? "—"}</span>
-                                <span className="text-text-dim text-[11px] font-mono leading-snug">
-                                  {formatoTallas(it.tallas_detalle)}
-                                </span>
-                                <span className="text-text-dim leading-snug">{it.composicion ?? "—"}</span>
-                                <span className="text-text-dim pt-0.5">{it.pais ?? "—"}</span>
-                                <span className="text-right pt-0.5">{it.cantidad_factura}</span>
-                                <span className="text-right pt-0.5">{it.cantidad_contada}</span>
-                                <span
-                                  className={`text-right font-medium pt-0.5 ${
-                                    dif === 0 ? "text-[#6ee7b7]" : dif < 0 ? "text-[#fca5a5]" : "text-[#fbbf24]"
+                      <div className="card overflow-x-auto">
+                        <div className="min-w-[1560px]">
+                            <div className="grid grid-cols-[70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                              <span>Palet</span>
+                              <span>Cajas</span>
+                              <span>Código</span>
+                              <span>Marca</span>
+                              <span>Descripción</span>
+                              <span>Color</span>
+                              <span>Tallas</span>
+                              <span>Composición</span>
+                              <span>País</span>
+                              <span className="text-right">Factura</span>
+                              <span className="text-right">Contado</span>
+                              <span className="text-right">Total etiquetas</span>
+                              <span className="text-right">Diferencia</span>
+                            </div>
+                            {filasInventario.length === 0 ? (
+                              <p className="text-[12.5px] text-text-faint p-5">
+                                Ningún código coincide con la búsqueda.
+                              </p>
+                            ) : (
+                              filasInventario.map((f) => (
+                                <div
+                                  key={f.key}
+                                  className={`grid grid-cols-[70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px] gap-3 px-5 py-2.5 items-start border-b border-border last:border-b-0 text-[12.5px] ${
+                                    f.esVariante ? "bg-amber/[0.03]" : ""
                                   }`}
                                 >
-                                  {dif > 0 ? `+${dif}` : dif}
-                                </span>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
+                                  <span className="text-text-dim pt-0.5">{f.palet ?? "—"}</span>
+                                  <span className="text-text-dim leading-snug font-mono text-[11px]">
+                                    {textoCajaFiltrada(f.cajas)}
+                                  </span>
+                                  <span className="font-medium pt-0.5">{f.codigo ?? "—"}</span>
+                                  <span className="text-text-dim pt-0.5">{f.marca ?? "—"}</span>
+                                  <span className="text-text-dim pt-0.5">{f.descripcion ?? "—"}</span>
+                                  <span className="text-text-dim pt-0.5">
+                                    {f.esVariante ? (
+                                      <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber/[0.18] text-[#fbbf24]">
+                                        {f.color ?? "—"}
+                                      </span>
+                                    ) : (
+                                      "—"
+                                    )}
+                                  </span>
+                                  <span className="text-text-dim text-[11px] font-mono leading-snug">
+                                    {f.tallasTexto}
+                                  </span>
+                                  <span className="text-text-dim leading-snug">{f.composicion ?? "—"}</span>
+                                  <span className="text-text-dim pt-0.5">{f.pais ?? "—"}</span>
+                                  <span className="text-right pt-0.5 text-text-faint">
+                                    {f.esVariante ? "—" : itemsInventarioFiltrados.find((it) => it.id === f.key)?.cantidad_factura}
+                                  </span>
+                                  <span className="text-right pt-0.5 font-medium">{f.cantidad}</span>
+                                  <span className="text-right pt-0.5 font-semibold text-[#c4b8ff]">
+                                    {f.totalTallas}
+                                  </span>
+                                  <span className="text-right pt-0.5">
+                                    {f.esVariante ? (
+                                      <span className="text-text-faint">—</span>
+                                    ) : (
+                                      (() => {
+                                        const original = itemsInventarioFiltrados.find((it) => it.id === f.key);
+                                        if (!original) return <span className="text-text-faint">—</span>;
+                                        const dif = original.cantidad_contada - original.cantidad_factura;
+                                        return (
+                                          <span
+                                            className={`font-medium ${
+                                              dif === 0
+                                                ? "text-[#6ee7b7]"
+                                                : dif < 0
+                                                ? "text-[#fca5a5]"
+                                                : "text-[#fbbf24]"
+                                            }`}
+                                          >
+                                            {dif > 0 ? `+${dif}` : dif}
+                                          </span>
+                                        );
+                                      })()
+                                    )}
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      {variantesTodas.length > 0 && (
+                        <p className="text-[11px] text-text-faint mt-2">
+                          Las filas resaltadas son variantes de color/composición de un mismo código. Su
+                          suma es la que cuadra contra la factura del código.
+                        </p>
+                      )}
                     </>
                   )}
                 </>
