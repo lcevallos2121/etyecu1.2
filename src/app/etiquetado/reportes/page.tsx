@@ -10,6 +10,8 @@ import { ConfirmModal, Toast } from "@/components/Feedback";
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
   PieChart,
   Pie,
   Cell,
@@ -78,6 +80,7 @@ type Mesa = {
   id: string;
   orden_id: string;
   nombre: string;
+  integrantes: string[] | null;
 };
 
 const COLORES = ["#7c6cf0", "#6ee7b7", "#fbbf24", "#fca5a5", "#93c5fd", "#c4b8ff"];
@@ -88,6 +91,7 @@ const tabs = [
   { id: "produccion", label: "Producción por mesa" },
   { id: "inventario", label: "Inventario" },
   { id: "inconsistencias", label: "Inconsistencias" },
+  { id: "productividad", label: "Productividad" },
 ] as const;
 
 export default function ReportesEtiquetadoPage() {
@@ -123,6 +127,12 @@ export default function ReportesEtiquetadoPage() {
   const [cajaEditTexto, setCajaEditTexto] = useState("");
   const [cajaEditTallas, setCajaEditTallas] = useState<Record<string, number>>({});
   const [cajaAEliminarId, setCajaAEliminarId] = useState<string | null>(null);
+
+  // Módulo de Productividad
+  const [vistaProductividad, setVistaProductividad] = useState<"general" | "orden">("general");
+  const [prodFechaDesde, setProdFechaDesde] = useState("");
+  const [prodFechaHasta, setProdFechaHasta] = useState("");
+  const [prodMesaFiltro, setProdMesaFiltro] = useState<string>("todas"); // "todas" o el NOMBRE de la mesa
   const [busquedaInventario, setBusquedaInventario] = useState("");
   const [tipoBusqueda, setTipoBusqueda] = useState<
     "todos" | "codigo" | "descripcion" | "tallas" | "composicion" | "pais"
@@ -140,7 +150,7 @@ export default function ReportesEtiquetadoPage() {
           "id, orden_id, palet, cajas, codigo, descripcion, marca, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais"
         ),
       supabase.from("etq_movimientos").select("orden_id, mesa_id, cantidad, creado_en"),
-      supabase.from("etq_mesas").select("id, orden_id, nombre"),
+      supabase.from("etq_mesas").select("id, orden_id, nombre, integrantes"),
       supabase.from("etq_variantes").select("item_id, color, composicion, cajas, cantidad, tallas_detalle"),
       supabase
         .from("etq_tallas_por_caja")
@@ -253,6 +263,123 @@ export default function ReportesEtiquetadoPage() {
       .filter((m) => m.unidades > 0)
       .sort((a, b) => b.unidades - a.unidades);
   }, [mesasFiltradas, movimientosFiltrados]);
+
+  // ---- Módulo de Productividad ----
+
+  // Movimientos según la vista elegida: general (rango de fechas, todas las
+  // órdenes) o por la orden seleccionada arriba en el módulo de Inventario.
+  const movimientosProductividad = useMemo(() => {
+    let base = movimientos;
+    if (vistaProductividad === "orden") {
+      if (!ordenSeleccionadaId) return [];
+      base = movimientos.filter((m) => m.orden_id === ordenSeleccionadaId);
+    } else {
+      if (prodFechaDesde) {
+        const desde = new Date(prodFechaDesde).getTime();
+        base = base.filter((m) => new Date(m.creado_en).getTime() >= desde);
+      }
+      if (prodFechaHasta) {
+        const hasta = new Date(prodFechaHasta + "T23:59:59").getTime();
+        base = base.filter((m) => new Date(m.creado_en).getTime() <= hasta);
+      }
+    }
+    if (prodMesaFiltro !== "todas") {
+      // "Mesa 1" puede existir con IDs distintos en cada orden (cada orden
+      // crea sus propias mesas), así que se filtra por NOMBRE, agrupando
+      // todos los ids de mesas que comparten ese nombre.
+      const idsConEseNombre = new Set(
+        mesas.filter((m) => m.nombre === prodMesaFiltro).map((m) => m.id)
+      );
+      base = base.filter((m) => m.mesa_id && idsConEseNombre.has(m.mesa_id));
+    }
+    return base;
+  }, [
+    movimientos,
+    mesas,
+    vistaProductividad,
+    ordenSeleccionadaId,
+    prodFechaDesde,
+    prodFechaHasta,
+    prodMesaFiltro,
+  ]);
+
+  // Todas las mesas que aparecen en el rango (deduplicadas por nombre, ya que
+  // una "Mesa 1" puede existir en varias órdenes con distinto id).
+  const mesasEnRango = useMemo(() => {
+    const idsConMovimiento = new Set(movimientosProductividad.map((m) => m.mesa_id));
+    return mesas.filter((m) => idsConMovimiento.has(m.id));
+  }, [mesas, movimientosProductividad]);
+
+  // Detalle de productividad por mesa: unidades, cajas, horas trabajadas, ritmo.
+  // Se agrupa por NOMBRE de mesa (no por id), porque en la vista general una
+  // misma "Mesa 1" puede tener varios ids distintos (uno por cada orden).
+  type FilaProductividad = {
+    mesaId: string;
+    nombre: string;
+    integrantes: string[];
+    unidades: number;
+    cajas: number;
+    horas: number;
+    ritmo: number; // unidades por hora
+  };
+
+  const productividadPorMesa: FilaProductividad[] = useMemo(() => {
+    const nombresUnicos = Array.from(new Set(mesasEnRango.map((m) => m.nombre)));
+
+    return nombresUnicos
+      .map((nombre) => {
+        // Todos los ids de mesas (de cualquier orden) que llevan este nombre
+        const idsDelNombre = new Set(mesas.filter((m) => m.nombre === nombre).map((m) => m.id));
+        const movs = movimientosProductividad.filter(
+          (mv) => mv.mesa_id && idsDelNombre.has(mv.mesa_id)
+        );
+        const unidades = movs.reduce((a, mv) => a + Number(mv.cantidad || 0), 0);
+        const cajas = movs.length;
+        let horas = 0;
+        if (movs.length >= 2) {
+          const tiempos = movs.map((mv) => new Date(mv.creado_en).getTime()).sort((a, b) => a - b);
+          horas = (tiempos[tiempos.length - 1] - tiempos[0]) / (1000 * 60 * 60);
+        }
+        const ritmo = horas > 0 ? unidades / horas : 0;
+        // Integrantes: de la mesa más reciente con este nombre que tenga movimiento
+        const mesaConIntegrantes = mesasEnRango.find((m) => m.nombre === nombre);
+        return {
+          mesaId: nombre, // usado solo como key en la tabla, no como id real
+          nombre,
+          integrantes: mesaConIntegrantes?.integrantes ?? [],
+          unidades,
+          cajas,
+          horas: Math.round(horas * 10) / 10,
+          ritmo: Math.round(ritmo),
+        };
+      })
+      .filter((f) => f.unidades > 0)
+      .sort((a, b) => b.unidades - a.unidades);
+  }, [mesasEnRango, mesas, movimientosProductividad]);
+
+  // KPIs generales del período/orden elegidos
+  const kpisProductividad = useMemo(() => {
+    const unidadesTotales = productividadPorMesa.reduce((a, f) => a + f.unidades, 0);
+    const horasTotales = productividadPorMesa.reduce((a, f) => a + f.horas, 0);
+    const ritmoPromedio = horasTotales > 0 ? Math.round(unidadesTotales / horasTotales) : 0;
+    const mesaTop =
+      productividadPorMesa.length > 0
+        ? [...productividadPorMesa].sort((a, b) => b.ritmo - a.ritmo)[0]?.nombre ?? "—"
+        : "—";
+    return { unidadesTotales, horasTotales: Math.round(horasTotales * 10) / 10, ritmoPromedio, mesaTop };
+  }, [productividadPorMesa]);
+
+  // Evolución diaria: unidades producidas por día, para la gráfica de línea/barras
+  const evolucionDiaria = useMemo(() => {
+    const porDia: Record<string, number> = {};
+    movimientosProductividad.forEach((mv) => {
+      const dia = mv.creado_en.slice(0, 10);
+      porDia[dia] = (porDia[dia] ?? 0) + Number(mv.cantidad || 0);
+    });
+    return Object.entries(porDia)
+      .map(([fecha, unidades]) => ({ fecha, unidades }))
+      .sort((a, b) => a.fecha.localeCompare(b.fecha));
+  }, [movimientosProductividad]);
 
   // Inventario de la orden seleccionada (para el tab "Inventario", por orden)
   const itemsOrdenSeleccionada = useMemo(
@@ -1195,6 +1322,226 @@ export default function ReportesEtiquetadoPage() {
                           ))}
                         </div>
                       )}
+                    </>
+                  )}
+                </>
+              )}
+
+              {tab === "productividad" && (
+                <>
+                  {/* Selector de vista: General (rango de fechas) vs Por orden */}
+                  <div className="card p-3 mb-3 flex items-center gap-2">
+                    <button
+                      onClick={() => setVistaProductividad("general")}
+                      className={`text-[12px] font-medium px-3 py-1.5 rounded-lg ${
+                        vistaProductividad === "general"
+                          ? "bg-accent/[0.18] text-[#c4b8ff]"
+                          : "text-text-dim hover:text-text"
+                      }`}
+                    >
+                      General (rango de fechas)
+                    </button>
+                    <button
+                      onClick={() => setVistaProductividad("orden")}
+                      className={`text-[12px] font-medium px-3 py-1.5 rounded-lg ${
+                        vistaProductividad === "orden"
+                          ? "bg-accent/[0.18] text-[#c4b8ff]"
+                          : "text-text-dim hover:text-text"
+                      }`}
+                    >
+                      Por orden específica
+                    </button>
+                  </div>
+
+                  {/* Filtros según la vista elegida */}
+                  <div className="card p-3 mb-4 flex items-end gap-3 flex-wrap">
+                    {vistaProductividad === "general" ? (
+                      <>
+                        <div>
+                          <label className="text-[10.5px] text-text-faint block mb-1">Desde</label>
+                          <input
+                            type="date"
+                            value={prodFechaDesde}
+                            onChange={(e) => setProdFechaDesde(e.target.value)}
+                            className="card px-3 py-1.5 text-[12px] outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10.5px] text-text-faint block mb-1">Hasta</label>
+                          <input
+                            type="date"
+                            value={prodFechaHasta}
+                            onChange={(e) => setProdFechaHasta(e.target.value)}
+                            className="card px-3 py-1.5 text-[12px] outline-none"
+                          />
+                        </div>
+                        {(prodFechaDesde || prodFechaHasta) && (
+                          <button
+                            onClick={() => {
+                              setProdFechaDesde("");
+                              setProdFechaHasta("");
+                            }}
+                            className="text-[11.5px] text-text-faint hover:text-text underline pb-1.5"
+                          >
+                            Limpiar fechas
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <div>
+                        <label className="text-[10.5px] text-text-faint block mb-1">Orden</label>
+                        <select
+                          value={ordenSeleccionadaId}
+                          onChange={(e) => setOrdenSeleccionadaId(e.target.value)}
+                          className="card px-3 py-2 text-[12.5px] outline-none min-w-[280px]"
+                        >
+                          <option value="">Selecciona una orden…</option>
+                          {ordenesFiltradas.map((o) => (
+                            <option key={o.id} value={o.id}>
+                              {o.numero_etq} · {o.cliente_nombre ?? "—"}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    <div>
+                      <label className="text-[10.5px] text-text-faint block mb-1">Mesa</label>
+                      <select
+                        value={prodMesaFiltro}
+                        onChange={(e) => setProdMesaFiltro(e.target.value)}
+                        className="card px-3 py-2 text-[12.5px] outline-none min-w-[140px]"
+                      >
+                        <option value="todas">Todas las mesas</option>
+                        {Array.from(new Set(mesas.map((m) => m.nombre)))
+                          .sort()
+                          .map((nombre) => (
+                            <option key={nombre} value={nombre}>
+                              {nombre}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {vistaProductividad === "orden" && !ordenSeleccionadaId ? (
+                    <div className="card p-8 text-center">
+                      <p className="text-[13px] text-text-faint">
+                        Elige una orden arriba para ver su productividad.
+                      </p>
+                    </div>
+                  ) : productividadPorMesa.length === 0 ? (
+                    <div className="card p-8 text-center">
+                      <p className="text-[13px] text-text-faint">
+                        No hay movimientos registrados en este período/orden.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      {/* KPIs */}
+                      <div className="grid grid-cols-4 gap-3 mb-4">
+                        <div className="card p-3.5">
+                          <p className="text-[11px] text-text-faint">Unidades totales</p>
+                          <p className="text-[22px] font-semibold mt-1">
+                            {kpisProductividad.unidadesTotales.toLocaleString("es-EC")}
+                          </p>
+                        </div>
+                        <div className="card p-3.5">
+                          <p className="text-[11px] text-text-faint">Horas trabajadas</p>
+                          <p className="text-[22px] font-semibold mt-1">
+                            {kpisProductividad.horasTotales} h
+                          </p>
+                        </div>
+                        <div className="card p-3.5">
+                          <p className="text-[11px] text-text-faint">Ritmo promedio</p>
+                          <p className="text-[22px] font-semibold mt-1">
+                            {kpisProductividad.ritmoPromedio} u/h
+                          </p>
+                        </div>
+                        <div className="card p-3.5">
+                          <p className="text-[11px] text-text-faint">Mesa con mejor ritmo</p>
+                          <p className="text-[18px] font-semibold mt-1 text-[#6ee7b7]">
+                            {kpisProductividad.mesaTop}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Gráficas */}
+                      <div className="grid grid-cols-2 gap-4 mb-4">
+                        <div className="card p-4">
+                          <p className="text-[12.5px] font-semibold mb-3">
+                            Ritmo por mesa (unidades/hora)
+                          </p>
+                          <ResponsiveContainer width="100%" height={240}>
+                            <BarChart data={productividadPorMesa} layout="vertical" margin={{ left: 20 }}>
+                              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                              <XAxis type="number" />
+                              <YAxis type="category" dataKey="nombre" width={80} />
+                              <Tooltip />
+                              <Bar dataKey="ritmo" fill="#7c6cf0" radius={[0, 4, 4, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                        <div className="card p-4">
+                          <p className="text-[12.5px] font-semibold mb-3">
+                            Evolución diaria de unidades producidas
+                          </p>
+                          {evolucionDiaria.length <= 1 ? (
+                            <p className="text-[12px] text-text-faint">
+                              Se necesita más de un día con datos para ver la evolución.
+                            </p>
+                          ) : (
+                            <ResponsiveContainer width="100%" height={240}>
+                              <LineChart data={evolucionDiaria}>
+                                <CartesianGrid strokeDasharray="3 3" />
+                                <XAxis dataKey="fecha" tick={{ fontSize: 10.5 }} />
+                                <YAxis />
+                                <Tooltip />
+                                <Line
+                                  type="monotone"
+                                  dataKey="unidades"
+                                  stroke="#7c6cf0"
+                                  strokeWidth={2}
+                                  dot={{ r: 3 }}
+                                />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Tabla detallada */}
+                      <div className="card overflow-hidden">
+                        <div className="grid grid-cols-[1fr_90px_90px_90px_100px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                          <span>Mesa / integrantes</span>
+                          <span className="text-right">Unidades</span>
+                          <span className="text-right">Cajas</span>
+                          <span className="text-right">Horas</span>
+                          <span className="text-right">Ritmo (u/h)</span>
+                        </div>
+                        {productividadPorMesa.map((f) => (
+                          <div
+                            key={f.mesaId}
+                            className="grid grid-cols-[1fr_90px_90px_90px_100px] gap-3 px-5 py-3 items-center border-b border-border last:border-b-0 text-[12.5px]"
+                          >
+                            <div>
+                              <p className="font-medium">{f.nombre}</p>
+                              <p className="text-[10.5px] text-text-faint">
+                                {f.integrantes.length > 0 ? f.integrantes.join(", ") : "—"}
+                              </p>
+                            </div>
+                            <span className="text-right font-medium">
+                              {f.unidades.toLocaleString("es-EC")}
+                            </span>
+                            <span className="text-right text-text-dim">{f.cajas}</span>
+                            <span className="text-right text-text-dim">{f.horas}</span>
+                            <span className="text-right font-semibold text-[#c4b8ff]">{f.ritmo}</span>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-[10.5px] text-text-faint mt-2">
+                        Ritmo = unidades ÷ horas trabajadas (tiempo entre el primer y último movimiento
+                        de la mesa en el período). Horas = 0 si solo hay un movimiento registrado.
+                      </p>
                     </>
                   )}
                 </>
