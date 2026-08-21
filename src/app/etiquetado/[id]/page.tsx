@@ -582,6 +582,22 @@ export default function DetalleEtiquetadoPage() {
       });
     }
 
+    // Registrar el desglose de tallas por caja SOLO cuando es un código nuevo
+    // (ahí sí sabemos con certeza que todas sus tallas corresponden a las
+    // cajas que se acaban de escribir). En edición de un código existente no
+    // se registra, porque no se puede saber con certeza qué parte del texto
+    // de cajas es "nueva" — evita guardar un desglose incorrecto.
+    if (!editId && itemId && fCajas.trim() && sumarTallas(fTallas) > 0) {
+      const matchNumero = fCajas.trim().match(/^\s*(\d+)/);
+      await supabase.from("etq_tallas_por_caja").insert({
+        item_id: itemId,
+        variante_id: null,
+        caja: fCajas.trim(),
+        numero_caja: matchNumero ? matchNumero[1] : null,
+        tallas_detalle: fTallas,
+      });
+    }
+
     setShowForm(false);
     setToast(editId ? "Código actualizado." : "Código agregado.");
     cargar();
@@ -650,6 +666,17 @@ export default function DetalleEtiquetadoPage() {
         caja: cajaNuevaTallas.trim(),
         cantidad: sumarCajas(cajaNuevaTallas),
       });
+
+      // Registrar SOLO las tallas de esta caja puntual, para poder filtrar
+      // por caja específica más adelante sin perder el desglose.
+      const matchNumero = cajaNuevaTallas.trim().match(/^\s*(\d+)/);
+      await supabase.from("etq_tallas_por_caja").insert({
+        item_id: itemAgregarTallas.id,
+        variante_id: null,
+        caja: cajaNuevaTallas.trim(),
+        numero_caja: matchNumero ? matchNumero[1] : null,
+        tallas_detalle: tallasNuevas,
+      });
     }
 
     setShowAgregarTallas(false);
@@ -679,14 +706,18 @@ export default function DetalleEtiquetadoPage() {
     if (!item) return;
 
     // 1. Guardar la variante con su propia caja, composición, color y tallas
-    const { error: errVar } = await supabase.from("etq_variantes").insert({
-      item_id: itemVarianteId,
-      color: vColor.trim() || null,
-      composicion: vComposicion.trim() || null,
-      cajas: vCajas.trim(),
-      cantidad: cantidadVariante,
-      tallas_detalle: vTallas,
-    });
+    const { data: varianteCreada, error: errVar } = await supabase
+      .from("etq_variantes")
+      .insert({
+        item_id: itemVarianteId,
+        color: vColor.trim() || null,
+        composicion: vComposicion.trim() || null,
+        cajas: vCajas.trim(),
+        cantidad: cantidadVariante,
+        tallas_detalle: vTallas,
+      })
+      .select()
+      .single();
     if (errVar) {
       setErrorMsg(errVar.message);
       return;
@@ -715,6 +746,16 @@ export default function DetalleEtiquetadoPage() {
       codigo: item.codigo,
       caja: vCajas.trim(),
       cantidad: cantidadVariante,
+    });
+
+    // Registrar el desglose de tallas de esta caja puntual de la variante
+    const matchNumeroVariante = vCajas.trim().match(/^\s*(\d+)/);
+    await supabase.from("etq_tallas_por_caja").insert({
+      item_id: itemVarianteId,
+      variante_id: varianteCreada?.id ?? null,
+      caja: vCajas.trim(),
+      numero_caja: matchNumeroVariante ? matchNumeroVariante[1] : null,
+      tallas_detalle: vTallas,
     });
 
     setShowAgregarVariante(false);

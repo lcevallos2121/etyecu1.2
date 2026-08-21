@@ -56,6 +56,14 @@ type VarianteEtq = {
   tallas_detalle: Record<string, number> | null;
 };
 
+type TallasPorCaja = {
+  item_id: string;
+  variante_id: string | null;
+  caja: string;
+  numero_caja: string | null;
+  tallas_detalle: Record<string, number> | null;
+};
+
 type Movimiento = {
   orden_id: string;
   mesa_id: string | null;
@@ -85,6 +93,7 @@ export default function ReportesEtiquetadoPage() {
   const [ordenes, setOrdenes] = useState<OrdenEtq[]>([]);
   const [items, setItems] = useState<ItemEtq[]>([]);
   const [variantesTodas, setVariantesTodas] = useState<VarianteEtq[]>([]);
+  const [tallasPorCajaTodas, setTallasPorCajaTodas] = useState<TallasPorCaja[]>([]);
   const [movimientos, setMovimientos] = useState<Movimiento[]>([]);
   const [mesas, setMesas] = useState<Mesa[]>([]);
   const [loading, setLoading] = useState(true);
@@ -103,7 +112,7 @@ export default function ReportesEtiquetadoPage() {
 
   const cargar = useCallback(async () => {
     setLoading(true);
-    const [ordRes, itemsRes, movRes, mesasRes, varRes] = await Promise.all([
+    const [ordRes, itemsRes, movRes, mesasRes, varRes, tallasCajaRes] = await Promise.all([
       supabase
         .from("etq_ordenes")
         .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en"),
@@ -115,6 +124,9 @@ export default function ReportesEtiquetadoPage() {
       supabase.from("etq_movimientos").select("orden_id, mesa_id, cantidad, creado_en"),
       supabase.from("etq_mesas").select("id, orden_id, nombre"),
       supabase.from("etq_variantes").select("item_id, color, composicion, cajas, cantidad, tallas_detalle"),
+      supabase
+        .from("etq_tallas_por_caja")
+        .select("item_id, variante_id, caja, numero_caja, tallas_detalle"),
     ]);
 
     if (ordRes.error) {
@@ -132,6 +144,7 @@ export default function ReportesEtiquetadoPage() {
     setMovimientos((movRes.data as Movimiento[]) ?? []);
     setMesas((mesasRes.data as Mesa[]) ?? []);
     setVariantesTodas((varRes.data as VarianteEtq[]) ?? []);
+    setTallasPorCajaTodas((tallasCajaRes.data as TallasPorCaja[]) ?? []);
     setLoading(false);
   }, [supabase]);
 
@@ -364,13 +377,32 @@ export default function ReportesEtiquetadoPage() {
     tallasTexto: string;
     totalTallas: number;
     esVariante: boolean;
+    sinDesgloseDeCaja: boolean; // true si hay filtro de caja pero no hay historial para esa caja
   };
 
   const filasInventario: FilaInventario[] = useMemo(() => {
     const filas: FilaInventario[] = [];
+    const cajaActiva = cajaFiltro.trim();
+
     itemsInventarioFiltrados.forEach((it) => {
       const variantesDelItem = variantesTodas.filter((v) => v.item_id === it.id);
       if (variantesDelItem.length === 0) {
+        // ¿Hay filtro de caja? Buscar el desglose específico de esa caja.
+        // Si no existe (código capturado antes de tener este historial), se
+        // muestra el TOTAL del código como respaldo — no es exacto de esa
+        // caja puntual, pero es un número real y utilizable para imprimir.
+        let tallasAMostrar = it.tallas_detalle;
+        let sinDesglose = false;
+        if (cajaActiva) {
+          const registro = tallasPorCajaTodas.find(
+            (t) => t.item_id === it.id && t.variante_id === null && t.numero_caja === cajaActiva
+          );
+          if (registro) {
+            tallasAMostrar = registro.tallas_detalle;
+          } else {
+            sinDesglose = true; // se queda con el total del código (it.tallas_detalle)
+          }
+        }
         filas.push({
           key: it.id,
           palet: it.palet,
@@ -382,12 +414,31 @@ export default function ReportesEtiquetadoPage() {
           pais: it.pais,
           cajas: it.cajas,
           cantidad: it.cantidad_contada,
-          tallasTexto: formatoTallas(it.tallas_detalle),
-          totalTallas: sumarTallasDetalle(it.tallas_detalle),
+          tallasTexto: formatoTallas(tallasAMostrar),
+          totalTallas: sumarTallasDetalle(tallasAMostrar),
           esVariante: false,
+          sinDesgloseDeCaja: sinDesglose,
         });
       } else {
         variantesDelItem.forEach((v, i) => {
+          let tallasAMostrar = v.tallas_detalle;
+          let sinDesglose = false;
+          if (cajaActiva) {
+            // Nota: como no guardamos el id real de la variante en este listado
+            // (solo item_id + color), buscamos por item_id y comparamos la caja
+            // de la variante para asociar el registro correcto.
+            const registro = tallasPorCajaTodas.find(
+              (t) =>
+                t.item_id === it.id &&
+                t.numero_caja === cajaActiva &&
+                t.caja.trim() === (v.cajas ?? "").trim()
+            );
+            if (registro) {
+              tallasAMostrar = registro.tallas_detalle;
+            } else {
+              sinDesglose = true; // se queda con el total de la variante (v.tallas_detalle)
+            }
+          }
           filas.push({
             key: `${it.id}-${i}`,
             palet: it.palet,
@@ -399,15 +450,16 @@ export default function ReportesEtiquetadoPage() {
             pais: it.pais,
             cajas: v.cajas,
             cantidad: v.cantidad,
-            tallasTexto: formatoTallas(v.tallas_detalle),
-            totalTallas: sumarTallasDetalle(v.tallas_detalle),
+            tallasTexto: formatoTallas(tallasAMostrar),
+            totalTallas: sumarTallasDetalle(tallasAMostrar),
             esVariante: true,
+            sinDesgloseDeCaja: sinDesglose,
           });
         });
       }
     });
     return filas;
-  }, [itemsInventarioFiltrados, variantesTodas]);
+  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro]);
 
   const totalesOrdenSeleccionada = itemsOrdenSeleccionada.reduce(
     (acc, it) => ({
@@ -761,7 +813,9 @@ export default function ReportesEtiquetadoPage() {
                         )}
                         {cajaFiltro && (
                           <span className="text-[11px] text-[#fbbf24] self-end pb-2">
-                            Mostrando solo la caja {cajaFiltro} de cada código — listo para imprimir.
+                            Mostrando la caja {cajaFiltro}. Donde dice <b>(total)</b> junto a las tallas,
+                            ese código aún no tiene desglose exacto de esta caja y se muestra el total
+                            completo del código.
                           </span>
                         )}
                       </div>
@@ -832,8 +886,18 @@ export default function ReportesEtiquetadoPage() {
                                       "—"
                                     )}
                                   </span>
-                                  <span className="text-text-dim text-[11px] font-mono leading-snug">
+                                  <span
+                                    className="text-text-dim text-[11px] font-mono leading-snug"
+                                    title={
+                                      f.sinDesgloseDeCaja
+                                        ? "Total del código completo (aún no hay desglose exacto de esta caja)"
+                                        : undefined
+                                    }
+                                  >
                                     {f.tallasTexto}
+                                    {f.sinDesgloseDeCaja && (
+                                      <span className="text-[9px] text-[#fbbf24] ml-1">(total)</span>
+                                    )}
                                   </span>
                                   <span className="text-text-dim leading-snug">{f.composicion ?? "—"}</span>
                                   <span className="text-text-dim pt-0.5">{f.pais ?? "—"}</span>
