@@ -8,6 +8,7 @@ import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
 import {
   ArrowLeft, Package, Building2, Plus, Upload, Trash2, RefreshCw, X, Users, BarChart3, FileText,
+  Check, HelpCircle,
 } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import * as XLSX from "xlsx";
@@ -46,6 +47,8 @@ type Item = {
   cantidad_factura: number;
   tipo_etiqueta: string | null;
   novedad: string | null;
+  tiene_codigo: boolean | null;
+  tiene_talla: boolean | null;
 };
 
 const TALLAS_ROPA = ["XS", "S", "M", "L", "XL", "XXL"];
@@ -66,6 +69,8 @@ type Variante = {
   cajas: string | null;
   cantidad: number;
   tallas_detalle: Record<string, number> | null;
+  tiene_codigo: boolean | null;
+  tiene_talla: boolean | null;
 };
 
 // Suma lo que está dentro de paréntesis: "164(24) 165(24)" -> 48
@@ -81,6 +86,43 @@ function sumarCajas(texto: string | null | undefined): number {
 function sumarTallas(detalle: Record<string, number> | null | undefined): number {
   if (!detalle) return 0;
   return Object.values(detalle).reduce((a, n) => a + Number(n || 0), 0);
+}
+
+// Botón de 3 estados: null (gris, sin definir) -> true (verde, Sí) -> false
+// (rojo, No) -> vuelve a null. Un clic avanza al siguiente estado.
+function BotonTresEstados({
+  label,
+  valor,
+  onChange,
+}: {
+  label: string;
+  valor: boolean | null;
+  onChange: (v: boolean | null) => void;
+}) {
+  function siguienteEstado() {
+    if (valor === null) onChange(true);
+    else if (valor === true) onChange(false);
+    else onChange(null);
+  }
+
+  const estilos =
+    valor === true
+      ? "bg-green/[0.18] text-[#6ee7b7] border-green/30"
+      : valor === false
+      ? "bg-red/[0.18] text-[#fca5a5] border-red/30"
+      : "bg-white/[0.04] text-text-faint border-border";
+
+  return (
+    <button
+      type="button"
+      onClick={siguienteEstado}
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11.5px] font-medium transition-colors ${estilos}`}
+      title="Clic para cambiar: sin definir → Sí → No"
+    >
+      {valor === true ? <Check size={13} /> : valor === false ? <X size={13} /> : <HelpCircle size={13} />}
+      {label}
+    </button>
+  );
 }
 
 export default function DetalleEtiquetadoPage() {
@@ -118,6 +160,8 @@ export default function DetalleEtiquetadoPage() {
   const [fTipoEtiqueta, setFTipoEtiqueta] = useState("COSIDO");
   const [fNovedad, setFNovedad] = useState("");
   const [fTallas, setFTallas] = useState<Record<string, number>>({});
+  const [fTieneCodigo, setFTieneCodigo] = useState<boolean | null>(null);
+  const [fTieneTalla, setFTieneTalla] = useState<boolean | null>(null);
 
   // Modal "Agregar tallas": suma tallas de una caja NUEVA al total existente
   // del código, sin tener que recalcular a mano lo que ya había.
@@ -134,6 +178,8 @@ export default function DetalleEtiquetadoPage() {
   const [vComposicion, setVComposicion] = useState("");
   const [vCajas, setVCajas] = useState("");
   const [vTallas, setVTallas] = useState<Record<string, number>>({});
+  const [vTieneCodigo, setVTieneCodigo] = useState<boolean | null>(null);
+  const [vTieneTalla, setVTieneTalla] = useState<boolean | null>(null);
 
   // Configuración de tallas de la orden
   const [showTallasConfig, setShowTallasConfig] = useState(false);
@@ -510,7 +556,8 @@ export default function DetalleEtiquetadoPage() {
     setEditId(undefined); setFPalet(""); setFCodigo(""); setFDescripcion("");
     setFMarca(""); setFColor(""); setFComposicion(""); setFPais(""); setFTienda("");
     setFCajas(""); setFFactura("");
-    setFTipoEtiqueta("COSIDO"); setFNovedad(""); setFTallas({}); setErrorMsg(null);
+    setFTipoEtiqueta("COSIDO"); setFNovedad(""); setFTallas({});
+    setFTieneCodigo(null); setFTieneTalla(null); setErrorMsg(null);
   }
 
   function abrirNuevo() { limpiar(); setShowForm(true); }
@@ -524,6 +571,7 @@ export default function DetalleEtiquetadoPage() {
     setFFactura(it.cantidad_factura ? String(it.cantidad_factura) : "");
     setFTipoEtiqueta(it.tipo_etiqueta ?? "COSIDO"); setFNovedad(it.novedad ?? "");
     setFTallas(it.tallas_detalle ?? {});
+    setFTieneCodigo(it.tiene_codigo ?? null); setFTieneTalla(it.tiene_talla ?? null);
     setShowForm(true);
   }
 
@@ -554,6 +602,8 @@ export default function DetalleEtiquetadoPage() {
       tipo_etiqueta: fTipoEtiqueta.trim() || null,
       novedad: fNovedad.trim() || null,
       tallas_detalle: fTallas,
+      tiene_codigo: fTieneCodigo,
+      tiene_talla: fTieneTalla,
       actualizado_en: new Date().toISOString(),
     };
     let itemId = editId;
@@ -690,6 +740,8 @@ export default function DetalleEtiquetadoPage() {
     setVComposicion("");
     setVCajas("");
     setVTallas({});
+    setVTieneCodigo(null);
+    setVTieneTalla(null);
     setErrorMsg(null);
     setShowAgregarVariante(true);
   }
@@ -715,6 +767,8 @@ export default function DetalleEtiquetadoPage() {
         cajas: vCajas.trim(),
         cantidad: cantidadVariante,
         tallas_detalle: vTallas,
+        tiene_codigo: vTieneCodigo,
+        tiene_talla: vTieneTalla,
       })
       .select()
       .single();
@@ -1180,6 +1234,13 @@ export default function DetalleEtiquetadoPage() {
                 </select>
               </div>
               <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Novedad (ej. DOBLE, CONJUNTO)</label><input value={fNovedad} onChange={(e) => setFNovedad(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div className="col-span-2">
+                <label className="text-[11.5px] text-text-faint block mb-1.5">Para impresión de etiqueta</label>
+                <div className="flex gap-2">
+                  <BotonTresEstados label="Tiene código" valor={fTieneCodigo} onChange={setFTieneCodigo} />
+                  <BotonTresEstados label="Tiene talla" valor={fTieneTalla} onChange={setFTieneTalla} />
+                </div>
+              </div>
             </div>
             {/* Vista previa del estado en vivo */}
             {fFactura.trim() && (
@@ -1389,6 +1450,12 @@ export default function DetalleEtiquetadoPage() {
                   </p>
                 )
               )}
+
+              <label className="text-[11.5px] text-text-faint block mb-1.5">Para impresión de etiqueta</label>
+              <div className="flex gap-2 mb-3">
+                <BotonTresEstados label="Tiene código" valor={vTieneCodigo} onChange={setVTieneCodigo} />
+                <BotonTresEstados label="Tiene talla" valor={vTieneTalla} onChange={setVTieneTalla} />
+              </div>
 
               <div className="flex gap-2 justify-end mt-2">
                 <button onClick={() => setShowAgregarVariante(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cancelar</button>

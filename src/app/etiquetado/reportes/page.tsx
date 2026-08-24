@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import { Printer, X } from "lucide-react";
+import { Printer, X, Check, HelpCircle } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import {
   BarChart,
@@ -49,6 +49,8 @@ type ItemEtq = {
   tallas_detalle: Record<string, number> | null;
   composicion: string | null;
   pais: string | null;
+  tiene_codigo: boolean | null;
+  tiene_talla: boolean | null;
 };
 
 type VarianteEtq = {
@@ -58,6 +60,8 @@ type VarianteEtq = {
   cajas: string | null;
   cantidad: number;
   tallas_detalle: Record<string, number> | null;
+  tiene_codigo: boolean | null;
+  tiene_talla: boolean | null;
 };
 
 type TallasPorCaja = {
@@ -147,11 +151,11 @@ export default function ReportesEtiquetadoPage() {
       supabase
         .from("etq_items")
         .select(
-          "id, orden_id, palet, cajas, codigo, descripcion, marca, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais"
+          "id, orden_id, palet, cajas, codigo, descripcion, marca, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla"
         ),
       supabase.from("etq_movimientos").select("orden_id, mesa_id, cantidad, creado_en"),
       supabase.from("etq_mesas").select("id, orden_id, nombre, integrantes"),
-      supabase.from("etq_variantes").select("item_id, color, composicion, cajas, cantidad, tallas_detalle"),
+      supabase.from("etq_variantes").select("item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla"),
       supabase
         .from("etq_tallas_por_caja")
         .select("id, item_id, variante_id, caja, numero_caja, tallas_detalle"),
@@ -523,6 +527,8 @@ export default function ReportesEtiquetadoPage() {
     totalTallas: number;
     esVariante: boolean;
     sinDesgloseDeCaja: boolean; // true si hay filtro de caja pero no hay historial para esa caja
+    tieneCodigo: boolean | null;
+    tieneTalla: boolean | null;
   };
 
   const filasInventario: FilaInventario[] = useMemo(() => {
@@ -563,6 +569,8 @@ export default function ReportesEtiquetadoPage() {
           totalTallas: sumarTallasDetalle(tallasAMostrar),
           esVariante: false,
           sinDesgloseDeCaja: sinDesglose,
+          tieneCodigo: it.tiene_codigo,
+          tieneTalla: it.tiene_talla,
         });
       } else {
         variantesDelItem.forEach((v, i) => {
@@ -599,6 +607,8 @@ export default function ReportesEtiquetadoPage() {
             totalTallas: sumarTallasDetalle(tallasAMostrar),
             esVariante: true,
             sinDesgloseDeCaja: sinDesglose,
+            tieneCodigo: v.tiene_codigo,
+            tieneTalla: v.tiene_talla,
           });
         });
       }
@@ -1110,8 +1120,8 @@ export default function ReportesEtiquetadoPage() {
                       </div>
 
                       <div className="card overflow-x-auto">
-                        <div className="min-w-[1560px]">
-                            <div className="grid grid-cols-[70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                        <div className="min-w-[1740px]">
+                            <div className="grid grid-cols-[70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px_80px_80px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
                               <span>Palet</span>
                               <span>Cajas</span>
                               <span>Código</span>
@@ -1125,6 +1135,8 @@ export default function ReportesEtiquetadoPage() {
                               <span className="text-right">Contado</span>
                               <span className="text-right">Total etiquetas</span>
                               <span className="text-right">Diferencia</span>
+                              <span className="text-center">Cód.✓</span>
+                              <span className="text-center">Talla✓</span>
                             </div>
                             {filasInventario.length === 0 ? (
                               <p className="text-[12.5px] text-text-faint p-5">
@@ -1134,7 +1146,7 @@ export default function ReportesEtiquetadoPage() {
                               filasInventario.map((f) => (
                                 <div
                                   key={f.key}
-                                  className={`grid grid-cols-[70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px] gap-3 px-5 py-2.5 items-start border-b border-border last:border-b-0 text-[12.5px] ${
+                                  className={`grid grid-cols-[70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px_80px_80px] gap-3 px-5 py-2.5 items-start border-b border-border last:border-b-0 text-[12.5px] ${
                                     f.esVariante ? "bg-amber/[0.03]" : ""
                                   }`}
                                 >
@@ -1198,6 +1210,24 @@ export default function ReportesEtiquetadoPage() {
                                           </span>
                                         );
                                       })()
+                                    )}
+                                  </span>
+                                  <span className="flex justify-center pt-0.5">
+                                    {f.tieneCodigo === true ? (
+                                      <Check size={14} className="text-[#6ee7b7]" />
+                                    ) : f.tieneCodigo === false ? (
+                                      <X size={14} className="text-[#fca5a5]" />
+                                    ) : (
+                                      <HelpCircle size={13} className="text-text-faint" />
+                                    )}
+                                  </span>
+                                  <span className="flex justify-center pt-0.5">
+                                    {f.tieneTalla === true ? (
+                                      <Check size={14} className="text-[#6ee7b7]" />
+                                    ) : f.tieneTalla === false ? (
+                                      <X size={14} className="text-[#fca5a5]" />
+                                    ) : (
+                                      <HelpCircle size={13} className="text-text-faint" />
                                     )}
                                   </span>
                                 </div>
