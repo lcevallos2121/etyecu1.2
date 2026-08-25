@@ -15,6 +15,7 @@ import {
   Tag,
   ReceiptText,
   FileSpreadsheet,
+  Radar,
   type LucideIcon,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
@@ -70,6 +71,9 @@ const navGroups: { label?: string; items: NavItem[]; dap?: boolean; soloAdmin?: 
     dap: true,
     items: [
       { href: "/reportes", label: "Reportes", icon: BarChart3 },
+      { href: "/tracking-importadores", label: "Tracking importadores", icon: Radar, soloAdmin: true } as NavItem & {
+        soloAdmin?: boolean;
+      },
       { href: "/usuarios", label: "Usuarios", icon: UserCog, soloAdmin: true } as NavItem & {
         soloAdmin?: boolean;
       },

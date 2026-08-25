@@ -17,7 +17,7 @@ const ES_RUTA_DAP = (path: string) =>
 
 // Rutas dentro del DAP que solo puede ver "administrador" (ni siquiera
 // deposito_aduanero ni etiquetado).
-const RUTAS_SOLO_ADMIN_EN_DAP = ["/usuarios"];
+const RUTAS_SOLO_ADMIN_EN_DAP = ["/usuarios", "/tracking-importadores"];
 
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
@@ -47,7 +47,10 @@ export async function middleware(request: NextRequest) {
 
   const path = request.nextUrl.pathname;
   const isLoginPage = path.startsWith("/login");
-  const isPortalImportador = path.startsWith(RUTA_PORTAL_IMPORTADOR);
+  // Excluye tanto las páginas del portal (/portal-importador/...) como sus
+  // API routes (/api/portal-importador/...), que tienen su propia sesión.
+  const isPortalImportador =
+    path.startsWith(RUTA_PORTAL_IMPORTADOR) || path.startsWith("/api/portal-importador");
 
   // El portal de importador tiene su propio login/sesión aparte; el
   // middleware del sistema interno no debe interferir con esas rutas.
@@ -111,5 +114,10 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+  // Excluye también archivos estáticos servidos desde public/ (logos, íconos,
+  // etc.) — sin esto, el middleware los trataba como rutas protegidas y
+  // redirigía a /login cuando no había sesión (ej. en el portal externo).
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:png|jpg|jpeg|svg|gif|webp|ico)$).*)",
+  ],
 };
