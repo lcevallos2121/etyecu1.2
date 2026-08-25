@@ -13,8 +13,8 @@ const EMPRESA = {
   nombre: "ETYECU S.A.",
   direccion: "Km 11,5 Vía Daule",
   ciudad: "Guayaquil",
-  web: "www.etyecu.com",
-  telefono: "+593 96 320 0321",
+  web: "www.mdcobos.com",
+  telefono: "04-2 100 894",
 };
 
 const BANCO = {
@@ -741,7 +741,8 @@ export default function CotizacionesPage() {
           <div className="print-area hidden print:block text-black bg-white p-8">
             <div className="flex justify-between items-start border-b-2 border-black pb-3 mb-4">
               <div>
-                <p className="text-[20px] font-bold">{EMPRESA.nombre}</p>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src="/logo-etyecu.png" alt="ETYECU" className="h-12 mb-1" />
                 <p className="text-[10px]">{EMPRESA.direccion} · {EMPRESA.ciudad}</p>
                 <p className="text-[10px]">{EMPRESA.web} · Tel: {EMPRESA.telefono}</p>
               </div>

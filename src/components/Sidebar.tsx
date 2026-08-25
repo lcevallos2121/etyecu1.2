@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import {
   LayoutDashboard,
@@ -14,6 +17,7 @@ import {
   FileSpreadsheet,
   type LucideIcon,
 } from "lucide-react";
+import { createClient } from "@/lib/supabase-browser";
 
 type NavItem = {
   href: string;
@@ -23,8 +27,12 @@ type NavItem = {
   badgeWarn?: boolean;
 };
 
-const navGroups: { label?: string; items: NavItem[] }[] = [
+// dap: el grupo pertenece al sistema DAP, se oculta completo si el rol es
+// "etiquetado" (ese rol solo ve su propio módulo).
+// soloAdmin: el grupo/ítem se oculta si el rol NO es "administrador".
+const navGroups: { label?: string; items: NavItem[]; dap?: boolean; soloAdmin?: boolean }[] = [
   {
+    dap: true,
     items: [
       { href: "/", label: "Dashboard", icon: LayoutDashboard },
       { href: "/clientes", label: "Clientes", icon: Users },
@@ -33,6 +41,7 @@ const navGroups: { label?: string; items: NavItem[] }[] = [
   },
   {
     label: "Operación",
+    dap: true,
     items: [
       { href: "/ingreso", label: "Ingreso de carga", icon: PackagePlus },
       { href: "/egreso", label: "Egreso de carga", icon: PackageMinus },
@@ -42,6 +51,7 @@ const navGroups: { label?: string; items: NavItem[] }[] = [
   },
   {
     label: "Documentos",
+    dap: true,
     items: [
       { href: "/factura-informativa", label: "Factura Informativa", icon: ReceiptText },
       { href: "/cotizaciones", label: "Cotizaciones", icon: FileSpreadsheet },
@@ -57,14 +67,58 @@ const navGroups: { label?: string; items: NavItem[] }[] = [
   },
   {
     label: "Análisis",
+    dap: true,
     items: [
       { href: "/reportes", label: "Reportes", icon: BarChart3 },
-      { href: "/usuarios", label: "Usuarios", icon: UserCog },
+      { href: "/usuarios", label: "Usuarios", icon: UserCog, soloAdmin: true } as NavItem & {
+        soloAdmin?: boolean;
+      },
     ],
   },
 ];
 
 export function Sidebar({ activePath = "/" }: { activePath?: string }) {
+  // null = todavía no se sabe el rol (se muestra todo para evitar parpadeo);
+  // una vez resuelto, se filtra lo que no corresponde a ese rol.
+  const [rol, setRol] = useState<string | null>("administrador");
+
+  useEffect(() => {
+    let cancelado = false;
+    async function cargarRol() {
+      const supabase = createClient();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) return;
+      const { data } = await supabase
+        .from("perfiles")
+        .select("rol")
+        .eq("id", user.id)
+        .maybeSingle();
+      if (!cancelado && data?.rol) setRol(data.rol);
+    }
+    cargarRol();
+    return () => {
+      cancelado = true;
+    };
+  }, []);
+
+  const esAdmin = rol === "administrador";
+  const esSoloEtiquetado = rol === "etiquetado";
+
+  const gruposVisibles = navGroups
+    // El rol "etiquetado" no ve ningún grupo del DAP; los demás roles sí
+    // ven el DAP pero el grupo Etiquetado solo lo ven admin y etiquetado.
+    .filter((g) => {
+      if (esSoloEtiquetado) return !g.dap; // solo el grupo de Etiquetado (que no tiene dap:true)
+      if (g.label === "Etiquetado") return esAdmin; // deposito_aduanero no ve Etiquetado
+      return !g.soloAdmin || esAdmin;
+    })
+    .map((g) => ({
+      ...g,
+      items: g.items.filter((it) => !(it as NavItem & { soloAdmin?: boolean }).soloAdmin || esAdmin),
+    }));
+
   return (
     <aside className="w-[236px] shrink-0 bg-panel border-r border-border p-3.5 flex flex-col gap-5 min-h-screen">
       <div className="flex items-center gap-2.5 px-2">
@@ -77,7 +131,7 @@ export function Sidebar({ activePath = "/" }: { activePath?: string }) {
         </div>
       </div>
 
-      {navGroups.map((group, i) => (
+      {gruposVisibles.map((group, i) => (
         <div key={i} className="flex flex-col gap-0.5">
           {group.label && (
             <p className="text-[10.5px] uppercase tracking-wider text-text-faint px-2.5 pt-2.5 pb-1">

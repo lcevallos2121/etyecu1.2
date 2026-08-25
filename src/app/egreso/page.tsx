@@ -486,7 +486,8 @@ export default function EgresoPage() {
         <div className="print-area hidden print:block text-black bg-white p-10">
           <div className="max-w-[640px] mx-auto">
             <div className="flex items-center justify-center gap-3 mb-1">
-              <span className="font-bold text-[18px]">ETYECU</span>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logo-etyecu.png" alt="ETYECU" className="h-12" />
               <span className="text-[14px] font-bold">
                 {egresoImprimir.ordenes_dap?.tipo_espacio === "deposito_aduanero_publico"
                   ? "DEPÓSITO ADUANERO PÚBLICO"

@@ -770,7 +770,8 @@ export default function FacturaInformativaPage() {
         {facImprimir && (
           <div className="print-area hidden print:block text-black bg-white p-8">
             <div className="flex justify-between items-start border-b-2 border-black pb-3 mb-4">
-              <p className="text-[20px] font-bold">{EMPRESA.nombre}</p>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/logo-etyecu.png" alt="ETYECU" className="h-14" />
               <div className="text-right">
                 <p className="text-[15px] font-bold">FACTURA INFORMATIVA</p>
                 <p className="text-[11px]">N°: {facImprimir.numero}</p>

@@ -9,7 +9,7 @@ import { Toast } from "@/components/Feedback";
 
 export const dynamic = "force-dynamic";
 
-type Rol = "administrador" | "agente_aduana" | "deposito_aduanero" | "mesa" | "importador";
+type Rol = "administrador" | "agente_aduana" | "deposito_aduanero" | "mesa" | "etiquetado" | "importador";
 
 type Perfil = {
   id: string;
@@ -25,6 +25,7 @@ const rolLabel: Record<Rol, string> = {
   agente_aduana: "Agente de aduana",
   deposito_aduanero: "Depósito aduanero",
   mesa: "Mesa de trabajo",
+  etiquetado: "Etiquetado",
   importador: "Importador",
 };
 
@@ -33,6 +34,7 @@ const rolColor: Record<Rol, string> = {
   agente_aduana: "bg-green/[0.14] text-[#6ee7b7]",
   deposito_aduanero: "bg-amber/[0.14] text-[#fbbf24]",
   mesa: "bg-white/[0.08] text-text-dim",
+  etiquetado: "bg-[#93c5fd]/[0.14] text-[#93c5fd]",
   importador: "bg-red/[0.12] text-[#fca5a5]",
 };
 
