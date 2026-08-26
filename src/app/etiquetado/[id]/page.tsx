@@ -88,6 +88,23 @@ function sumarTallas(detalle: Record<string, number> | null | undefined): number
   return Object.values(detalle).reduce((a, n) => a + Number(n || 0), 0);
 }
 
+// Extrae la "categoría" de una descripción tomando su primera palabra útil:
+// se salta números/medidas sueltas (ej. "7", "5") y abreviaturas técnicas
+// con barra (ej. "W/LINER", "W/CUT"), para que "7\" STRETCH WOVEN SHORT..."
+// agrupe como "STRETCH" y no como "7" o "W/LINER". Así, por ejemplo,
+// "BLUSA KIMONO", "BLUSA LARGA" y "BLUSA" se agrupan todas bajo "BLUSA".
+function categoriaDeDescripcion(descripcion: string): string {
+  const palabras = descripcion.trim().split(/\s+/);
+  for (const p of palabras) {
+    const limpio = p.replace(/^[()"'.,;:]+|[()"'.,;:]+$/g, "");
+    if (limpio.length === 0) continue;
+    if (/^\d+$/.test(limpio)) continue; // solo dígitos (medidas: 7, 5...)
+    if (/^W\//i.test(limpio)) continue; // abreviaturas técnicas: W/LINER, W/CUT...
+    return limpio.toUpperCase();
+  }
+  return (palabras[0] ?? "SIN CATEGORÍA").toUpperCase();
+}
+
 // Botón de 3 estados: null (gris, sin definir) -> true (verde, Sí) -> false
 // (rojo, No) -> vuelve a null. Un clic avanza al siguiente estado.
 function BotonTresEstados({
@@ -850,9 +867,14 @@ export default function DetalleEtiquetadoPage() {
       }
     >();
     items.forEach((it) => {
-      const clave = (it.descripcion ?? it.codigo ?? "Sin descripción").trim() || "Sin descripción";
+      const textoOriginal = (it.descripcion ?? it.codigo ?? "Sin descripción").trim() || "Sin descripción";
+      // Clave normalizada SOLO para agrupar: mismo texto en mayúsculas y con
+      // espacios múltiples colapsados a uno solo, para que "BATA DE 2 PIEZAS",
+      // "Bata de 2 Piezas" y "BATA DE  2 PIEZAS" se unifiquen en una sola fila
+      // aunque vengan escritas con capitalización o espacios distintos.
+      const clave = textoOriginal.toUpperCase().replace(/\s+/g, " ");
       const actual = grupos.get(clave) ?? {
-        descripcion: clave,
+        descripcion: textoOriginal, // se conserva el primer texto tal como vino
         cantidadFactura: 0,
         cantidadInventario: 0,
         totalEtiquetas: 0,
@@ -875,6 +897,45 @@ export default function DetalleEtiquetadoPage() {
     });
     return Array.from(grupos.values()).sort((a, b) => a.descripcion.localeCompare(b.descripcion));
   }, [items, variantes]);
+
+  // Unifica las descripciones por categoría (primera palabra útil): por
+  // ejemplo "BLUSA KIMONO", "BLUSA LARGA" y "BLUSA" se suman en una sola
+  // fila "BLUSA". Se calcula sobre resumenPorDescripcion, que ya sumó por
+  // descripción exacta — aquí solo se agrupa un nivel más.
+  const resumenPorCategoria = useMemo(() => {
+    const grupos = new Map<
+      string,
+      { descripcion: string; cantidadFactura: number; cantidadInventario: number; totalEtiquetas: number }
+    >();
+    resumenPorDescripcion.forEach((g) => {
+      const categoria = categoriaDeDescripcion(g.descripcion);
+      const actual = grupos.get(categoria) ?? {
+        descripcion: categoria,
+        cantidadFactura: 0,
+        cantidadInventario: 0,
+        totalEtiquetas: 0,
+      };
+      actual.cantidadFactura += g.cantidadFactura;
+      actual.cantidadInventario += g.cantidadInventario;
+      actual.totalEtiquetas += g.totalEtiquetas;
+      grupos.set(categoria, actual);
+    });
+    return Array.from(grupos.values()).sort((a, b) => a.descripcion.localeCompare(b.descripcion));
+  }, [resumenPorDescripcion]);
+
+  // Alterna entre ver el detalle completo (por descripción exacta) o el
+  // resumen unificado (por categoría). Por defecto, el resumen unificado,
+  // ya que es lo que se pidió para el informe.
+  const [verInformePorCategoria, setVerInformePorCategoria] = useState(true);
+  const filasInforme = verInformePorCategoria ? resumenPorCategoria : resumenPorDescripcion;
+  const totalesInformeFilas = filasInforme.reduce(
+    (acc, g) => ({
+      factura: acc.factura + g.cantidadFactura,
+      inventario: acc.inventario + g.cantidadInventario,
+      etiquetas: acc.etiquetas + g.totalEtiquetas,
+    }),
+    { factura: 0, inventario: 0, etiquetas: 0 }
+  );
 
   const totalesInforme = resumenPorDescripcion.reduce(
     (acc, g) => ({
@@ -1752,6 +1813,16 @@ export default function DetalleEtiquetadoPage() {
                 prendas etiquetadas:
               </p>
 
+              <button
+                type="button"
+                onClick={() => setVerInformePorCategoria((v) => !v)}
+                className="print:hidden text-[11px] text-[#c4b8ff] hover:underline mb-2"
+              >
+                {verInformePorCategoria
+                  ? "Ver detalle completo por descripción exacta"
+                  : "Ver resumen unificado por categoría"}
+              </button>
+
               <table className="w-full text-[10px] border border-black/50 border-collapse mb-2">
                 <thead>
                   <tr className="bg-gray-100">
@@ -1762,7 +1833,7 @@ export default function DetalleEtiquetadoPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {resumenPorDescripcion.map((g) => (
+                  {filasInforme.map((g) => (
                     <tr key={g.descripcion}>
                       <td className="border border-black/40 p-1.5">{g.descripcion}</td>
                       <td className="border border-black/40 p-1.5 text-right">{g.cantidadFactura}</td>
@@ -1772,17 +1843,14 @@ export default function DetalleEtiquetadoPage() {
                   ))}
                   <tr className="font-bold">
                     <td className="border border-black/40 p-1.5 bg-gray-100">TOTALES</td>
-                    <td className="border border-black/40 p-1.5 text-right">{totalesInforme.factura}</td>
-                    <td className="border border-black/40 p-1.5 text-right">{totalesInforme.inventario}</td>
-                    <td className="border border-black/40 p-1.5 text-right">{totalesInforme.etiquetas}</td>
+                    <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.factura}</td>
+                    <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.inventario}</td>
+                    <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.etiquetas}</td>
                   </tr>
                 </tbody>
               </table>
 
-              <div
-                className="grid grid-cols-2 gap-10 text-center text-[10.5px] break-inside-avoid"
-                style={{ breakBefore: "page", paddingTop: "120px" }}
-              >
+              <div className="mt-16 grid grid-cols-2 gap-10 text-center text-[10.5px] break-inside-avoid">
                 <div>
                   <div className="border-t border-black pt-1">Supervisora ETYECU S.A.</div>
                   <p className="mt-0.5">{orden.supervisora ?? "—"}</p>
