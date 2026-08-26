@@ -221,13 +221,16 @@ export default function DetalleEtiquetadoPage() {
       } else {
         const { data: ordenDap } = await supabase
           .from("ordenes_dap")
-          .select("clientes(ruc_ci)")
+          .select("clientes(ruc_ci, direccion)")
           .eq("id", (ord as { orden_dap_id: string | null }).orden_dap_id ?? "")
           .single();
-        const clienteDap = (ordenDap as unknown as { clientes: { ruc_ci: string | null } | null })
-          ?.clientes;
+        const clienteDap = (
+          ordenDap as unknown as {
+            clientes: { ruc_ci: string | null; direccion: string | null } | null;
+          }
+        )?.clientes;
         ordTyped.ruc_cliente = clienteDap?.ruc_ci ?? null;
-        ordTyped.direccion_cliente = null;
+        ordTyped.direccion_cliente = clienteDap?.direccion ?? null;
       }
     }
 
@@ -338,12 +341,41 @@ export default function DetalleEtiquetadoPage() {
 
   useEffect(() => { cargar(); }, [cargar]);
 
-  // Al abrir el informe final, dispara la impresión
+  // Al abrir el informe final, dispara la impresión — pero solo después de
+  // que el navegador termine de calcular el layout real (esperando a que
+  // cargue el logo) y con un margen mayor, para que Chrome "vea" el
+  // contenido completo antes de calcular cuántas páginas hacen falta.
   useEffect(() => {
-    if (showInforme) {
-      const t = setTimeout(() => window.print(), 250);
-      return () => clearTimeout(t);
+    if (!showInforme) return;
+
+    let cancelado = false;
+
+    async function esperarImagenesYImprimir() {
+      // Espera a que el navegador pinte el nuevo contenido en el DOM
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      const contenedor = document.querySelector(".print-area");
+      const imagenes = contenedor ? Array.from(contenedor.querySelectorAll("img")) : [];
+      await Promise.all(
+        imagenes.map(
+          (img) =>
+            new Promise<void>((resolve) => {
+              if (img.complete) return resolve();
+              img.addEventListener("load", () => resolve(), { once: true });
+              img.addEventListener("error", () => resolve(), { once: true });
+            })
+        )
+      );
+
+      if (!cancelado) {
+        setTimeout(() => window.print(), 150);
+      }
     }
+
+    esperarImagenesYImprimir();
+    return () => {
+      cancelado = true;
+    };
   }, [showInforme]);
 
   // Búsqueda inteligente de códigos mientras se escribe
@@ -501,21 +533,6 @@ export default function DetalleEtiquetadoPage() {
         return;
       }
 
-      // --- DIAGNÓSTICO TEMPORAL: muestra qué columnas y valores detectó ---
-      // (quitar este bloque una vez resuelto el problema de cantidad_factura)
-      const diagCols = `Encabezados vistos: [${headers.join(" | ")}]`;
-      const diagMapa = `Mapa detectado: ${JSON.stringify(mapa)}`;
-      const primeraFila = filas[0] as Record<string, unknown>;
-      const diagValor = mapa.factura
-        ? `Valor crudo de factura en fila 1 (columna "${mapa.factura}"): ${JSON.stringify(
-            primeraFila[mapa.factura]
-          )} (tipo: ${typeof primeraFila[mapa.factura]})`
-        : "mapa.factura es undefined: no se detectó ninguna columna de factura";
-      console.log(diagCols);
-      console.log(diagMapa);
-      console.log(diagValor);
-      // --- FIN DIAGNÓSTICO TEMPORAL ---
-
       const nuevos = filas
         .filter((f) => String(f[mapa.codigo ?? ""] ?? "").trim() !== "" || String(f[mapa.cajas ?? ""] ?? "").trim() !== "")
         .map((f, i) => {
@@ -542,7 +559,7 @@ export default function DetalleEtiquetadoPage() {
       const { error } = await supabase.from("etq_items").insert(nuevos);
       if (error) { setAvisoExcel(error.message); return; }
       setAvisoExcel(
-        `✓ Se cargaron ${nuevos.length} códigos. [DIAGNÓSTICO] ${diagMapa} · ${diagValor}`
+        `✓ Se cargaron ${nuevos.length} códigos desde el inventario.`
       );
       cargar();
     } catch {
@@ -825,7 +842,12 @@ export default function DetalleEtiquetadoPage() {
   const resumenPorDescripcion = useMemo(() => {
     const grupos = new Map<
       string,
-      { descripcion: string; cantidadFactura: number; cantidadInventario: number }
+      {
+        descripcion: string;
+        cantidadFactura: number;
+        cantidadInventario: number;
+        totalEtiquetas: number;
+      }
     >();
     items.forEach((it) => {
       const clave = (it.descripcion ?? it.codigo ?? "Sin descripción").trim() || "Sin descripción";
@@ -833,20 +855,34 @@ export default function DetalleEtiquetadoPage() {
         descripcion: clave,
         cantidadFactura: 0,
         cantidadInventario: 0,
+        totalEtiquetas: 0,
       };
       actual.cantidadFactura += Number(it.cantidad_factura || 0);
       actual.cantidadInventario += Number(it.cantidad_contada || 0);
+
+      // Total de etiquetas = suma de tallas. Si el código tiene variantes de
+      // color, se suman las tallas de cada variante; si no, las del código.
+      const variantesDelItem = variantes.filter((v) => v.item_id === it.id);
+      if (variantesDelItem.length > 0) {
+        variantesDelItem.forEach((v) => {
+          actual.totalEtiquetas += sumarTallas(v.tallas_detalle);
+        });
+      } else {
+        actual.totalEtiquetas += sumarTallas(it.tallas_detalle);
+      }
+
       grupos.set(clave, actual);
     });
     return Array.from(grupos.values()).sort((a, b) => a.descripcion.localeCompare(b.descripcion));
-  }, [items]);
+  }, [items, variantes]);
 
   const totalesInforme = resumenPorDescripcion.reduce(
     (acc, g) => ({
       factura: acc.factura + g.cantidadFactura,
       inventario: acc.inventario + g.cantidadInventario,
+      etiquetas: acc.etiquetas + g.totalEtiquetas,
     }),
-    { factura: 0, inventario: 0 }
+    { factura: 0, inventario: 0, etiquetas: 0 }
   );
 
   // Producción por mesa (para el reporte del día)
@@ -1652,7 +1688,7 @@ export default function DetalleEtiquetadoPage() {
 
       {/* PDF: Informe Final de Etiquetado (lo que factura contabilidad) */}
       {showInforme && orden && (
-        <div className="fixed inset-0 z-[70] print:static print:z-auto">
+        <div className="fixed inset-0 z-[70] print:static print:z-auto print-static-container">
           <div className="print:hidden fixed top-4 right-4 z-10">
             <button
               onClick={() => setShowInforme(false)}
@@ -1731,19 +1767,22 @@ export default function DetalleEtiquetadoPage() {
                       <td className="border border-black/40 p-1.5">{g.descripcion}</td>
                       <td className="border border-black/40 p-1.5 text-right">{g.cantidadFactura}</td>
                       <td className="border border-black/40 p-1.5 text-right">{g.cantidadInventario}</td>
-                      <td className="border border-black/40 p-1.5 text-right">{g.cantidadInventario}</td>
+                      <td className="border border-black/40 p-1.5 text-right">{g.totalEtiquetas}</td>
                     </tr>
                   ))}
                   <tr className="font-bold">
                     <td className="border border-black/40 p-1.5 bg-gray-100">TOTALES</td>
                     <td className="border border-black/40 p-1.5 text-right">{totalesInforme.factura}</td>
                     <td className="border border-black/40 p-1.5 text-right">{totalesInforme.inventario}</td>
-                    <td className="border border-black/40 p-1.5 text-right">{totalesInforme.inventario}</td>
+                    <td className="border border-black/40 p-1.5 text-right">{totalesInforme.etiquetas}</td>
                   </tr>
                 </tbody>
               </table>
 
-              <div className="mt-16 grid grid-cols-2 gap-10 text-center text-[10.5px]">
+              <div
+                className="grid grid-cols-2 gap-10 text-center text-[10.5px] break-inside-avoid"
+                style={{ breakBefore: "page", paddingTop: "120px" }}
+              >
                 <div>
                   <div className="border-t border-black pt-1">Supervisora ETYECU S.A.</div>
                   <p className="mt-0.5">{orden.supervisora ?? "—"}</p>

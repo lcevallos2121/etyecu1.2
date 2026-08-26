@@ -81,11 +81,31 @@ body {
     visibility: visible;
   }
 
+  /* "absolute" (no "static") es necesario para que el contenido SALGA del
+     flujo normal del layout — si no, queda corrido a la derecha por el
+     ancho del sidebar (236px) que sigue ocupando su espacio en el flex. */
   .print-area {
     position: absolute;
     left: 0;
     top: 0;
     width: 100%;
+  }
+
+  /* La causa real de las hojas en blanco de más: el contenedor padre del
+     área imprimible usa "fixed inset-0" en pantalla (ocupa 100vh de alto).
+     Aunque el hijo (.print-area) esté en "absolute", el padre sigue
+     reservando esa altura de pantalla completa, y el navegador la cuenta
+     al calcular cuántas páginas hacen falta. Se anula esa altura al
+     imprimir para que solo se generen las páginas que el CONTENIDO real
+     necesita, no las que "cabrían" en una pantalla completa.
+     Nota: .print\:static es la clase de Tailwind "print:static" tal como
+     queda escapada en el CSS compilado. */
+  .print-static-container,
+  .print\:static {
+    position: static !important;
+    height: auto !important;
+    min-height: 0 !important;
+    inset: auto !important;
   }
 }
 

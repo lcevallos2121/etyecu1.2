@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
+import * as XLSX from "xlsx";
 import { Printer, X, Check, HelpCircle } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import {
@@ -44,6 +45,7 @@ type ItemEtq = {
   codigo: string | null;
   descripcion: string | null;
   marca: string | null;
+  tienda: string | null;
   cantidad_contada: number;
   cantidad_factura: number;
   tallas_detalle: Record<string, number> | null;
@@ -151,7 +153,7 @@ export default function ReportesEtiquetadoPage() {
       supabase
         .from("etq_items")
         .select(
-          "id, orden_id, palet, cajas, codigo, descripcion, marca, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla"
+          "id, orden_id, palet, cajas, codigo, descripcion, marca, tienda, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla"
         ),
       supabase.from("etq_movimientos").select("orden_id, mesa_id, cantidad, creado_en"),
       supabase.from("etq_mesas").select("id, orden_id, nombre, integrantes"),
@@ -517,6 +519,7 @@ export default function ReportesEtiquetadoPage() {
     palet: string | null;
     codigo: string | null;
     marca: string | null;
+    tienda: string | null;
     descripcion: string | null;
     color: string | null;
     composicion: string | null;
@@ -559,6 +562,7 @@ export default function ReportesEtiquetadoPage() {
           palet: it.palet,
           codigo: it.codigo,
           marca: it.marca,
+          tienda: it.tienda,
           descripcion: it.descripcion,
           color: null,
           composicion: it.composicion,
@@ -597,6 +601,7 @@ export default function ReportesEtiquetadoPage() {
             palet: it.palet,
             codigo: it.codigo,
             marca: it.marca,
+            tienda: it.tienda,
             descripcion: it.descripcion,
             color: v.color,
             composicion: v.composicion ?? it.composicion,
@@ -615,6 +620,34 @@ export default function ReportesEtiquetadoPage() {
     });
     return filas;
   }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro]);
+
+  // Descarga el inventario tal cual se ve en pantalla (mismas columnas y
+  // mismas filas ya filtradas por palet/caja/búsqueda), agregando el campo
+  // Tienda que no se muestra en la tabla pero sí se pide en la exportación.
+  function descargarInventarioExcel() {
+    const ordenActual = ordenes.find((o) => o.id === ordenSeleccionadaId);
+    const filas = filasInventario.map((f) => ({
+      Palet: f.palet ?? "",
+      Cajas: f.cajas ?? "",
+      Código: f.codigo ?? "",
+      Marca: itemsInventarioFiltrados.find((it) => it.id === f.key)?.marca ?? "",
+      Descripción: f.descripcion ?? "",
+      Color: f.color ?? "",
+      Tallas: f.tallasTexto,
+      Composición: f.composicion ?? "",
+      Tienda: itemsInventarioFiltrados.find((it) => it.id === f.key)?.tienda ?? "",
+      País: f.pais ?? "",
+      Factura: f.esVariante ? "" : itemsInventarioFiltrados.find((it) => it.id === f.key)?.cantidad_factura ?? "",
+      Contado: f.cantidad,
+      "Total etiquetas": f.totalTallas,
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(filas);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Inventario");
+    const nombreArchivo = `Inventario_${ordenActual?.numero_etq ?? "orden"}.xlsx`;
+    XLSX.writeFile(wb, nombreArchivo);
+  }
 
   const totalesOrdenSeleccionada = itemsOrdenSeleccionada.reduce(
     (acc, it) => ({
@@ -997,12 +1030,20 @@ export default function ReportesEtiquetadoPage() {
                       ))}
                     </select>
                     {ordenSeleccionadaId && (
-                      <Link
-                        href={`/etiquetado/${ordenSeleccionadaId}`}
-                        className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg ml-auto"
-                      >
-                        Abrir orden / generar informe final
-                      </Link>
+                      <>
+                        <button
+                          onClick={descargarInventarioExcel}
+                          className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg ml-auto"
+                        >
+                          Descargar inventario en Excel
+                        </button>
+                        <Link
+                          href={`/etiquetado/${ordenSeleccionadaId}`}
+                          className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                        >
+                          Abrir orden / generar informe final
+                        </Link>
+                      </>
                     )}
                   </div>
 
