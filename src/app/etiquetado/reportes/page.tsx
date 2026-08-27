@@ -53,9 +53,14 @@ type ItemEtq = {
   pais: string | null;
   tiene_codigo: boolean | null;
   tiene_talla: boolean | null;
+  codigo_nuevo: boolean | null;
+  tipo_etiqueta: string | null;
+  novedad: string | null;
+  ya_impreso: boolean | null;
 };
 
 type VarianteEtq = {
+  id: string;
   item_id: string;
   color: string | null;
   composicion: string | null;
@@ -64,6 +69,8 @@ type VarianteEtq = {
   tallas_detalle: Record<string, number> | null;
   tiene_codigo: boolean | null;
   tiene_talla: boolean | null;
+  codigo_nuevo: boolean | null;
+  ya_impreso: boolean | null;
 };
 
 type TallasPorCaja = {
@@ -76,7 +83,9 @@ type TallasPorCaja = {
 };
 
 type Movimiento = {
+  id: string;
   orden_id: string;
+  item_id: string | null;
   mesa_id: string | null;
   cantidad: number;
   creado_en: string;
@@ -120,10 +129,13 @@ export default function ReportesEtiquetadoPage() {
   const [ordenSeleccionadaId, setOrdenSeleccionadaId] = useState<string>("");
   const [paletSeleccionado, setPaletSeleccionado] = useState<string>("todos");
   const [cajaFiltro, setCajaFiltro] = useState("");
+  const [composicionFiltro, setComposicionFiltro] = useState<string>("todas");
+  const [busquedaComposicion, setBusquedaComposicion] = useState("");
+  const [sugerenciasComposicionAbiertas, setSugerenciasComposicionAbiertas] = useState(false);
 
   // Módulo de Inconsistencias
   const [tipoInconsistencia, setTipoInconsistencia] = useState<
-    "todas" | "completo" | "faltante" | "sobrante"
+    "todas" | "completo" | "faltante" | "sobrante" | "nuevo"
   >(
     "todas"
   );
@@ -133,6 +145,30 @@ export default function ReportesEtiquetadoPage() {
   const [cajaEditTexto, setCajaEditTexto] = useState("");
   const [cajaEditTallas, setCajaEditTallas] = useState<Record<string, number>>({});
   const [cajaAEliminarId, setCajaAEliminarId] = useState<string | null>(null);
+
+  // Edición de los datos generales del código (palet, marca, composición,
+  // país, tienda, tipo etiqueta, novedad) directamente desde el modal de
+  // "Revisar cajas" — para que no haga falta abrir la pantalla de Inventario
+  // en otra pestaña.
+  const [editandoDatosGenerales, setEditandoDatosGenerales] = useState(false);
+  const [egPalet, setEgPalet] = useState("");
+  const [egMarca, setEgMarca] = useState("");
+  const [egComposicion, setEgComposicion] = useState("");
+  const [egPais, setEgPais] = useState("");
+  const [egTienda, setEgTienda] = useState("");
+  const [egTipoEtiqueta, setEgTipoEtiqueta] = useState("COSIDO");
+  const [egNovedad, setEgNovedad] = useState("");
+  const [guardandoDatosGenerales, setGuardandoDatosGenerales] = useState(false);
+
+  // Unificar dos códigos que en realidad son el mismo producto (el
+  // proveedor a veces manda un código distinto para completar un
+  // faltante). Isabel busca el código secundario, elige cuál de los dos
+  // queda como principal, y todo se fusiona en él.
+  const [showUnificar, setShowUnificar] = useState(false);
+  const [busquedaUnificar, setBusquedaUnificar] = useState("");
+  const [codigoSecundarioId, setCodigoSecundarioId] = useState<string | null>(null);
+  const [principalElegido, setPrincipalElegido] = useState<"actual" | "otro">("actual");
+  const [unificando, setUnificando] = useState(false);
 
   // Módulo de Productividad
   const [vistaProductividad, setVistaProductividad] = useState<"general" | "orden">("general");
@@ -153,11 +189,11 @@ export default function ReportesEtiquetadoPage() {
       supabase
         .from("etq_items")
         .select(
-          "id, orden_id, palet, cajas, codigo, descripcion, marca, tienda, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla"
+          "id, orden_id, palet, cajas, codigo, descripcion, marca, tienda, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla, codigo_nuevo, tipo_etiqueta, novedad, ya_impreso"
         ),
-      supabase.from("etq_movimientos").select("orden_id, mesa_id, cantidad, creado_en"),
+      supabase.from("etq_movimientos").select("id, orden_id, item_id, mesa_id, cantidad, creado_en"),
       supabase.from("etq_mesas").select("id, orden_id, nombre, integrantes"),
-      supabase.from("etq_variantes").select("item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla"),
+      supabase.from("etq_variantes").select("id, item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso"),
       supabase
         .from("etq_tallas_por_caja")
         .select("id, item_id, variante_id, caja, numero_caja, tallas_detalle"),
@@ -457,11 +493,41 @@ export default function ReportesEtiquetadoPage() {
     return itemsDelPalet.filter((it) => textoContieneCaja(it.cajas, caja));
   }, [itemsDelPalet, cajaFiltro]);
 
+  // Composiciones únicas que existen en TODA la orden, para poblar el
+  // desplegable del filtro de Composición.
+  const composicionesDisponibles = useMemo(() => {
+    const set = new Set<string>();
+    itemsOrdenSeleccionada.forEach((it) => {
+      const c = (it.composicion ?? "").trim();
+      if (c) set.add(c);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [itemsOrdenSeleccionada]);
+
+  // Sugerencias que coinciden con lo que Isabel va escribiendo — para no
+  // mostrar un desplegable largo con TODAS las composiciones de una vez,
+  // sino solo las que coinciden con la búsqueda (como el resto de
+  // buscadores del sistema).
+  const composicionesSugeridas = useMemo(() => {
+    const q = busquedaComposicion.trim().toLowerCase();
+    if (!q) return composicionesDisponibles;
+    return composicionesDisponibles.filter((c) => c.toLowerCase().includes(q));
+  }, [composicionesDisponibles, busquedaComposicion]);
+
+  // Paso 2.5: filtro de composición — VERDADERAMENTE independiente de
+  // Palet/Caja. Cuando está activo, ignora el palet/caja elegidos y
+  // muestra la composición en TODA la orden (así Isabel ve, por ejemplo,
+  // "todos los códigos de 100% Poliéster" sin importar en qué palet están).
+  const itemsPorComposicion = useMemo(() => {
+    if (composicionFiltro === "todas") return itemsDeLaCaja;
+    return itemsOrdenSeleccionada.filter((it) => (it.composicion ?? "").trim() === composicionFiltro);
+  }, [itemsDeLaCaja, itemsOrdenSeleccionada, composicionFiltro]);
+
   // Paso 3: búsqueda de texto libre (código, descripción, tallas, etc.)
   const itemsInventarioFiltrados = useMemo(() => {
     const q = busquedaInventario.trim().toLowerCase();
-    if (!q) return itemsDeLaCaja;
-    return itemsDeLaCaja.filter((it) => {
+    if (!q) return itemsPorComposicion;
+    return itemsPorComposicion.filter((it) => {
       const codigo = (it.codigo ?? "").toLowerCase();
       const marca = (it.marca ?? "").toLowerCase();
       const descripcion = (it.descripcion ?? "").toLowerCase();
@@ -484,7 +550,7 @@ export default function ReportesEtiquetadoPage() {
         pais.includes(q)
       );
     });
-  }, [itemsDeLaCaja, busquedaInventario, tipoBusqueda]);
+  }, [itemsPorComposicion, busquedaInventario, tipoBusqueda]);
 
   // Extrae SOLO la caja buscada del texto completo: "164(24) 165(24)" + "165"
   // -> "165(24)". Si no hay filtro de caja activo, muestra el texto completo.
@@ -516,6 +582,8 @@ export default function ReportesEtiquetadoPage() {
   // su propio desglose de tallas, listo para saber qué imprimir de cada uno.
   type FilaInventario = {
     key: string;
+    idReal: string; // id real del item o de la variante, para poder actualizarlo
+    esVarianteParaGuardar: boolean; // true = idReal es de etq_variantes, false = de etq_items
     palet: string | null;
     codigo: string | null;
     marca: string | null;
@@ -532,6 +600,7 @@ export default function ReportesEtiquetadoPage() {
     sinDesgloseDeCaja: boolean; // true si hay filtro de caja pero no hay historial para esa caja
     tieneCodigo: boolean | null;
     tieneTalla: boolean | null;
+    yaImpreso: boolean;
   };
 
   const filasInventario: FilaInventario[] = useMemo(() => {
@@ -559,6 +628,8 @@ export default function ReportesEtiquetadoPage() {
         }
         filas.push({
           key: it.id,
+          idReal: it.id,
+          esVarianteParaGuardar: false,
           palet: it.palet,
           codigo: it.codigo,
           marca: it.marca,
@@ -575,6 +646,7 @@ export default function ReportesEtiquetadoPage() {
           sinDesgloseDeCaja: sinDesglose,
           tieneCodigo: it.tiene_codigo,
           tieneTalla: it.tiene_talla,
+          yaImpreso: it.ya_impreso ?? false,
         });
       } else {
         variantesDelItem.forEach((v, i) => {
@@ -598,6 +670,8 @@ export default function ReportesEtiquetadoPage() {
           }
           filas.push({
             key: `${it.id}-${i}`,
+            idReal: v.id,
+            esVarianteParaGuardar: true,
             palet: it.palet,
             codigo: it.codigo,
             marca: it.marca,
@@ -614,12 +688,41 @@ export default function ReportesEtiquetadoPage() {
             sinDesgloseDeCaja: sinDesglose,
             tieneCodigo: v.tiene_codigo,
             tieneTalla: v.tiene_talla,
+            yaImpreso: v.ya_impreso ?? false,
           });
         });
       }
     });
     return filas;
   }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro]);
+
+  // Marca/desmarca "Ya impreso" en la fila. Actualiza la tabla correcta
+  // (etq_items o etq_variantes) según si la fila es un código simple o una
+  // variante de color, usando el id REAL de cada una.
+  async function toggleYaImpreso(fila: FilaInventario) {
+    const nuevoValor = !fila.yaImpreso;
+    const tabla = fila.esVarianteParaGuardar ? "etq_variantes" : "etq_items";
+    const { error } = await supabase
+      .from(tabla)
+      .update({ ya_impreso: nuevoValor })
+      .eq("id", fila.idReal);
+    if (error) {
+      setToast(`No se pudo actualizar: ${error.message}`);
+      return;
+    }
+    // Actualiza solo esa fila en el estado local, SIN recargar toda la
+    // tabla desde el servidor — así no hay parpadeo ni reordenamiento
+    // visual, el resaltado se ve al instante y de forma estable.
+    if (fila.esVarianteParaGuardar) {
+      setVariantesTodas((prev) =>
+        prev.map((v) => (v.id === fila.idReal ? { ...v, ya_impreso: nuevoValor } : v))
+      );
+    } else {
+      setItems((prev) =>
+        prev.map((it) => (it.id === fila.idReal ? { ...it, ya_impreso: nuevoValor } : it))
+      );
+    }
+  }
 
   // Descarga el inventario tal cual se ve en pantalla (mismas columnas y
   // mismas filas ya filtradas por palet/caja/búsqueda), agregando el campo
@@ -674,6 +777,7 @@ export default function ReportesEtiquetadoPage() {
       if (tipoInconsistencia === "completo" && it.diferencia !== 0) return false;
       if (tipoInconsistencia === "faltante" && it.diferencia >= 0) return false;
       if (tipoInconsistencia === "sobrante" && it.diferencia <= 0) return false;
+      if (tipoInconsistencia === "nuevo" && !it.codigo_nuevo) return false;
       if (!q) return true;
       const codigo = (it.codigo ?? "").toLowerCase();
       const descripcion = (it.descripcion ?? "").toLowerCase();
@@ -695,6 +799,17 @@ export default function ReportesEtiquetadoPage() {
   async function abrirRevisarCajas(itemId: string) {
     setItemRevisarId(itemId);
     setCajaEditId(null);
+    setEditandoDatosGenerales(false);
+    const item = items.find((it) => it.id === itemId);
+    if (item) {
+      setEgPalet(item.palet ?? "");
+      setEgMarca(item.marca ?? "");
+      setEgComposicion(item.composicion ?? "");
+      setEgPais(item.pais ?? "");
+      setEgTienda(item.tienda ?? "");
+      setEgTipoEtiqueta(item.tipo_etiqueta ?? "COSIDO");
+      setEgNovedad(item.novedad ?? "");
+    }
   }
 
   function abrirEditarCaja(reg: TallasPorCaja) {
@@ -746,6 +861,156 @@ export default function ReportesEtiquetadoPage() {
     const nums = texto.match(/\((\d+)\)/g);
     if (!nums) return 0;
     return nums.reduce((a, n) => a + Number(n.replace(/[()]/g, "")), 0);
+  }
+
+  async function guardarDatosGeneralesCodigo() {
+    if (!itemRevisarId) return;
+    setGuardandoDatosGenerales(true);
+    setErrorMsg(null);
+    try {
+      const { error } = await supabase
+        .from("etq_items")
+        .update({
+          palet: egPalet.trim() || null,
+          marca: egMarca.trim() || null,
+          composicion: egComposicion.trim() || null,
+          pais: egPais.trim() || null,
+          tienda: egTienda.trim() || null,
+          tipo_etiqueta: egTipoEtiqueta.trim() || null,
+          novedad: egNovedad.trim() || null,
+          actualizado_en: new Date().toISOString(),
+        })
+        .eq("id", itemRevisarId);
+      if (error) {
+        setErrorMsg(error.message);
+        return;
+      }
+      setEditandoDatosGenerales(false);
+      setToast("Datos del código actualizados.");
+      cargar();
+    } finally {
+      setGuardandoDatosGenerales(false);
+    }
+  }
+
+  // Búsqueda de códigos candidatos a unificar, dentro de la MISMA orden que
+  // el código en revisión (nunca cruza órdenes distintas, evita mezclar
+  // inventarios de cargas diferentes por error).
+  const candidatosUnificar = useMemo(() => {
+    if (!itemRevisarId || !itemEnRevision) return [];
+    const q = busquedaUnificar.trim().toLowerCase();
+    return items.filter((it) => {
+      if (it.id === itemRevisarId) return false; // no puede unificarse consigo mismo
+      if (it.orden_id !== itemEnRevision.orden_id) return false; // misma orden siempre
+      if (!q) return false; // solo muestra sugerencias si ya escribió algo
+      const codigo = (it.codigo ?? "").toLowerCase();
+      const descripcion = (it.descripcion ?? "").toLowerCase();
+      return codigo.includes(q) || descripcion.includes(q);
+    });
+  }, [items, itemRevisarId, itemEnRevision, busquedaUnificar]);
+
+  const codigoSecundario = items.find((it) => it.id === codigoSecundarioId) ?? null;
+
+  function abrirUnificar() {
+    setShowUnificar(true);
+    setBusquedaUnificar("");
+    setCodigoSecundarioId(null);
+    setPrincipalElegido("actual");
+    setErrorMsg(null);
+  }
+
+  // Fusiona codigoSecundario DENTRO del código elegido como principal:
+  // suma cantidades, combina cajas y tallas, y reasigna todo el historial
+  // (registros de tallas por caja, variantes, movimientos de mesa) al
+  // principal — así no se pierde nada de lo que Isabel ya capturó. Al
+  // final, borra el código secundario, que ya quedó vacío.
+  async function confirmarUnificar() {
+    if (!itemRevisarId || !codigoSecundarioId || !itemEnRevision || !codigoSecundario) return;
+    setUnificando(true);
+    setErrorMsg(null);
+    try {
+      const principalId = principalElegido === "actual" ? itemRevisarId : codigoSecundarioId;
+      const secundarioId = principalElegido === "actual" ? codigoSecundarioId : itemRevisarId;
+      const principal = principalElegido === "actual" ? itemEnRevision : codigoSecundario;
+      const secundario = principalElegido === "actual" ? codigoSecundario : itemEnRevision;
+
+      // 1. Combinar cajas (texto) y calcular el nuevo total combinado
+      const cajasCombinadas = [principal.cajas, secundario.cajas]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+
+      // 2. Combinar tallas_detalle sumando talla por talla
+      const tallasCombinadas: Record<string, number> = { ...(principal.tallas_detalle ?? {}) };
+      Object.entries(secundario.tallas_detalle ?? {}).forEach(([talla, cant]) => {
+        tallasCombinadas[talla] = (tallasCombinadas[talla] ?? 0) + Number(cant || 0);
+      });
+
+      // 3. Reasignar el historial de tallas por caja del secundario al principal
+      const { error: errCajas } = await supabase
+        .from("etq_tallas_por_caja")
+        .update({ item_id: principalId })
+        .eq("item_id", secundarioId);
+      if (errCajas) {
+        setErrorMsg(`No se pudo reasignar el historial de cajas: ${errCajas.message}`);
+        return;
+      }
+
+      // 4. Reasignar las variantes de color del secundario al principal
+      const { error: errVariantes } = await supabase
+        .from("etq_variantes")
+        .update({ item_id: principalId })
+        .eq("item_id", secundarioId);
+      if (errVariantes) {
+        setErrorMsg(`No se pudo reasignar las variantes: ${errVariantes.message}`);
+        return;
+      }
+
+      // 5. Reasignar los movimientos (historial de producción por mesa)
+      const { error: errMovs } = await supabase
+        .from("etq_movimientos")
+        .update({ item_id: principalId })
+        .eq("item_id", secundarioId);
+      if (errMovs) {
+        setErrorMsg(`No se pudo reasignar el historial de producción: ${errMovs.message}`);
+        return;
+      }
+
+      // 6. Actualizar el código principal con los totales combinados. La
+      // cantidad de FACTURA no se suma — se mantiene la del código elegido
+      // como principal, porque es un dato declarado por el proveedor/
+      // cliente, no algo que deba cambiar por cómo se agrupen los códigos.
+      const { error: errUpdate } = await supabase
+        .from("etq_items")
+        .update({
+          cajas: cajasCombinadas || null,
+          cantidad_contada: (principal.cantidad_contada || 0) + (secundario.cantidad_contada || 0),
+          tallas_detalle: tallasCombinadas,
+          actualizado_en: new Date().toISOString(),
+        })
+        .eq("id", principalId);
+      if (errUpdate) {
+        setErrorMsg(`No se pudo actualizar el código principal: ${errUpdate.message}`);
+        return;
+      }
+
+      // 7. Borrar el código secundario, que ya quedó vacío (todo se movió)
+      const { error: errDelete } = await supabase.from("etq_items").delete().eq("id", secundarioId);
+      if (errDelete) {
+        setErrorMsg(`Se combinaron los datos pero no se pudo borrar el código sobrante: ${errDelete.message}`);
+        return;
+      }
+
+      setShowUnificar(false);
+      setItemRevisarId(null);
+      setToast(
+        `Códigos unificados en ${principal.codigo} (factura ${principal.cantidad_factura}). ` +
+          `La factura de ${secundario.codigo} (${secundario.cantidad_factura}) no se sumó.`
+      );
+      cargar();
+    } finally {
+      setUnificando(false);
+    }
   }
 
   async function guardarEdicionCaja() {
@@ -1097,6 +1362,7 @@ export default function ReportesEtiquetadoPage() {
                             onChange={(e) => {
                               setPaletSeleccionado(e.target.value);
                               setCajaFiltro("");
+                              setComposicionFiltro("todas");
                             }}
                             className="card px-3 py-2 text-[12.5px] outline-none min-w-[140px]"
                           >
@@ -1114,20 +1380,82 @@ export default function ReportesEtiquetadoPage() {
                           </label>
                           <input
                             value={cajaFiltro}
-                            onChange={(e) => setCajaFiltro(e.target.value)}
+                            onChange={(e) => {
+                              setCajaFiltro(e.target.value);
+                              if (e.target.value.trim()) setComposicionFiltro("todas");
+                            }}
                             placeholder="Ej. 1, 12…"
                             className="card px-3 py-2 text-[12.5px] outline-none w-[160px] font-mono"
                           />
                         </div>
-                        {(paletSeleccionado !== "todos" || cajaFiltro) && (
+
+                        <div className="w-px self-stretch bg-border" />
+
+                        <div className="relative">
+                          <label className="text-[11px] text-text-faint block mb-1">
+                            Composición (toda la orden)
+                          </label>
+                          {composicionFiltro !== "todas" ? (
+                            <div className="flex items-center gap-1.5 card px-3 py-2 min-w-[220px]">
+                              <span className="text-[12.5px] flex-1 truncate">{composicionFiltro}</span>
+                              <button
+                                onClick={() => {
+                                  setComposicionFiltro("todas");
+                                  setBusquedaComposicion("");
+                                }}
+                                className="text-text-faint hover:text-text"
+                                title="Quitar filtro de composición"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          ) : (
+                            <input
+                              value={busquedaComposicion}
+                              onChange={(e) => setBusquedaComposicion(e.target.value)}
+                              onFocus={() => setSugerenciasComposicionAbiertas(true)}
+                              onBlur={() => setTimeout(() => setSugerenciasComposicionAbiertas(false), 150)}
+                              placeholder="Buscar composición…"
+                              className="card px-3 py-2 text-[12.5px] outline-none w-[220px]"
+                            />
+                          )}
+                          {sugerenciasComposicionAbiertas && composicionFiltro === "todas" && (
+                            <div className="absolute z-20 top-full mt-1 w-[260px] max-h-[220px] overflow-y-auto card p-1 shadow-lg">
+                              {composicionesSugeridas.length === 0 ? (
+                                <p className="text-[11.5px] text-text-faint px-2 py-2">
+                                  Ninguna composición coincide.
+                                </p>
+                              ) : (
+                                composicionesSugeridas.map((c) => (
+                                  <button
+                                    key={c}
+                                    onClick={() => {
+                                      setComposicionFiltro(c);
+                                      setBusquedaComposicion("");
+                                      setPaletSeleccionado("todos");
+                                      setCajaFiltro("");
+                                    }}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-md text-[12px] hover:bg-white/[0.06]"
+                                  >
+                                    {c}
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {(paletSeleccionado !== "todos" || cajaFiltro || composicionFiltro !== "todas") && (
                           <button
                             onClick={() => {
                               setPaletSeleccionado("todos");
                               setCajaFiltro("");
+                              setComposicionFiltro("todas");
+                              setBusquedaComposicion("");
                             }}
                             className="text-[11.5px] text-text-faint hover:text-text underline self-end pb-2"
                           >
-                            Limpiar palet/caja
+                            Limpiar filtros
                           </button>
                         )}
                         {cajaFiltro && (
@@ -1135,6 +1463,12 @@ export default function ReportesEtiquetadoPage() {
                             Mostrando la caja {cajaFiltro}. Donde dice <b>(total)</b> junto a las tallas,
                             ese código aún no tiene desglose exacto de esta caja y se muestra el total
                             completo del código.
+                          </span>
+                        )}
+                        {composicionFiltro !== "todas" && (
+                          <span className="text-[11px] text-[#c4b8ff] self-end pb-2">
+                            Mostrando todos los códigos de "{composicionFiltro}" en toda la orden, sin
+                            importar el palet.
                           </span>
                         )}
                       </div>
@@ -1161,8 +1495,9 @@ export default function ReportesEtiquetadoPage() {
                       </div>
 
                       <div className="card overflow-x-auto">
-                        <div className="min-w-[1740px]">
-                            <div className="grid grid-cols-[70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px_80px_80px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                        <div className="min-w-[1800px]">
+                            <div className="grid grid-cols-[50px_70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px_80px_80px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                              <span className="text-center">Impr.</span>
                               <span>Palet</span>
                               <span>Cajas</span>
                               <span>Código</span>
@@ -1187,10 +1522,28 @@ export default function ReportesEtiquetadoPage() {
                               filasInventario.map((f) => (
                                 <div
                                   key={f.key}
-                                  className={`grid grid-cols-[70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px_80px_80px] gap-3 px-5 py-2.5 items-start border-b border-border last:border-b-0 text-[12.5px] ${
-                                    f.esVariante ? "bg-amber/[0.03]" : ""
+                                  className={`grid grid-cols-[50px_70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px_80px_80px] gap-3 px-5 py-2.5 items-start border-b border-border last:border-b-0 text-[12.5px] transition-colors duration-300 ${
+                                    f.yaImpreso
+                                      ? "bg-teal-500/[0.1]"
+                                      : f.esVariante
+                                      ? "bg-amber/[0.03]"
+                                      : ""
                                   }`}
                                 >
+                                  <span className="flex justify-center pt-0.5">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleYaImpreso(f)}
+                                      title={f.yaImpreso ? "Marcado como impreso" : "Marcar como impreso"}
+                                      className={`w-5 h-5 rounded flex items-center justify-center border transition-colors ${
+                                        f.yaImpreso
+                                          ? "bg-teal-500 border-teal-500"
+                                          : "bg-white/[0.04] border-border hover:border-teal-500/50"
+                                      }`}
+                                    >
+                                      {f.yaImpreso && <Check size={13} className="text-white" />}
+                                    </button>
+                                  </span>
                                   <span className="text-text-dim pt-0.5">{f.palet ?? "—"}</span>
                                   <span className="text-text-dim leading-snug font-mono text-[11px]">
                                     {textoCajaFiltrada(f.cajas)}
@@ -1328,6 +1681,7 @@ export default function ReportesEtiquetadoPage() {
                           <option value="completo">Solo completos</option>
                           <option value="faltante">Solo faltantes</option>
                           <option value="sobrante">Solo sobrantes</option>
+                          <option value="nuevo">Solo códigos nuevos</option>
                         </select>
                         <input
                           value={busquedaInconsistencias}
@@ -1347,10 +1701,11 @@ export default function ReportesEtiquetadoPage() {
                         </div>
                       ) : (
                         <div className="card overflow-hidden">
-                          <div className="grid grid-cols-[110px_1fr_100px_80px_80px_80px_120px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                          <div className="grid grid-cols-[110px_1fr_100px_70px_80px_80px_80px_130px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
                             <span>Código</span>
                             <span>Descripción</span>
                             <span>Marca</span>
+                            <span className="text-center">Nuevo</span>
                             <span className="text-right">Factura</span>
                             <span className="text-right">Contado</span>
                             <span className="text-right">Diferencia</span>
@@ -1359,11 +1714,18 @@ export default function ReportesEtiquetadoPage() {
                           {inconsistenciasFiltradas.map((it) => (
                             <div
                               key={it.id}
-                              className="grid grid-cols-[110px_1fr_100px_80px_80px_80px_120px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px]"
+                              className="grid grid-cols-[110px_1fr_100px_70px_80px_80px_80px_130px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px]"
                             >
                               <span className="font-medium">{it.codigo ?? "—"}</span>
                               <span className="text-text-dim truncate">{it.descripcion ?? "—"}</span>
                               <span className="text-text-dim truncate">{it.marca ?? "—"}</span>
+                              <span className="flex justify-center">
+                                {it.codigo_nuevo ? (
+                                  <Check size={14} className="text-[#6ee7b7]" />
+                                ) : (
+                                  <span className="text-text-faint">—</span>
+                                )}
+                              </span>
                               <span className="text-right">{it.cantidad_factura}</span>
                               <span className="text-right">{it.cantidad_contada}</span>
                               <span
@@ -1386,7 +1748,7 @@ export default function ReportesEtiquetadoPage() {
                                   onClick={() => abrirRevisarCajas(it.id)}
                                   className="text-[11.5px] text-[#c4b8ff] hover:underline"
                                 >
-                                  Revisar cajas →
+                                  Revisar / Editar →
                                 </button>
                               </span>
                             </div>
@@ -1666,6 +2028,101 @@ export default function ReportesEtiquetadoPage() {
               </div>
             )}
 
+            <button
+              type="button"
+              onClick={() => setEditandoDatosGenerales((v) => !v)}
+              className="w-full flex items-center justify-between px-3 py-2 mb-3 rounded-lg bg-white/[0.03] hover:bg-white/[0.05] text-[12px] font-medium text-text-dim"
+            >
+              <span>Datos generales del código (palet, marca, composición, país, tienda...)</span>
+              <span className="text-text-faint">{editandoDatosGenerales ? "▲ Ocultar" : "▼ Editar"}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={abrirUnificar}
+              className="w-full flex items-center justify-between px-3 py-2 mb-3 rounded-lg bg-accent/[0.1] hover:bg-accent/[0.18] text-[12px] font-medium text-[#c4b8ff]"
+            >
+              <span>¿Es el mismo producto que otro código de esta orden? Unificar aquí</span>
+              <span>→</span>
+            </button>
+
+            {editandoDatosGenerales && (
+              <div className="card p-3 mb-4 bg-white/[0.02]">
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  <div>
+                    <label className="text-[10.5px] text-text-faint block mb-1">Palet</label>
+                    <input
+                      value={egPalet}
+                      onChange={(e) => setEgPalet(e.target.value)}
+                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10.5px] text-text-faint block mb-1">Marca</label>
+                    <input
+                      value={egMarca}
+                      onChange={(e) => setEgMarca(e.target.value)}
+                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10.5px] text-text-faint block mb-1">País de origen</label>
+                    <input
+                      value={egPais}
+                      onChange={(e) => setEgPais(e.target.value)}
+                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10.5px] text-text-faint block mb-1">Tienda</label>
+                    <input
+                      value={egTienda}
+                      onChange={(e) => setEgTienda(e.target.value)}
+                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-[10.5px] text-text-faint block mb-1">Composición</label>
+                    <input
+                      value={egComposicion}
+                      onChange={(e) => setEgComposicion(e.target.value)}
+                      placeholder="Ej. 95% Algodón, 5% Elastano"
+                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10.5px] text-text-faint block mb-1">Tipo de etiqueta</label>
+                    <select
+                      value={egTipoEtiqueta}
+                      onChange={(e) => setEgTipoEtiqueta(e.target.value)}
+                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
+                    >
+                      <option value="COSIDO">Cosido</option>
+                      <option value="ADHESIVA">Adhesiva</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10.5px] text-text-faint block mb-1">Novedad</label>
+                    <input
+                      value={egNovedad}
+                      onChange={(e) => setEgNovedad(e.target.value)}
+                      placeholder="Ej. DOBLE, CONJUNTO"
+                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    onClick={guardarDatosGeneralesCodigo}
+                    disabled={guardandoDatosGenerales}
+                    className="btn-primary text-[12px] font-semibold px-4 py-1.5 rounded-lg disabled:opacity-50"
+                  >
+                    {guardandoDatosGenerales ? "Guardando…" : "Guardar datos generales"}
+                  </button>
+                </div>
+              </div>
+            )}
+
             <p className="text-[11.5px] font-semibold text-text-dim mb-2">
               Todas las cajas capturadas de este código ({cajasDelItemEnRevision.length})
             </p>
@@ -1766,6 +2223,139 @@ export default function ReportesEtiquetadoPage() {
                 Cerrar
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Unificar dos códigos que son el mismo producto */}
+      {showUnificar && itemEnRevision && (
+        <div className="fixed inset-0 bg-black/70 flex items-start justify-center z-[80] p-4 overflow-y-auto">
+          <div className="card w-full max-w-[520px] my-6 p-6">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-[16px] font-semibold">Unificar códigos</h2>
+              <button onClick={() => setShowUnificar(false)} className="text-text-faint hover:text-text">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-[12px] text-text-dim mb-4">
+              Úsalo cuando el proveedor mandó el mismo producto con otro código (por ejemplo, para
+              completar un faltante). Busca ese otro código dentro de esta orden y elige cuál de los
+              dos se queda como el código principal — el otro se fusiona dentro de él y desaparece.
+            </p>
+
+            {errorMsg && (
+              <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">
+                {errorMsg}
+              </div>
+            )}
+
+            {!codigoSecundarioId ? (
+              <>
+                <label className="text-[11.5px] text-text-faint block mb-1">
+                  Busca el otro código (por código o descripción)
+                </label>
+                <input
+                  value={busquedaUnificar}
+                  onChange={(e) => setBusquedaUnificar(e.target.value)}
+                  placeholder="Ej. AS1, o parte de la descripción…"
+                  autoFocus
+                  className="w-full card px-3 py-2 text-[13px] outline-none font-mono mb-2"
+                />
+                {busquedaUnificar.trim() && (
+                  <div className="flex flex-col gap-1.5 max-h-[240px] overflow-y-auto">
+                    {candidatosUnificar.length === 0 ? (
+                      <p className="text-[12px] text-text-faint px-1 py-2">
+                        Ningún código de esta orden coincide con la búsqueda.
+                      </p>
+                    ) : (
+                      candidatosUnificar.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => setCodigoSecundarioId(c.id)}
+                          className="flex items-center justify-between px-3 py-2 rounded-lg bg-white/[0.03] hover:bg-white/[0.06] text-left"
+                        >
+                          <span>
+                            <span className="font-medium text-[12.5px]">{c.codigo}</span>
+                            <span className="text-[11px] text-text-faint ml-2">{c.descripcion}</span>
+                          </span>
+                          <span className="text-[11px] text-text-faint">
+                            {c.cantidad_contada}/{c.cantidad_factura}
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div className="card p-3 bg-white/[0.02]">
+                    <p className="text-[10px] text-text-faint mb-1">Código actual</p>
+                    <p className="text-[13px] font-semibold">{itemEnRevision.codigo}</p>
+                    <p className="text-[11px] text-text-dim">
+                      Factura {itemEnRevision.cantidad_factura} · Contado {itemEnRevision.cantidad_contada}
+                    </p>
+                  </div>
+                  <div className="card p-3 bg-white/[0.02]">
+                    <p className="text-[10px] text-text-faint mb-1">Código a unir</p>
+                    <p className="text-[13px] font-semibold">{codigoSecundario?.codigo}</p>
+                    <p className="text-[11px] text-text-dim">
+                      Factura {codigoSecundario?.cantidad_factura} · Contado{" "}
+                      {codigoSecundario?.cantidad_contada}
+                    </p>
+                  </div>
+                </div>
+
+                <label className="text-[11.5px] text-text-faint block mb-1.5">
+                  ¿Cuál de los dos se queda como el código principal?
+                </label>
+                <div className="flex gap-2 mb-4">
+                  <button
+                    onClick={() => setPrincipalElegido("actual")}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-[12.5px] font-medium ${
+                      principalElegido === "actual"
+                        ? "bg-accent/[0.2] text-[#c4b8ff] border-accent-2/40"
+                        : "bg-white/[0.03] text-text-dim border-border"
+                    }`}
+                  >
+                    {itemEnRevision.codigo}
+                  </button>
+                  <button
+                    onClick={() => setPrincipalElegido("otro")}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-[12.5px] font-medium ${
+                      principalElegido === "otro"
+                        ? "bg-accent/[0.2] text-[#c4b8ff] border-accent-2/40"
+                        : "bg-white/[0.03] text-text-dim border-border"
+                    }`}
+                  >
+                    {codigoSecundario?.codigo}
+                  </button>
+                </div>
+
+                <p className="text-[11px] text-[#fbbf24] mb-4">
+                  ⚠ El código que NO elijas se eliminará; sus cajas, tallas y variantes se sumarán
+                  al Contado del que elijas como principal (la Cantidad de Factura del principal se
+                  mantiene tal cual, no se suma). Esta acción no se puede deshacer.
+                </p>
+
+                <div className="flex gap-2 justify-end">
+                  <button
+                    onClick={() => setCodigoSecundarioId(null)}
+                    className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg"
+                  >
+                    ← Elegir otro código
+                  </button>
+                  <button
+                    onClick={confirmarUnificar}
+                    disabled={unificando}
+                    className="btn-primary text-[13px] font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
+                  >
+                    {unificando ? "Unificando…" : "Confirmar unión"}
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

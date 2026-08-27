@@ -49,6 +49,7 @@ type Item = {
   novedad: string | null;
   tiene_codigo: boolean | null;
   tiene_talla: boolean | null;
+  codigo_nuevo: boolean | null;
 };
 
 const TALLAS_ROPA = ["XS", "S", "M", "L", "XL", "XXL"];
@@ -71,6 +72,7 @@ type Variante = {
   tallas_detalle: Record<string, number> | null;
   tiene_codigo: boolean | null;
   tiene_talla: boolean | null;
+  codigo_nuevo: boolean | null;
 };
 
 // Suma lo que está dentro de paréntesis: "164(24) 165(24)" -> 48
@@ -142,6 +144,35 @@ function BotonTresEstados({
   );
 }
 
+// Check de 2 estados: false (gris, sin marcar) -> true (verde, Sí) -> false.
+// Se usa para "Código Nuevo", que a diferencia de Tiene Código/Tiene Talla
+// no necesita un tercer estado "No" — solo importa marcarlo cuando aplica.
+function CheckDosEstados({
+  label,
+  valor,
+  onChange,
+}: {
+  label: string;
+  valor: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  const estilos = valor
+    ? "bg-green/[0.18] text-[#6ee7b7] border-green/30"
+    : "bg-white/[0.04] text-text-faint border-border";
+
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!valor)}
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11.5px] font-medium transition-colors ${estilos}`}
+      title="Clic para marcar/desmarcar"
+    >
+      {valor ? <Check size={13} /> : <HelpCircle size={13} />}
+      {label}
+    </button>
+  );
+}
+
 export default function DetalleEtiquetadoPage() {
   const supabase = createClient();
   const params = useParams();
@@ -179,6 +210,7 @@ export default function DetalleEtiquetadoPage() {
   const [fTallas, setFTallas] = useState<Record<string, number>>({});
   const [fTieneCodigo, setFTieneCodigo] = useState<boolean | null>(null);
   const [fTieneTalla, setFTieneTalla] = useState<boolean | null>(null);
+  const [fCodigoNuevo, setFCodigoNuevo] = useState(false);
 
   // Modal "Agregar tallas": suma tallas de una caja NUEVA al total existente
   // del código, sin tener que recalcular a mano lo que ya había.
@@ -197,6 +229,7 @@ export default function DetalleEtiquetadoPage() {
   const [vTallas, setVTallas] = useState<Record<string, number>>({});
   const [vTieneCodigo, setVTieneCodigo] = useState<boolean | null>(null);
   const [vTieneTalla, setVTieneTalla] = useState<boolean | null>(null);
+  const [vCodigoNuevo, setVCodigoNuevo] = useState(false);
 
   // Configuración de tallas de la orden
   const [showTallasConfig, setShowTallasConfig] = useState(false);
@@ -591,7 +624,7 @@ export default function DetalleEtiquetadoPage() {
     setFMarca(""); setFColor(""); setFComposicion(""); setFPais(""); setFTienda("");
     setFCajas(""); setFFactura("");
     setFTipoEtiqueta("COSIDO"); setFNovedad(""); setFTallas({});
-    setFTieneCodigo(null); setFTieneTalla(null); setErrorMsg(null);
+    setFTieneCodigo(null); setFTieneTalla(null); setFCodigoNuevo(false); setErrorMsg(null);
   }
 
   function abrirNuevo() { limpiar(); setShowForm(true); }
@@ -606,6 +639,7 @@ export default function DetalleEtiquetadoPage() {
     setFTipoEtiqueta(it.tipo_etiqueta ?? "COSIDO"); setFNovedad(it.novedad ?? "");
     setFTallas(it.tallas_detalle ?? {});
     setFTieneCodigo(it.tiene_codigo ?? null); setFTieneTalla(it.tiene_talla ?? null);
+    setFCodigoNuevo(it.codigo_nuevo ?? false);
     setShowForm(true);
   }
 
@@ -638,6 +672,7 @@ export default function DetalleEtiquetadoPage() {
       tallas_detalle: fTallas,
       tiene_codigo: fTieneCodigo,
       tiene_talla: fTieneTalla,
+      codigo_nuevo: fCodigoNuevo,
       actualizado_en: new Date().toISOString(),
     };
     let itemId = editId;
@@ -776,6 +811,7 @@ export default function DetalleEtiquetadoPage() {
     setVTallas({});
     setVTieneCodigo(null);
     setVTieneTalla(null);
+    setVCodigoNuevo(false);
     setErrorMsg(null);
     setShowAgregarVariante(true);
   }
@@ -803,6 +839,7 @@ export default function DetalleEtiquetadoPage() {
         tallas_detalle: vTallas,
         tiene_codigo: vTieneCodigo,
         tiene_talla: vTieneTalla,
+        codigo_nuevo: vCodigoNuevo,
       })
       .select()
       .single();
@@ -1336,6 +1373,7 @@ export default function DetalleEtiquetadoPage() {
                 <div className="flex gap-2">
                   <BotonTresEstados label="Tiene código" valor={fTieneCodigo} onChange={setFTieneCodigo} />
                   <BotonTresEstados label="Tiene talla" valor={fTieneTalla} onChange={setFTieneTalla} />
+                  <CheckDosEstados label="Código nuevo" valor={fCodigoNuevo} onChange={setFCodigoNuevo} />
                 </div>
               </div>
             </div>
@@ -1552,6 +1590,7 @@ export default function DetalleEtiquetadoPage() {
               <div className="flex gap-2 mb-3">
                 <BotonTresEstados label="Tiene código" valor={vTieneCodigo} onChange={setVTieneCodigo} />
                 <BotonTresEstados label="Tiene talla" valor={vTieneTalla} onChange={setVTieneTalla} />
+                <CheckDosEstados label="Código nuevo" valor={vCodigoNuevo} onChange={setVCodigoNuevo} />
               </div>
 
               <div className="flex gap-2 justify-end mt-2">
