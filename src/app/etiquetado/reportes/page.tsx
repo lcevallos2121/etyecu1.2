@@ -495,14 +495,18 @@ export default function ReportesEtiquetadoPage() {
 
   // Composiciones únicas que existen en TODA la orden, para poblar el
   // desplegable del filtro de Composición.
+  // Composiciones que existen DENTRO del palet/caja ya elegidos (si no hay
+  // palet/caja elegidos, itemsDeLaCaja = toda la orden, así que en ese caso
+  // igual muestra todas). Así el buscador de composición solo sugiere lo
+  // que de verdad existe en la selección actual, no de toda la orden.
   const composicionesDisponibles = useMemo(() => {
     const set = new Set<string>();
-    itemsOrdenSeleccionada.forEach((it) => {
+    itemsDeLaCaja.forEach((it) => {
       const c = (it.composicion ?? "").trim();
       if (c) set.add(c);
     });
     return Array.from(set).sort((a, b) => a.localeCompare(b));
-  }, [itemsOrdenSeleccionada]);
+  }, [itemsDeLaCaja]);
 
   // Sugerencias que coinciden con lo que Isabel va escribiendo — para no
   // mostrar un desplegable largo con TODAS las composiciones de una vez,
@@ -514,14 +518,14 @@ export default function ReportesEtiquetadoPage() {
     return composicionesDisponibles.filter((c) => c.toLowerCase().includes(q));
   }, [composicionesDisponibles, busquedaComposicion]);
 
-  // Paso 2.5: filtro de composición — VERDADERAMENTE independiente de
-  // Palet/Caja. Cuando está activo, ignora el palet/caja elegidos y
-  // muestra la composición en TODA la orden (así Isabel ve, por ejemplo,
-  // "todos los códigos de 100% Poliéster" sin importar en qué palet están).
+  // Paso 2.5: filtro de composición COMO SUB-FILTRO dentro de Palet/Caja.
+  // Cuando ella ya eligió palet 1 + caja 1, el filtro de composición acota
+  // dentro de esa selección (solo las composiciones de esa caja puntual),
+  // no de toda la orden.
   const itemsPorComposicion = useMemo(() => {
     if (composicionFiltro === "todas") return itemsDeLaCaja;
-    return itemsOrdenSeleccionada.filter((it) => (it.composicion ?? "").trim() === composicionFiltro);
-  }, [itemsDeLaCaja, itemsOrdenSeleccionada, composicionFiltro]);
+    return itemsDeLaCaja.filter((it) => (it.composicion ?? "").trim() === composicionFiltro);
+  }, [itemsDeLaCaja, composicionFiltro]);
 
   // Paso 3: búsqueda de texto libre (código, descripción, tallas, etc.)
   const itemsInventarioFiltrados = useMemo(() => {
@@ -1362,7 +1366,6 @@ export default function ReportesEtiquetadoPage() {
                             onChange={(e) => {
                               setPaletSeleccionado(e.target.value);
                               setCajaFiltro("");
-                              setComposicionFiltro("todas");
                             }}
                             className="card px-3 py-2 text-[12.5px] outline-none min-w-[140px]"
                           >
@@ -1380,10 +1383,7 @@ export default function ReportesEtiquetadoPage() {
                           </label>
                           <input
                             value={cajaFiltro}
-                            onChange={(e) => {
-                              setCajaFiltro(e.target.value);
-                              if (e.target.value.trim()) setComposicionFiltro("todas");
-                            }}
+                            onChange={(e) => setCajaFiltro(e.target.value)}
                             placeholder="Ej. 1, 12…"
                             className="card px-3 py-2 text-[12.5px] outline-none w-[160px] font-mono"
                           />
@@ -1393,7 +1393,7 @@ export default function ReportesEtiquetadoPage() {
 
                         <div className="relative">
                           <label className="text-[11px] text-text-faint block mb-1">
-                            Composición (toda la orden)
+                            Composición
                           </label>
                           {composicionFiltro !== "todas" ? (
                             <div className="flex items-center gap-1.5 card px-3 py-2 min-w-[220px]">
@@ -1432,8 +1432,6 @@ export default function ReportesEtiquetadoPage() {
                                     onClick={() => {
                                       setComposicionFiltro(c);
                                       setBusquedaComposicion("");
-                                      setPaletSeleccionado("todos");
-                                      setCajaFiltro("");
                                     }}
                                     className="w-full text-left px-2.5 py-1.5 rounded-md text-[12px] hover:bg-white/[0.06]"
                                   >
@@ -1467,8 +1465,8 @@ export default function ReportesEtiquetadoPage() {
                         )}
                         {composicionFiltro !== "todas" && (
                           <span className="text-[11px] text-[#c4b8ff] self-end pb-2">
-                            Mostrando todos los códigos de "{composicionFiltro}" en toda la orden, sin
-                            importar el palet.
+                            Filtrando además por composición "{composicionFiltro}"
+                            {(paletSeleccionado !== "todos" || cajaFiltro) && " dentro de la selección actual"}.
                           </span>
                         )}
                       </div>
