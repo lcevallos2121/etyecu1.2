@@ -50,6 +50,7 @@ type Item = {
   tiene_codigo: boolean | null;
   tiene_talla: boolean | null;
   codigo_nuevo: boolean | null;
+  inen_marquilla: "inen" | "marquilla" | null;
 };
 
 const TALLAS_ROPA = ["XS", "S", "M", "L", "XL", "XXL"];
@@ -73,6 +74,7 @@ type Variante = {
   tiene_codigo: boolean | null;
   tiene_talla: boolean | null;
   codigo_nuevo: boolean | null;
+  inen_marquilla: "inen" | "marquilla" | null;
 };
 
 // Suma lo que está dentro de paréntesis: "164(24) 165(24)" -> 48
@@ -88,6 +90,29 @@ function sumarCajas(texto: string | null | undefined): number {
 function sumarTallas(detalle: Record<string, number> | null | undefined): number {
   if (!detalle) return 0;
   return Object.values(detalle).reduce((a, n) => a + Number(n || 0), 0);
+}
+
+// Orden lógico conocido de tallas de ropa. JSONB de Postgres NO garantiza
+// conservar el orden en que se ingresaron las claves de un objeto — por
+// eso las tallas podían verse mezcladas (ej. "L M S" en vez de "S M L",
+// aunque se hubieran escrito en ese orden). Se ordena explícitamente según
+// esta secuencia conocida; cualquier talla que no esté en la lista
+// (numeración de calzado, tallas especiales, etc.) se ordena numérica o
+// alfabéticamente como respaldo.
+const ORDEN_TALLAS = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "3XL", "4XL"];
+
+function ordenarClavesDeTallas(claves: string[]): string[] {
+  return [...claves].sort((a, b) => {
+    const ia = ORDEN_TALLAS.indexOf(a.toUpperCase());
+    const ib = ORDEN_TALLAS.indexOf(b.toUpperCase());
+    if (ia !== -1 && ib !== -1) return ia - ib;
+    if (ia !== -1) return -1;
+    if (ib !== -1) return 1;
+    const na = Number(a);
+    const nb = Number(b);
+    if (!isNaN(na) && !isNaN(nb)) return na - nb;
+    return a.localeCompare(b);
+  });
 }
 
 // Extrae la "categoría" de una descripción tomando su primera palabra útil:
@@ -141,6 +166,164 @@ function BotonTresEstados({
       {valor === true ? <Check size={13} /> : valor === false ? <X size={13} /> : <HelpCircle size={13} />}
       {label}
     </button>
+  );
+}
+
+// Botón de 3 estados para Inen/Marquilla: gris (sin definir) -> amarillo
+// (Inen) -> rojo (Marquilla) -> vuelve a gris. A diferencia de
+// BotonTresEstados, aquí no es un Sí/No sino dos opciones mutuamente
+// excluyentes (o es Inen, o es Marquilla, o no se ha definido).
+function BotonInenMarquilla({
+  valor,
+  onChange,
+}: {
+  valor: "inen" | "marquilla" | null;
+  onChange: (v: "inen" | "marquilla" | null) => void;
+}) {
+  function siguienteEstado() {
+    if (valor === null) onChange("inen");
+    else if (valor === "inen") onChange("marquilla");
+    else onChange(null);
+  }
+
+  const estilos =
+    valor === "inen"
+      ? "bg-amber/[0.18] text-[#fbbf24] border-amber/30"
+      : valor === "marquilla"
+      ? "bg-red/[0.18] text-[#fca5a5] border-red/30"
+      : "bg-white/[0.04] text-text-faint border-border";
+
+  const texto = valor === "inen" ? "Inen" : valor === "marquilla" ? "Marquilla" : "Inen/Marquilla";
+
+  return (
+    <button
+      type="button"
+      onClick={siguienteEstado}
+      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11.5px] font-medium transition-colors ${estilos}`}
+      title="Clic para cambiar: sin definir → Inen → Marquilla"
+    >
+      {valor === "inen" || valor === "marquilla" ? <Check size={13} /> : <HelpCircle size={13} />}
+      {texto}
+    </button>
+  );
+}
+
+// Buscador con autocompletado para el campo Composición, contra el
+// catálogo normalizado — evita que la misma composición se escriba de
+// muchas formas distintas (ej. "100% Poliéster" vs "10O %poliester"),
+// que era lo que hacía inútil el filtro de composición al imprimir.
+// Si el texto escrito no existe en el catálogo, muestra un botón para
+// agregarlo de una vez, sin bloquear la captura.
+function BuscadorComposicion({
+  valor,
+  onChange,
+  catalogo,
+  onAgregarAlCatalogo,
+}: {
+  valor: string;
+  onChange: (v: string) => void;
+  catalogo: string[];
+  onAgregarAlCatalogo: (texto: string) => void;
+}) {
+  const [abierto, setAbierto] = useState(false);
+
+  const sugerencias = useMemo(() => {
+    const q = valor.trim().toLowerCase();
+    if (!q) return catalogo.slice(0, 8);
+    return catalogo.filter((c) => c.toLowerCase().includes(q)).slice(0, 8);
+  }, [catalogo, valor]);
+
+  const coincideExacto = catalogo.some((c) => c.toLowerCase() === valor.trim().toLowerCase());
+
+  return (
+    <div className="relative">
+      <input
+        value={valor}
+        onChange={(e) => onChange(e.target.value)}
+        onFocus={() => setAbierto(true)}
+        onBlur={() => setTimeout(() => setAbierto(false), 150)}
+        placeholder="Ej. 95% Algodón, 5% Elastano"
+        className="w-full card px-3 py-2 text-[13px] outline-none"
+      />
+      {abierto && (
+        <div className="absolute z-20 top-full mt-1 w-full max-h-[220px] overflow-y-auto card p-1 shadow-lg">
+          {sugerencias.length === 0 && !valor.trim() ? (
+            <p className="text-[11.5px] text-text-faint px-2 py-2">Escribe para buscar…</p>
+          ) : (
+            sugerencias.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onMouseDown={() => {
+                  onChange(c);
+                  setAbierto(false);
+                }}
+                className="w-full text-left px-2.5 py-1.5 rounded-md text-[12px] hover:bg-white/[0.06]"
+              >
+                {c}
+              </button>
+            ))
+          )}
+          {valor.trim() && !coincideExacto && (
+            <button
+              type="button"
+              onMouseDown={() => {
+                onAgregarAlCatalogo(valor.trim());
+                setAbierto(false);
+              }}
+              className="w-full text-left px-2.5 py-1.5 rounded-md text-[12px] text-[#c4b8ff] hover:bg-accent/[0.1] border-t border-border mt-1 pt-2"
+            >
+              + Agregar &quot;{valor.trim()}&quot; al catálogo
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Multiplica los valores YA escritos en las tallas por un factor (×2, ×3,
+// ×4...) — útil cuando se captura la primera caja y las siguientes son
+// iguales en la misma proporción, sin tener que reescribir cada talla a
+// mano. Pide confirmación antes de aplicar, porque sobreescribe los
+// valores actuales y no se puede deshacer.
+function MultiplicadorTallas({
+  tallas,
+  onAplicar,
+}: {
+  tallas: Record<string, number>;
+  onAplicar: (nuevo: Record<string, number>) => void;
+}) {
+  const hayValores = Object.keys(tallas).length > 0;
+
+  function multiplicarPor(factor: number) {
+    const nuevo: Record<string, number> = {};
+    Object.entries(tallas).forEach(([talla, cant]) => {
+      nuevo[talla] = Math.round(Number(cant || 0) * factor);
+    });
+    onAplicar(nuevo);
+  }
+
+  if (!hayValores) return null;
+
+  return (
+    <div className="flex items-center gap-1.5 mt-1.5">
+      <span className="text-[10.5px] text-text-faint">Multiplicar por:</span>
+      {[2, 3, 4].map((factor) => (
+        <button
+          key={factor}
+          type="button"
+          onClick={() => {
+            if (confirm(`¿Multiplicar todas las tallas actuales por ${factor}?`)) {
+              multiplicarPor(factor);
+            }
+          }}
+          className="px-2 py-0.5 rounded-md bg-accent/[0.12] text-[#c4b8ff] text-[11px] font-medium hover:bg-accent/[0.22]"
+        >
+          ×{factor}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -211,6 +394,7 @@ export default function DetalleEtiquetadoPage() {
   const [fTieneCodigo, setFTieneCodigo] = useState<boolean | null>(null);
   const [fTieneTalla, setFTieneTalla] = useState<boolean | null>(null);
   const [fCodigoNuevo, setFCodigoNuevo] = useState(false);
+  const [fInenMarquilla, setFInenMarquilla] = useState<"inen" | "marquilla" | null>(null);
 
   // Modal "Agregar tallas": suma tallas de una caja NUEVA al total existente
   // del código, sin tener que recalcular a mano lo que ya había.
@@ -230,6 +414,7 @@ export default function DetalleEtiquetadoPage() {
   const [vTieneCodigo, setVTieneCodigo] = useState<boolean | null>(null);
   const [vTieneTalla, setVTieneTalla] = useState<boolean | null>(null);
   const [vCodigoNuevo, setVCodigoNuevo] = useState(false);
+  const [vInenMarquilla, setVInenMarquilla] = useState<"inen" | "marquilla" | null>(null);
 
   // Configuración de tallas de la orden
   const [showTallasConfig, setShowTallasConfig] = useState(false);
@@ -252,6 +437,41 @@ export default function DetalleEtiquetadoPage() {
   const [nuevaMesaIntegrantes, setNuevaMesaIntegrantes] = useState("");
 
   const [aEliminar, setAEliminar] = useState<string | null>(null);
+
+  // Catálogo de composiciones normalizado — global, no depende de la
+  // orden (las composiciones se repiten entre distintas cargas/clientes).
+  const [catalogoComposiciones, setCatalogoComposiciones] = useState<string[]>([]);
+
+  const cargarCatalogoComposiciones = useCallback(async () => {
+    const { data } = await supabase
+      .from("etq_composiciones_catalogo")
+      .select("composicion")
+      .order("composicion");
+    setCatalogoComposiciones((data ?? []).map((d: { composicion: string }) => d.composicion));
+  }, [supabase]);
+
+  useEffect(() => {
+    cargarCatalogoComposiciones();
+  }, [cargarCatalogoComposiciones]);
+
+  // Agrega una composición nueva al catálogo (si no existe ya) — para
+  // cuando alguien escribe algo que no está en la lista, sin bloquear su
+  // trabajo: se agrega de una vez y queda disponible para la próxima vez.
+  async function agregarComposicionAlCatalogo(texto: string) {
+    const limpio = texto.trim();
+    if (!limpio) return;
+    const { error } = await supabase
+      .from("etq_composiciones_catalogo")
+      .insert({ composicion: limpio })
+      .select()
+      .maybeSingle();
+    // Si ya existía (conflicto de unicidad), no es un error real — solo
+    // refrescamos el catálogo por si acaso.
+    if (error && !error.message.includes("duplicate")) {
+      setErrorMsg(`No se pudo agregar la composición al catálogo: ${error.message}`);
+    }
+    cargarCatalogoComposiciones();
+  }
 
   const cargar = useCallback(async () => {
     if (!id) return;
@@ -624,7 +844,7 @@ export default function DetalleEtiquetadoPage() {
     setFMarca(""); setFColor(""); setFComposicion(""); setFPais(""); setFTienda("");
     setFCajas(""); setFFactura("");
     setFTipoEtiqueta("COSIDO"); setFNovedad(""); setFTallas({});
-    setFTieneCodigo(null); setFTieneTalla(null); setFCodigoNuevo(false); setErrorMsg(null);
+    setFTieneCodigo(null); setFTieneTalla(null); setFCodigoNuevo(false); setFInenMarquilla(null); setErrorMsg(null);
   }
 
   function abrirNuevo() { limpiar(); setShowForm(true); }
@@ -640,6 +860,7 @@ export default function DetalleEtiquetadoPage() {
     setFTallas(it.tallas_detalle ?? {});
     setFTieneCodigo(it.tiene_codigo ?? null); setFTieneTalla(it.tiene_talla ?? null);
     setFCodigoNuevo(it.codigo_nuevo ?? false);
+    setFInenMarquilla(it.inen_marquilla ?? null);
     setShowForm(true);
   }
 
@@ -666,23 +887,27 @@ export default function DetalleEtiquetadoPage() {
       tienda: fTienda.trim() || null,
       cajas: fCajas.trim() || null,
       cantidad_contada: cantidadNueva,
-      cantidad_factura: Number(fFactura) || 0,
       tipo_etiqueta: fTipoEtiqueta.trim() || null,
       novedad: fNovedad.trim() || null,
       tallas_detalle: fTallas,
       tiene_codigo: fTieneCodigo,
       tiene_talla: fTieneTalla,
       codigo_nuevo: fCodigoNuevo,
+      inen_marquilla: fInenMarquilla,
       actualizado_en: new Date().toISOString(),
     };
     let itemId = editId;
     if (editId) {
+      // La cantidad_factura NUNCA se toca al editar un código ya creado —
+      // se mantiene lo que se guardó al ingresarlo la primera vez, aunque
+      // el formulario visual tenga el campo bloqueado (esto es una segunda
+      // capa de protección, por si el input se manipulara de algún modo).
       const { error } = await supabase.from("etq_items").update(payload).eq("id", editId);
       if (error) { setErrorMsg(error.message); return; }
     } else {
       const { data, error } = await supabase
         .from("etq_items")
-        .insert({ ...payload, orden_fila: items.length })
+        .insert({ ...payload, cantidad_factura: Number(fFactura) || 0, orden_fila: items.length })
         .select()
         .single();
       if (error) { setErrorMsg(error.message); return; }
@@ -812,6 +1037,7 @@ export default function DetalleEtiquetadoPage() {
     setVTieneCodigo(null);
     setVTieneTalla(null);
     setVCodigoNuevo(false);
+    setVInenMarquilla(null);
     setErrorMsg(null);
     setShowAgregarVariante(true);
   }
@@ -840,6 +1066,7 @@ export default function DetalleEtiquetadoPage() {
         tiene_codigo: vTieneCodigo,
         tiene_talla: vTieneTalla,
         codigo_nuevo: vCodigoNuevo,
+        inen_marquilla: vInenMarquilla,
       })
       .select()
       .single();
@@ -1296,7 +1523,15 @@ export default function DetalleEtiquetadoPage() {
               <div><label className="text-[11.5px] text-text-faint block mb-1">Color</label><input value={fColor} onChange={(e) => setFColor(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">País de origen</label><input value={fPais} onChange={(e) => setFPais(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Tienda</label><input value={fTienda} onChange={(e) => setFTienda(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
-              <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Composición</label><input value={fComposicion} onChange={(e) => setFComposicion(e.target.value)} placeholder="Ej. 95% Algodón, 5% Elastano" className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div className="col-span-2">
+                <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
+                <BuscadorComposicion
+                  valor={fComposicion}
+                  onChange={setFComposicion}
+                  catalogo={catalogoComposiciones}
+                  onAgregarAlCatalogo={agregarComposicionAlCatalogo}
+                />
+              </div>
               <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1">Cajas (con cantidad en paréntesis)</label>
                 <input value={fCajas} onChange={(e) => setFCajas(e.target.value)} placeholder="164(24) 165(24) 166(24)" className="w-full card px-3 py-2 text-[13px] outline-none font-mono" />
@@ -1345,6 +1580,7 @@ export default function DetalleEtiquetadoPage() {
                         </div>
                       ))}
                     </div>
+                    <MultiplicadorTallas tallas={fTallas} onAplicar={setFTallas} />
                     {/* Aviso visual si tallas no cuadran con cajas */}
                     {(() => {
                       const sumaTallas = sumarTallas(fTallas);
@@ -1361,7 +1597,19 @@ export default function DetalleEtiquetadoPage() {
                   </>
                 )}
               </div>
-              <div><label className="text-[11.5px] text-text-faint block mb-1">Cantidad de factura</label><input value={fFactura} onChange={(e) => setFFactura(e.target.value)} type="number" className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">
+                  Cantidad de factura {editId && <span className="text-amber">(bloqueado tras crear el código)</span>}
+                </label>
+                <input
+                  value={fFactura}
+                  onChange={(e) => setFFactura(e.target.value)}
+                  type="number"
+                  disabled={!!editId}
+                  title={editId ? "No se puede editar la factura de un código ya creado" : undefined}
+                  className="w-full card px-3 py-2 text-[13px] outline-none disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+              </div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Tipo de etiqueta</label>
                 <select value={fTipoEtiqueta} onChange={(e) => setFTipoEtiqueta(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none">
                   <option value="COSIDO">Cosido</option><option value="ADHESIVA">Adhesiva</option>
@@ -1374,6 +1622,7 @@ export default function DetalleEtiquetadoPage() {
                   <BotonTresEstados label="Tiene código" valor={fTieneCodigo} onChange={setFTieneCodigo} />
                   <BotonTresEstados label="Tiene talla" valor={fTieneTalla} onChange={setFTieneTalla} />
                   <CheckDosEstados label="Código nuevo" valor={fCodigoNuevo} onChange={setFCodigoNuevo} />
+                  <BotonInenMarquilla valor={fInenMarquilla} onChange={setFInenMarquilla} />
                 </div>
               </div>
             </div>
@@ -1539,7 +1788,12 @@ export default function DetalleEtiquetadoPage() {
                 </div>
                 <div>
                   <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
-                  <input value={vComposicion} onChange={(e) => setVComposicion(e.target.value)} placeholder="Ej. 95% Algodón, 5% Elastano" className="w-full card px-3 py-2 text-[13px] outline-none" />
+                  <BuscadorComposicion
+                    valor={vComposicion}
+                    onChange={setVComposicion}
+                    catalogo={catalogoComposiciones}
+                    onAgregarAlCatalogo={agregarComposicionAlCatalogo}
+                  />
                 </div>
               </div>
 
@@ -1575,6 +1829,7 @@ export default function DetalleEtiquetadoPage() {
                   ))}
                 </div>
               )}
+              <MultiplicadorTallas tallas={vTallas} onAplicar={setVTallas} />
 
               {sumaTallasVariante > 0 && sumaCajaVariante > 0 && (
                 sumaTallasVariante === sumaCajaVariante ? (
@@ -1591,6 +1846,7 @@ export default function DetalleEtiquetadoPage() {
                 <BotonTresEstados label="Tiene código" valor={vTieneCodigo} onChange={setVTieneCodigo} />
                 <BotonTresEstados label="Tiene talla" valor={vTieneTalla} onChange={setVTieneTalla} />
                 <CheckDosEstados label="Código nuevo" valor={vCodigoNuevo} onChange={setVCodigoNuevo} />
+                <BotonInenMarquilla valor={vInenMarquilla} onChange={setVInenMarquilla} />
               </div>
 
               <div className="flex gap-2 justify-end mt-2">
@@ -1620,7 +1876,7 @@ export default function DetalleEtiquetadoPage() {
 
             {Object.keys(itemAgregarTallas.tallas_detalle ?? {}).length > 0 && (
               <p className="text-[11px] text-text-faint mb-3">
-                Ya tenía: {Object.entries(itemAgregarTallas.tallas_detalle ?? {}).map(([t, c]) => `${t}:${c}`).join(" ")}
+                Ya tenía: {ordenarClavesDeTallas(Object.keys(itemAgregarTallas.tallas_detalle ?? {})).map((t) => `${t}:${(itemAgregarTallas.tallas_detalle ?? {})[t]}`).join(" ")}
               </p>
             )}
 
@@ -1664,6 +1920,7 @@ export default function DetalleEtiquetadoPage() {
                 ))}
               </div>
             )}
+            <MultiplicadorTallas tallas={tallasNuevas} onAplicar={setTallasNuevas} />
 
             {/* Aviso de cuadre: tallas de la caja nueva vs cantidad de la caja nueva */}
             {(() => {

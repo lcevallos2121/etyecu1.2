@@ -57,6 +57,8 @@ type ItemEtq = {
   tipo_etiqueta: string | null;
   novedad: string | null;
   ya_impreso: boolean | null;
+  inen_marquilla: "inen" | "marquilla" | null;
+  revisado: boolean | null;
 };
 
 type VarianteEtq = {
@@ -71,6 +73,8 @@ type VarianteEtq = {
   tiene_talla: boolean | null;
   codigo_nuevo: boolean | null;
   ya_impreso: boolean | null;
+  inen_marquilla: "inen" | "marquilla" | null;
+  revisado: boolean | null;
 };
 
 type TallasPorCaja = {
@@ -139,6 +143,8 @@ export default function ReportesEtiquetadoPage() {
   >(
     "todas"
   );
+  const [filtroRevisado, setFiltroRevisado] = useState<"todos" | "revisado" | "sin_revisar">("todos");
+  const [filtroImpreso, setFiltroImpreso] = useState<"todos" | "impreso" | "sin_imprimir">("todos");
   const [busquedaInconsistencias, setBusquedaInconsistencias] = useState("");
   const [itemRevisarId, setItemRevisarId] = useState<string | null>(null);
   const [cajaEditId, setCajaEditId] = useState<string | null>(null);
@@ -152,6 +158,7 @@ export default function ReportesEtiquetadoPage() {
   // en otra pestaña.
   const [editandoDatosGenerales, setEditandoDatosGenerales] = useState(false);
   const [egPalet, setEgPalet] = useState("");
+  const [egCajas, setEgCajas] = useState("");
   const [egMarca, setEgMarca] = useState("");
   const [egComposicion, setEgComposicion] = useState("");
   const [egPais, setEgPais] = useState("");
@@ -189,11 +196,11 @@ export default function ReportesEtiquetadoPage() {
       supabase
         .from("etq_items")
         .select(
-          "id, orden_id, palet, cajas, codigo, descripcion, marca, tienda, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla, codigo_nuevo, tipo_etiqueta, novedad, ya_impreso"
+          "id, orden_id, palet, cajas, codigo, descripcion, marca, tienda, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla, codigo_nuevo, tipo_etiqueta, novedad, ya_impreso, inen_marquilla, revisado"
         ),
       supabase.from("etq_movimientos").select("id, orden_id, item_id, mesa_id, cantidad, creado_en"),
       supabase.from("etq_mesas").select("id, orden_id, nombre, integrantes"),
-      supabase.from("etq_variantes").select("id, item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso"),
+      supabase.from("etq_variantes").select("id, item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla, revisado"),
       supabase
         .from("etq_tallas_por_caja")
         .select("id, item_id, variante_id, caja, numero_caja, tallas_detalle"),
@@ -430,10 +437,35 @@ export default function ReportesEtiquetadoPage() {
   );
 
   // Texto legible de las tallas: {"S":24,"M":48} -> "S:24 M:48"
+  // Orden lógico conocido de tallas de ropa. JSONB de Postgres NO garantiza
+  // conservar el orden en que se ingresaron las claves de un objeto — por
+  // eso antes se veían las tallas mezcladas (ej. "L M S" en vez de
+  // "S M L", aunque se hubieran escrito en ese orden). Se ordena
+  // explícitamente según esta secuencia conocida; cualquier talla que no
+  // esté en la lista (numeración de calzado, tallas especiales, etc.) se
+  // agrega al final ordenada alfabética/numéricamente como respaldo.
+  const ORDEN_TALLAS = ["XXS", "XS", "S", "M", "L", "XL", "XXL", "XXXL", "3XL", "4XL"];
+
+  function ordenarClavesDeTallas(claves: string[]): string[] {
+    return [...claves].sort((a, b) => {
+      const ia = ORDEN_TALLAS.indexOf(a.toUpperCase());
+      const ib = ORDEN_TALLAS.indexOf(b.toUpperCase());
+      if (ia !== -1 && ib !== -1) return ia - ib; // ambas conocidas: por el orden de la lista
+      if (ia !== -1) return -1; // solo "a" es conocida: va primero
+      if (ib !== -1) return 1; // solo "b" es conocida: va primero
+      // Ninguna conocida (ej. numeración de calzado): orden numérico si
+      // ambas son números, si no alfabético.
+      const na = Number(a);
+      const nb = Number(b);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return a.localeCompare(b);
+    });
+  }
+
   function formatoTallas(detalle: Record<string, number> | null): string {
     if (!detalle || Object.keys(detalle).length === 0) return "—";
-    return Object.entries(detalle)
-      .map(([talla, cant]) => `${talla}:${cant}`)
+    return ordenarClavesDeTallas(Object.keys(detalle))
+      .map((talla) => `${talla}:${detalle[talla]}`)
       .join(" ");
   }
 
@@ -728,26 +760,51 @@ export default function ReportesEtiquetadoPage() {
     }
   }
 
+  // Marca/desmarca "Revisado" en Inconsistencias, directamente sobre
+  // etq_items (ahí las filas son códigos completos, no variantes
+  // separadas). Actualiza el estado local sin recargar toda la tabla, para
+  // evitar el mismo parpadeo que ya corregimos en "Ya impreso".
+  async function toggleRevisado(itemId: string, valorActual: boolean | null) {
+    const nuevoValor = !valorActual;
+    const { error } = await supabase.from("etq_items").update({ revisado: nuevoValor }).eq("id", itemId);
+    if (error) {
+      setToast(`No se pudo actualizar: ${error.message}`);
+      return;
+    }
+    setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, revisado: nuevoValor } : it)));
+  }
+
   // Descarga el inventario tal cual se ve en pantalla (mismas columnas y
   // mismas filas ya filtradas por palet/caja/búsqueda), agregando el campo
   // Tienda que no se muestra en la tabla pero sí se pide en la exportación.
   function descargarInventarioExcel() {
     const ordenActual = ordenes.find((o) => o.id === ordenSeleccionadaId);
-    const filas = filasInventario.map((f) => ({
-      Palet: f.palet ?? "",
-      Cajas: f.cajas ?? "",
-      Código: f.codigo ?? "",
-      Marca: itemsInventarioFiltrados.find((it) => it.id === f.key)?.marca ?? "",
-      Descripción: f.descripcion ?? "",
-      Color: f.color ?? "",
-      Tallas: f.tallasTexto,
-      Composición: f.composicion ?? "",
-      Tienda: itemsInventarioFiltrados.find((it) => it.id === f.key)?.tienda ?? "",
-      País: f.pais ?? "",
-      Factura: f.esVariante ? "" : itemsInventarioFiltrados.find((it) => it.id === f.key)?.cantidad_factura ?? "",
-      Contado: f.cantidad,
-      "Total etiquetas": f.totalTallas,
-    }));
+    const filas = filasInventario.map((f) => {
+      const itemOriginal = itemsInventarioFiltrados.find((it) => it.id === f.key);
+      // Inen y Marquilla son mutuamente excluyentes (inen_marquilla solo
+      // puede ser "inen", "marquilla" o null) — se muestran como dos
+      // columnas separadas para que sea fácil filtrar/contar en Excel.
+      const valorInenMarquilla = f.esVariante
+        ? variantesTodas.find((v) => v.id === f.idReal)?.inen_marquilla
+        : itemOriginal?.inen_marquilla;
+      return {
+        Palet: f.palet ?? "",
+        Cajas: f.cajas ?? "",
+        Código: f.codigo ?? "",
+        Marca: itemOriginal?.marca ?? "",
+        Descripción: f.descripcion ?? "",
+        Color: f.color ?? "",
+        Tallas: f.tallasTexto,
+        Composición: f.composicion ?? "",
+        Tienda: itemOriginal?.tienda ?? "",
+        País: f.pais ?? "",
+        Factura: f.esVariante ? "" : itemOriginal?.cantidad_factura ?? "",
+        Contado: f.cantidad,
+        "Total etiquetas": f.totalTallas,
+        Inen: valorInenMarquilla === "inen" ? "Sí" : "",
+        Marquilla: valorInenMarquilla === "marquilla" ? "Sí" : "",
+      };
+    });
 
     const ws = XLSX.utils.json_to_sheet(filas);
     const wb = XLSX.utils.book_new();
@@ -782,13 +839,17 @@ export default function ReportesEtiquetadoPage() {
       if (tipoInconsistencia === "faltante" && it.diferencia >= 0) return false;
       if (tipoInconsistencia === "sobrante" && it.diferencia <= 0) return false;
       if (tipoInconsistencia === "nuevo" && !it.codigo_nuevo) return false;
+      if (filtroRevisado === "revisado" && !it.revisado) return false;
+      if (filtroRevisado === "sin_revisar" && it.revisado) return false;
+      if (filtroImpreso === "impreso" && !it.ya_impreso) return false;
+      if (filtroImpreso === "sin_imprimir" && it.ya_impreso) return false;
       if (!q) return true;
       const codigo = (it.codigo ?? "").toLowerCase();
       const descripcion = (it.descripcion ?? "").toLowerCase();
       const marca = (it.marca ?? "").toLowerCase();
       return codigo.includes(q) || descripcion.includes(q) || marca.includes(q);
     });
-  }, [inconsistencias, tipoInconsistencia, busquedaInconsistencias]);
+  }, [inconsistencias, tipoInconsistencia, filtroRevisado, filtroImpreso, busquedaInconsistencias]);
 
   const itemEnRevision = items.find((it) => it.id === itemRevisarId) ?? null;
   const tallasOrdenDeLaOrdenSeleccionada =
@@ -807,6 +868,7 @@ export default function ReportesEtiquetadoPage() {
     const item = items.find((it) => it.id === itemId);
     if (item) {
       setEgPalet(item.palet ?? "");
+      setEgCajas(item.cajas ?? "");
       setEgMarca(item.marca ?? "");
       setEgComposicion(item.composicion ?? "");
       setEgPais(item.pais ?? "");
@@ -876,6 +938,7 @@ export default function ReportesEtiquetadoPage() {
         .from("etq_items")
         .update({
           palet: egPalet.trim() || null,
+          cajas: egCajas.trim() || null,
           marca: egMarca.trim() || null,
           composicion: egComposicion.trim() || null,
           pais: egPais.trim() || null,
@@ -1681,6 +1744,24 @@ export default function ReportesEtiquetadoPage() {
                           <option value="sobrante">Solo sobrantes</option>
                           <option value="nuevo">Solo códigos nuevos</option>
                         </select>
+                        <select
+                          value={filtroRevisado}
+                          onChange={(e) => setFiltroRevisado(e.target.value as typeof filtroRevisado)}
+                          className="card px-3 py-2 text-[12.5px] outline-none w-[150px] shrink-0"
+                        >
+                          <option value="todos">Revisado: todos</option>
+                          <option value="revisado">Solo revisados</option>
+                          <option value="sin_revisar">Solo sin revisar</option>
+                        </select>
+                        <select
+                          value={filtroImpreso}
+                          onChange={(e) => setFiltroImpreso(e.target.value as typeof filtroImpreso)}
+                          className="card px-3 py-2 text-[12.5px] outline-none w-[150px] shrink-0"
+                        >
+                          <option value="todos">Impreso: todos</option>
+                          <option value="impreso">Solo impresos</option>
+                          <option value="sin_imprimir">Solo sin imprimir</option>
+                        </select>
                         <input
                           value={busquedaInconsistencias}
                           onChange={(e) => setBusquedaInconsistencias(e.target.value)}
@@ -1698,59 +1779,110 @@ export default function ReportesEtiquetadoPage() {
                           </p>
                         </div>
                       ) : (
-                        <div className="card overflow-hidden">
-                          <div className="grid grid-cols-[110px_1fr_100px_70px_80px_80px_80px_130px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
-                            <span>Código</span>
-                            <span>Descripción</span>
-                            <span>Marca</span>
-                            <span className="text-center">Nuevo</span>
-                            <span className="text-right">Factura</span>
-                            <span className="text-right">Contado</span>
-                            <span className="text-right">Diferencia</span>
-                            <span className="text-right">Acción</span>
-                          </div>
-                          {inconsistenciasFiltradas.map((it) => (
-                            <div
-                              key={it.id}
-                              className="grid grid-cols-[110px_1fr_100px_70px_80px_80px_80px_130px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px]"
-                            >
-                              <span className="font-medium">{it.codigo ?? "—"}</span>
-                              <span className="text-text-dim truncate">{it.descripcion ?? "—"}</span>
-                              <span className="text-text-dim truncate">{it.marca ?? "—"}</span>
-                              <span className="flex justify-center">
-                                {it.codigo_nuevo ? (
-                                  <Check size={14} className="text-[#6ee7b7]" />
-                                ) : (
-                                  <span className="text-text-faint">—</span>
-                                )}
-                              </span>
-                              <span className="text-right">{it.cantidad_factura}</span>
-                              <span className="text-right">{it.cantidad_contada}</span>
-                              <span
-                                className={`text-right font-semibold ${
-                                  it.diferencia === 0
-                                    ? "text-[#6ee7b7]"
-                                    : it.diferencia < 0
-                                    ? "text-[#fca5a5]"
-                                    : "text-[#fbbf24]"
+                        <div className="card overflow-hidden overflow-x-auto">
+                          <div className="min-w-[1490px]">
+                            <div className="grid grid-cols-[50px_100px_1fr_90px_90px_60px_60px_60px_140px_90px_70px_70px_70px_130px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                              <span className="text-center">Rev.</span>
+                              <span>Código</span>
+                              <span>Descripción</span>
+                              <span>Marca</span>
+                              <span>Etiqueta</span>
+                              <span className="text-center">Nuevo</span>
+                              <span className="text-center">Cód.✓</span>
+                              <span className="text-center">Talla✓</span>
+                              <span>Composición</span>
+                              <span>Tallas</span>
+                              <span className="text-right">Factura</span>
+                              <span className="text-right">Contado</span>
+                              <span className="text-right">Dif.</span>
+                              <span className="text-right">Acción</span>
+                            </div>
+                            {inconsistenciasFiltradas.map((it) => (
+                              <div
+                                key={it.id}
+                                className={`grid grid-cols-[50px_100px_1fr_90px_90px_60px_60px_60px_140px_90px_70px_70px_70px_130px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px] transition-colors duration-300 ${
+                                  it.revisado ? "bg-teal-500/[0.1]" : ""
                                 }`}
                               >
-                                {it.diferencia === 0
-                                  ? "Completo"
-                                  : it.diferencia > 0
-                                  ? `+${it.diferencia}`
-                                  : it.diferencia}
-                              </span>
-                              <span className="text-right">
-                                <button
-                                  onClick={() => abrirRevisarCajas(it.id)}
-                                  className="text-[11.5px] text-[#c4b8ff] hover:underline"
+                                <span className="flex justify-center">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleRevisado(it.id, it.revisado)}
+                                    title={it.revisado ? "Marcado como revisado" : "Marcar como revisado"}
+                                    className={`w-5 h-5 rounded flex items-center justify-center border transition-colors ${
+                                      it.revisado
+                                        ? "bg-teal-500 border-teal-500"
+                                        : "bg-white/[0.04] border-border hover:border-teal-500/50"
+                                    }`}
+                                  >
+                                    {it.revisado && <Check size={13} className="text-white" />}
+                                  </button>
+                                </span>
+                                <span className="font-medium">{it.codigo ?? "—"}</span>
+                                <span className="text-text-dim truncate">{it.descripcion ?? "—"}</span>
+                                <span className="text-text-dim truncate">{it.marca ?? "—"}</span>
+                                <span className="text-text-faint truncate text-[11px]">
+                                  {it.tipo_etiqueta ?? "—"}
+                                </span>
+                                <span className="flex justify-center">
+                                  {it.codigo_nuevo ? (
+                                    <Check size={14} className="text-[#6ee7b7]" />
+                                  ) : (
+                                    <span className="text-text-faint">—</span>
+                                  )}
+                                </span>
+                                <span className="flex justify-center">
+                                  {it.tiene_codigo === true ? (
+                                    <Check size={14} className="text-[#6ee7b7]" />
+                                  ) : it.tiene_codigo === false ? (
+                                    <X size={14} className="text-[#fca5a5]" />
+                                  ) : (
+                                    <HelpCircle size={13} className="text-text-faint" />
+                                  )}
+                                </span>
+                                <span className="flex justify-center">
+                                  {it.tiene_talla === true ? (
+                                    <Check size={14} className="text-[#6ee7b7]" />
+                                  ) : it.tiene_talla === false ? (
+                                    <X size={14} className="text-[#fca5a5]" />
+                                  ) : (
+                                    <HelpCircle size={13} className="text-text-faint" />
+                                  )}
+                                </span>
+                                <span className="text-text-faint truncate text-[11px]" title={it.composicion ?? ""}>
+                                  {it.composicion ?? "—"}
+                                </span>
+                                <span className="text-text-faint truncate text-[11px]">
+                                  {formatoTallas(it.tallas_detalle)}
+                                </span>
+                                <span className="text-right">{it.cantidad_factura}</span>
+                                <span className="text-right">{it.cantidad_contada}</span>
+                                <span
+                                  className={`text-right font-semibold ${
+                                    it.diferencia === 0
+                                      ? "text-[#6ee7b7]"
+                                      : it.diferencia < 0
+                                      ? "text-[#fca5a5]"
+                                      : "text-[#fbbf24]"
+                                  }`}
                                 >
-                                  Revisar / Editar →
-                                </button>
-                              </span>
-                            </div>
-                          ))}
+                                  {it.diferencia === 0
+                                    ? "Completo"
+                                    : it.diferencia > 0
+                                    ? `+${it.diferencia}`
+                                    : it.diferencia}
+                                </span>
+                                <span className="text-right">
+                                  <button
+                                    onClick={() => abrirRevisarCajas(it.id)}
+                                    className="text-[11.5px] text-[#c4b8ff] hover:underline"
+                                  >
+                                    Revisar / Editar →
+                                  </button>
+                                </span>
+                              </div>
+                            ))}
+                          </div>
                         </div>
                       )}
                     </>
@@ -2053,6 +2185,17 @@ export default function ReportesEtiquetadoPage() {
                       value={egPalet}
                       onChange={(e) => setEgPalet(e.target.value)}
                       className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
+                    />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="text-[10.5px] text-text-faint block mb-1">
+                      Cantidad por caja (ej. 165(24) 166(30))
+                    </label>
+                    <input
+                      value={egCajas}
+                      onChange={(e) => setEgCajas(e.target.value)}
+                      placeholder="Número de caja seguido de su cantidad entre paréntesis"
+                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none font-mono"
                     />
                   </div>
                   <div>
