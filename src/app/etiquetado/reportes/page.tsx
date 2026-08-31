@@ -145,6 +145,11 @@ export default function ReportesEtiquetadoPage() {
   );
   const [filtroRevisado, setFiltroRevisado] = useState<"todos" | "revisado" | "sin_revisar">("todos");
   const [filtroImpreso, setFiltroImpreso] = useState<"todos" | "impreso" | "sin_imprimir">("todos");
+  // Filtros de Palet/Caja PROPIOS de Inconsistencias (independientes de los
+  // de Inventario), mismo patrón en cascada: primero se elige el palet,
+  // luego opcionalmente una caja específica dentro de ese palet.
+  const [paletInconsistencia, setPaletInconsistencia] = useState<string>("todos");
+  const [cajaFiltroInconsistencia, setCajaFiltroInconsistencia] = useState("");
   const [busquedaInconsistencias, setBusquedaInconsistencias] = useState("");
   const [itemRevisarId, setItemRevisarId] = useState<string | null>(null);
   const [cajaEditId, setCajaEditId] = useState<string | null>(null);
@@ -841,6 +846,9 @@ export default function ReportesEtiquetadoPage() {
       if (tipoInconsistencia === "nuevo" && !it.codigo_nuevo) return false;
       if (filtroRevisado === "revisado" && !it.revisado) return false;
       if (filtroRevisado === "sin_revisar" && it.revisado) return false;
+      if (paletInconsistencia !== "todos" && (it.palet ?? "").trim() !== paletInconsistencia) return false;
+      if (cajaFiltroInconsistencia.trim() && !textoContieneCaja(it.cajas, cajaFiltroInconsistencia.trim()))
+        return false;
       if (filtroImpreso === "impreso" && !it.ya_impreso) return false;
       if (filtroImpreso === "sin_imprimir" && it.ya_impreso) return false;
       if (!q) return true;
@@ -849,7 +857,15 @@ export default function ReportesEtiquetadoPage() {
       const marca = (it.marca ?? "").toLowerCase();
       return codigo.includes(q) || descripcion.includes(q) || marca.includes(q);
     });
-  }, [inconsistencias, tipoInconsistencia, filtroRevisado, filtroImpreso, busquedaInconsistencias]);
+  }, [
+    inconsistencias,
+    tipoInconsistencia,
+    filtroRevisado,
+    filtroImpreso,
+    paletInconsistencia,
+    cajaFiltroInconsistencia,
+    busquedaInconsistencias,
+  ]);
 
   const itemEnRevision = items.find((it) => it.id === itemRevisarId) ?? null;
   const tallasOrdenDeLaOrdenSeleccionada =
@@ -1762,6 +1778,27 @@ export default function ReportesEtiquetadoPage() {
                           <option value="impreso">Solo impresos</option>
                           <option value="sin_imprimir">Solo sin imprimir</option>
                         </select>
+                        <select
+                          value={paletInconsistencia}
+                          onChange={(e) => {
+                            setPaletInconsistencia(e.target.value);
+                            setCajaFiltroInconsistencia("");
+                          }}
+                          className="card px-3 py-2 text-[12.5px] outline-none w-[130px] shrink-0"
+                        >
+                          <option value="todos">Todos los palets</option>
+                          {paletsDisponibles.map((p) => (
+                            <option key={p} value={p}>
+                              Palet {p}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          value={cajaFiltroInconsistencia}
+                          onChange={(e) => setCajaFiltroInconsistencia(e.target.value)}
+                          placeholder="Caja…"
+                          className="card px-3 py-2 text-[12.5px] outline-none w-[100px] shrink-0 font-mono"
+                        />
                         <input
                           value={busquedaInconsistencias}
                           onChange={(e) => setBusquedaInconsistencias(e.target.value)}
@@ -1780,9 +1817,11 @@ export default function ReportesEtiquetadoPage() {
                         </div>
                       ) : (
                         <div className="card overflow-hidden overflow-x-auto">
-                          <div className="min-w-[1490px]">
-                            <div className="grid grid-cols-[50px_100px_1fr_90px_90px_60px_60px_60px_140px_90px_70px_70px_70px_130px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                          <div className="min-w-[1650px]">
+                            <div className="grid grid-cols-[50px_70px_90px_100px_1fr_90px_90px_60px_60px_60px_140px_90px_70px_70px_70px_130px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
                               <span className="text-center">Rev.</span>
+                              <span>Palet</span>
+                              <span>Cajas</span>
                               <span>Código</span>
                               <span>Descripción</span>
                               <span>Marca</span>
@@ -1800,7 +1839,7 @@ export default function ReportesEtiquetadoPage() {
                             {inconsistenciasFiltradas.map((it) => (
                               <div
                                 key={it.id}
-                                className={`grid grid-cols-[50px_100px_1fr_90px_90px_60px_60px_60px_140px_90px_70px_70px_70px_130px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px] transition-colors duration-300 ${
+                                className={`grid grid-cols-[50px_70px_90px_100px_1fr_90px_90px_60px_60px_60px_140px_90px_70px_70px_70px_130px] gap-3 px-5 py-2.5 items-center border-b border-border last:border-b-0 text-[12.5px] transition-colors duration-300 ${
                                   it.revisado ? "bg-teal-500/[0.1]" : ""
                                 }`}
                               >
@@ -1817,6 +1856,10 @@ export default function ReportesEtiquetadoPage() {
                                   >
                                     {it.revisado && <Check size={13} className="text-white" />}
                                   </button>
+                                </span>
+                                <span className="text-text-faint">{it.palet ?? "—"}</span>
+                                <span className="text-text-faint text-[11px] truncate" title={it.cajas ?? ""}>
+                                  {it.cajas ?? "—"}
                                 </span>
                                 <span className="font-medium">{it.codigo ?? "—"}</span>
                                 <span className="text-text-dim truncate">{it.descripcion ?? "—"}</span>
