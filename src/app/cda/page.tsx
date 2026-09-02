@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import { Plus, Pencil, Trash2, X, FileText, Upload } from "lucide-react";
+import { Plus, Pencil, Trash2, X, FileText, Upload, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import * as XLSX from "xlsx";
 
@@ -109,6 +109,8 @@ export default function CdaPage() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [pagina, setPagina] = useState(1);
+  const PAGINA_TAMANO = 20;
 
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -519,6 +521,18 @@ export default function CdaPage() {
       (c.factura ?? "").toLowerCase().includes(search.toLowerCase())
   );
 
+  // Vuelve a la página 1 cada vez que cambia la búsqueda, para no quedar
+  // "atrapado" en una página que ya no tiene resultados.
+  useEffect(() => {
+    setPagina(1);
+  }, [search]);
+
+  const totalPaginas = Math.max(1, Math.ceil(cdasFiltrados.length / PAGINA_TAMANO));
+  const cdasPagina = cdasFiltrados.slice(
+    (pagina - 1) * PAGINA_TAMANO,
+    pagina * PAGINA_TAMANO
+  );
+
   const totalFob = cdaImprimir?.itemsImpresion.reduce(
     (acc, it) => acc + Number(it.cantidad || 0) * Number(it.precio_unitario_exw || 0),
     0
@@ -597,7 +611,7 @@ export default function CdaPage() {
                 No hay CDA {search ? "que coincidan con la búsqueda" : "registrados todavía"}.
               </p>
             ) : (
-              cdasFiltrados.map((c) => (
+              cdasPagina.map((c) => (
                 <div
                   key={c.id}
                   className="grid grid-cols-[80px_1.5fr_1.3fr_1.2fr_1fr_130px] gap-3 px-5 py-3.5 items-center border-b border-border last:border-b-0 hover:bg-white/[0.02]"
@@ -643,6 +657,35 @@ export default function CdaPage() {
               ))
             )}
           </div>
+
+          {totalPaginas > 1 && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-[11.5px] text-text-faint">
+                Mostrando {(pagina - 1) * PAGINA_TAMANO + 1}–
+                {Math.min(pagina * PAGINA_TAMANO, cdasFiltrados.length)} de{" "}
+                {cdasFiltrados.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPagina((p) => Math.max(1, p - 1))}
+                  disabled={pagina === 1}
+                  className="flex items-center gap-1 text-[12px] px-3 py-1.5 rounded-lg card disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/[0.03]"
+                >
+                  <ChevronLeft size={14} /> Anterior
+                </button>
+                <span className="text-[12px] text-text-dim px-2">
+                  Página {pagina} de {totalPaginas}
+                </span>
+                <button
+                  onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
+                  disabled={pagina === totalPaginas}
+                  className="flex items-center gap-1 text-[12px] px-3 py-1.5 rounded-lg card disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/[0.03]"
+                >
+                  Siguiente <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 

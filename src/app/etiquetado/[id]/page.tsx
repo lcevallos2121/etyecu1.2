@@ -2148,12 +2148,13 @@ export default function DetalleEtiquetadoPage() {
 
               <div className="mt-16 grid grid-cols-2 gap-10 text-center text-[10.5px] break-inside-avoid">
                 <div>
-                  <div className="border-t border-black pt-1">Supervisora ETYECU S.A.</div>
+                  <div className="border-t border-black pt-1">Realizado por</div>
                   <p className="mt-0.5">{orden.supervisora ?? "—"}</p>
                   <p>Etiquetado@etyecu.ec</p>
                 </div>
                 <div>
-                  <div className="border-t border-black pt-1">Recibí Conforme</div>
+                  <div className="border-t border-black pt-1">Supervisado por</div>
+                  <p className="mt-0.5">Isabel Garcia</p>
                 </div>
               </div>
             </div>

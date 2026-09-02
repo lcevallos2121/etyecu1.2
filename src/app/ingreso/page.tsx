@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import { Plus, Pencil, Trash2, X, MapPin, FileText } from "lucide-react";
+import { Plus, Pencil, Trash2, X, MapPin, FileText, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 
 export const dynamic = "force-dynamic";
@@ -89,6 +89,8 @@ export default function IngresoPage() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [pagina, setPagina] = useState(1);
+  const PAGINA_TAMANO = 20;
 
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -518,6 +520,18 @@ export default function IngresoPage() {
       nombreCliente(o).toLowerCase().includes(search.toLowerCase())
   );
 
+  // Vuelve a la página 1 cada vez que cambia la búsqueda, para no quedar
+  // "atrapado" en una página que ya no tiene resultados.
+  useEffect(() => {
+    setPagina(1);
+  }, [search]);
+
+  const totalPaginas = Math.max(1, Math.ceil(ordenesFiltradas.length / PAGINA_TAMANO));
+  const ordenesPagina = ordenesFiltradas.slice(
+    (pagina - 1) * PAGINA_TAMANO,
+    pagina * PAGINA_TAMANO
+  );
+
   return (
     <div className="flex min-h-screen">
       <div className="print:hidden">
@@ -583,7 +597,7 @@ export default function IngresoPage() {
                 No hay órdenes {search ? "que coincidan con la búsqueda" : "registradas todavía"}.
               </p>
             ) : (
-              ordenesFiltradas.map((o) => (
+              ordenesPagina.map((o) => (
                 <div
                   key={o.id}
                   className="grid grid-cols-[1.1fr_1.5fr_1.4fr_1fr_1fr_120px] gap-3 px-5 py-3.5 items-center border-b border-border last:border-b-0 hover:bg-white/[0.02]"
@@ -640,6 +654,35 @@ export default function IngresoPage() {
               ))
             )}
           </div>
+
+          {totalPaginas > 1 && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-[11.5px] text-text-faint">
+                Mostrando {(pagina - 1) * PAGINA_TAMANO + 1}–
+                {Math.min(pagina * PAGINA_TAMANO, ordenesFiltradas.length)} de{" "}
+                {ordenesFiltradas.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPagina((p) => Math.max(1, p - 1))}
+                  disabled={pagina === 1}
+                  className="flex items-center gap-1 text-[12px] px-3 py-1.5 rounded-lg card disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/[0.03]"
+                >
+                  <ChevronLeft size={14} /> Anterior
+                </button>
+                <span className="text-[12px] text-text-dim px-2">
+                  Página {pagina} de {totalPaginas}
+                </span>
+                <button
+                  onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
+                  disabled={pagina === totalPaginas}
+                  className="flex items-center gap-1 text-[12px] px-3 py-1.5 rounded-lg card disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/[0.03]"
+                >
+                  Siguiente <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 

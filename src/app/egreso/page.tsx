@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import { PackageMinus, X, MapPin, FileText, Trash2 } from "lucide-react";
+import { PackageMinus, X, MapPin, FileText, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal } from "@/components/Feedback";
 
 export const dynamic = "force-dynamic";
@@ -50,6 +50,8 @@ export default function EgresoPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [pagina, setPagina] = useState(1);
+  const PAGINA_TAMANO = 20;
 
   const [ordenSeleccionada, setOrdenSeleccionada] = useState<OrdenActiva | null>(null);
   const [ubicacionesOrden, setUbicacionesOrden] = useState<UbicacionOrden[]>([]);
@@ -232,6 +234,18 @@ export default function EgresoPage() {
       (e.ordenes_dap?.clientes?.nombre ?? e.ordenes_dap?.cdas?.clientes?.nombre ?? "").toLowerCase().includes(search.toLowerCase())
   );
 
+  // Vuelve a la página 1 cada vez que cambia la búsqueda, para no quedar
+  // "atrapado" en una página que ya no tiene resultados.
+  useEffect(() => {
+    setPagina(1);
+  }, [search]);
+
+  const totalPaginas = Math.max(1, Math.ceil(egresosFiltrados.length / PAGINA_TAMANO));
+  const egresosPagina = egresosFiltrados.slice(
+    (pagina - 1) * PAGINA_TAMANO,
+    pagina * PAGINA_TAMANO
+  );
+
   return (
     <div className="flex min-h-screen">
       <div className="print:hidden">
@@ -324,7 +338,7 @@ export default function EgresoPage() {
             {egresosFiltrados.length === 0 ? (
               <p className="px-5 py-6 text-[13px] text-text-faint">Sin egresos registrados.</p>
             ) : (
-              egresosFiltrados.map((e) => (
+              egresosPagina.map((e) => (
                 <div
                   key={e.id}
                   className="grid grid-cols-[1.2fr_1.6fr_1fr_1fr_100px] gap-3 px-5 py-3.5 items-center border-b border-border last:border-b-0 hover:bg-white/[0.02]"
@@ -367,6 +381,35 @@ export default function EgresoPage() {
               ))
             )}
           </div>
+
+          {totalPaginas > 1 && (
+            <div className="flex items-center justify-between mt-4">
+              <p className="text-[11.5px] text-text-faint">
+                Mostrando {(pagina - 1) * PAGINA_TAMANO + 1}–
+                {Math.min(pagina * PAGINA_TAMANO, egresosFiltrados.length)} de{" "}
+                {egresosFiltrados.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setPagina((p) => Math.max(1, p - 1))}
+                  disabled={pagina === 1}
+                  className="flex items-center gap-1 text-[12px] px-3 py-1.5 rounded-lg card disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/[0.03]"
+                >
+                  <ChevronLeft size={14} /> Anterior
+                </button>
+                <span className="text-[12px] text-text-dim px-2">
+                  Página {pagina} de {totalPaginas}
+                </span>
+                <button
+                  onClick={() => setPagina((p) => Math.min(totalPaginas, p + 1))}
+                  disabled={pagina === totalPaginas}
+                  className="flex items-center gap-1 text-[12px] px-3 py-1.5 rounded-lg card disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white/[0.03]"
+                >
+                  Siguiente <ChevronRight size={14} />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
