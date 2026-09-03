@@ -56,6 +56,60 @@ export default function TrackingImportadoresPage() {
   const [noLeidosPorFase, setNoLeidosPorFase] = useState<Record<string, number>>({});
   const [chatFaseId, setChatFaseId] = useState<string | null>(null);
 
+  // Correos que reciben notificación cuando un cliente escribe en el chat
+  const [mostrarCorreos, setMostrarCorreos] = useState(false);
+  const [correos, setCorreos] = useState<{ id: string; correo: string; activo: boolean }[]>([]);
+  const [nuevoCorreo, setNuevoCorreo] = useState("");
+  const [guardandoCorreo, setGuardandoCorreo] = useState(false);
+
+  const cargarCorreos = useCallback(async () => {
+    const { data } = await supabase
+      .from("portal_notificaciones_correos")
+      .select("id, correo, activo")
+      .order("creado_en");
+    setCorreos(data ?? []);
+  }, [supabase]);
+
+  useEffect(() => {
+    cargarCorreos();
+  }, [cargarCorreos]);
+
+  async function agregarCorreo() {
+    const limpio = nuevoCorreo.trim().toLowerCase();
+    if (!limpio || !limpio.includes("@")) {
+      setErrorMsg("Escribe un correo válido.");
+      return;
+    }
+    setGuardandoCorreo(true);
+    setErrorMsg(null);
+    try {
+      const { error } = await supabase
+        .from("portal_notificaciones_correos")
+        .insert({ correo: limpio });
+      if (error) {
+        setErrorMsg(
+          error.message.includes("duplicate") ? "Ese correo ya está en la lista." : error.message
+        );
+        return;
+      }
+      setNuevoCorreo("");
+      setToast("Correo agregado.");
+      cargarCorreos();
+    } finally {
+      setGuardandoCorreo(false);
+    }
+  }
+
+  async function toggleCorreoActivo(id: string, activo: boolean) {
+    await supabase.from("portal_notificaciones_correos").update({ activo: !activo }).eq("id", id);
+    cargarCorreos();
+  }
+
+  async function eliminarCorreo(id: string) {
+    await supabase.from("portal_notificaciones_correos").delete().eq("id", id);
+    cargarCorreos();
+  }
+
   const cargarClientes = useCallback(async () => {
     const { data } = await supabase.from("clientes").select("id, nombre, ruc_ci").order("nombre");
     setClientes((data as Cliente[]) ?? []);
@@ -241,10 +295,91 @@ export default function TrackingImportadoresPage() {
       <main className="flex-1 min-w-0">
         <Topbar />
         <div className="px-6.5 pt-5.5 pb-10 max-w-[1000px]">
-          <h1 className="text-[21px] font-semibold mb-0.5">Tracking para importadores</h1>
+          <div className="flex items-center justify-between mb-0.5">
+            <h1 className="text-[21px] font-semibold">Tracking para importadores</h1>
+            <button
+              onClick={() => setMostrarCorreos((v) => !v)}
+              className="text-[12px] font-medium text-[#c4b8ff] hover:underline"
+            >
+              {mostrarCorreos ? "Ocultar" : "Correos de notificación"}
+            </button>
+          </div>
           <p className="text-[12.5px] text-text-faint mb-5">
             Genera el acceso al portal externo y configura las fases que verá cada cliente.
           </p>
+
+          {mostrarCorreos && (
+            <div className="card p-4 mb-5">
+              <h2 className="text-[14px] font-semibold mb-1">Correos de notificación</h2>
+              <p className="text-[11.5px] text-text-dim mb-3">
+                Cuando un cliente escribe en el chat de cualquiera de sus órdenes, se envía un
+                correo a todos los que estén marcados como activos aquí.
+              </p>
+
+              {errorMsg && (
+                <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">
+                  {errorMsg}
+                </div>
+              )}
+
+              <div className="flex items-end gap-2 mb-4">
+                <div className="flex-1">
+                  <label className="text-[11px] text-text-faint block mb-1">Agregar correo</label>
+                  <input
+                    value={nuevoCorreo}
+                    onChange={(e) => setNuevoCorreo(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && agregarCorreo()}
+                    placeholder="ej. denisse@etyecu.com"
+                    className="w-full card px-3 py-2 text-[12.5px] outline-none"
+                  />
+                </div>
+                <button
+                  onClick={agregarCorreo}
+                  disabled={guardandoCorreo}
+                  className="btn-primary text-[12px] font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
+                >
+                  {guardandoCorreo ? "Agregando…" : "Agregar"}
+                </button>
+              </div>
+
+              {correos.length === 0 ? (
+                <p className="text-[12px] text-text-faint">
+                  Todavía no hay correos configurados — nadie recibirá notificaciones.
+                </p>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  {correos.map((c) => (
+                    <div
+                      key={c.id}
+                      className="flex items-center justify-between px-3 py-2 rounded-lg bg-white/[0.03]"
+                    >
+                      <span className={`text-[12.5px] ${c.activo ? "" : "text-text-faint line-through"}`}>
+                        {c.correo}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => toggleCorreoActivo(c.id, c.activo)}
+                          className={`text-[11px] px-2 py-1 rounded-md ${
+                            c.activo
+                              ? "bg-green/[0.15] text-[#6ee7b7]"
+                              : "bg-white/[0.05] text-text-faint"
+                          }`}
+                        >
+                          {c.activo ? "Activo" : "Inactivo"}
+                        </button>
+                        <button
+                          onClick={() => eliminarCorreo(c.id)}
+                          className="text-[11px] px-2 py-1 rounded-md bg-red/[0.1] text-[#fca5a5] hover:bg-red/[0.2]"
+                        >
+                          Eliminar
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="card p-3 mb-5">
             <label className="text-[11px] text-text-faint block mb-1">Cliente</label>
