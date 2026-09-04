@@ -1029,7 +1029,7 @@ export default function CdaPage() {
               <img src="/logo-etyecu.png" alt="ETYECU" className="h-14 mb-1" />
               <p className="text-[11px]">CONTRATO DE SOLICITUD PREVIA A DEPÓSITO ADUANERO PÚBLICO</p>
             </div>
-            <p className="text-[11px] text-right">N° CDA: {cdaImprimir.numero_cda ?? "Pendiente"}</p>
+            <p className="text-[11px] text-right">N° CDA: {cdaImprimir.numero_cda ?? "_____________________"}</p>
           </div>
 
           <p className="text-[12px] font-bold mb-1">DATOS DEL IMPORTADOR</p>
