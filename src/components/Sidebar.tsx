@@ -16,6 +16,7 @@ import {
   ReceiptText,
   FileSpreadsheet,
   Radar,
+  Layers,
   type LucideIcon,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
@@ -61,6 +62,7 @@ const navGroups: { label?: string; items: NavItem[]; dap?: boolean; soloAdmin?: 
   {
     label: "Etiquetado",
     items: [
+      { href: "/etiquetado/clasificacion", label: "Clasificación de carga", icon: Layers },
       { href: "/etiquetado", label: "Órdenes de etiquetado", icon: Tag },
       { href: "/etiquetado/clientes", label: "Clientes de etiquetado", icon: Users },
       { href: "/etiquetado/reportes", label: "Reportes de etiquetado", icon: BarChart3 },
