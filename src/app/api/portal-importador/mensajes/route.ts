@@ -139,7 +139,7 @@ async function notificarPorCorreo(datos: {
   const cuerpoMensaje = datos.mensaje || (datos.tieneAdjunto ? "(envió una foto)" : "");
 
   await resend.emails.send({
-    from: "onboarding@resend.dev",
+    from: "ETYECU DAP <notificaciones@etyecu.ec>",
     to: destinatarios.map((d) => d.correo),
     subject: `Nuevo mensaje de ${cliente?.nombre ?? "un cliente"} — Orden ${numeroOrden}`,
     html: `
