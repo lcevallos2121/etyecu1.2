@@ -13,7 +13,7 @@ const EMPRESA = {
   nombre: "ETYECU S.A.",
   direccion: "Km 11,5 Vía Daule",
   ciudad: "Guayaquil",
-  web: "www.mdcobos.com",
+  web: "www.etyecu.com",
   telefono: "04-2 100 894",
 };
 
