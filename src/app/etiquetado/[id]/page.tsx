@@ -373,6 +373,7 @@ export default function DetalleEtiquetadoPage() {
   // Barra de captura rápida (código -> caja -> enter)
   const [qCodigo, setQCodigo] = useState("");
   const [qCaja, setQCaja] = useState("");
+  const [capturandoRapido, setCapturandoRapido] = useState(false);
   const [sugerencias, setSugerencias] = useState<Item[]>([]);
   const [flashId, setFlashId] = useState<string | null>(null);
 
@@ -711,34 +712,46 @@ export default function DetalleEtiquetadoPage() {
 
   // Al dar ENTER en la barra de captura
   async function capturaRapida() {
+    // Protección contra doble envío: si ya hay una captura en curso (por
+    // ejemplo, por auto-repeat del teclado al soltar Enter, o un doble
+    // clic accidental en "Agregar"), se ignora la segunda llamada hasta
+    // que la primera termine. Esto era lo que causaba que un mismo código
+    // quedara registrado dos veces con la misma cantidad, a milisegundos
+    // de diferencia.
+    if (capturandoRapido) return;
+    setCapturandoRapido(true);
     setErrorMsg(null);
-    const codigo = qCodigo.trim();
-    const caja = qCaja.trim();
-    if (!codigo) { setErrorMsg("Escribe un código."); return; }
-    if (!caja) { setErrorMsg("Escribe la caja con su cantidad, ej. 183(24)."); return; }
-    if (sumarCajas(caja) === 0) {
-      setErrorMsg("La caja debe llevar la cantidad en paréntesis, ej. 183(24).");
-      return;
-    }
+    try {
+      const codigo = qCodigo.trim();
+      const caja = qCaja.trim();
+      if (!codigo) { setErrorMsg("Escribe un código."); return; }
+      if (!caja) { setErrorMsg("Escribe la caja con su cantidad, ej. 183(24)."); return; }
+      if (sumarCajas(caja) === 0) {
+        setErrorMsg("La caja debe llevar la cantidad en paréntesis, ej. 183(24).");
+        return;
+      }
 
-    // ¿Ya existe el código (exacto, sin importar mayúsculas)?
-    const existente = items.find(
-      (it) => (it.codigo ?? "").toLowerCase() === codigo.toLowerCase()
-    );
-    if (existente) {
-      await sumarCajaAExistente(existente, caja);
-      setToast(`Caja sumada a ${existente.codigo}.`);
-    } else {
-      await crearCodigoRapido(codigo, caja);
-      setToast(`Código ${codigo} creado.`);
-    }
+      // ¿Ya existe el código (exacto, sin importar mayúsculas)?
+      const existente = items.find(
+        (it) => (it.codigo ?? "").toLowerCase() === codigo.toLowerCase()
+      );
+      if (existente) {
+        await sumarCajaAExistente(existente, caja);
+        setToast(`Caja sumada a ${existente.codigo}.`);
+      } else {
+        await crearCodigoRapido(codigo, caja);
+        setToast(`Código ${codigo} creado.`);
+      }
 
-    setQCodigo("");
-    setQCaja("");
-    setSugerencias([]);
-    await cargar();
-    // devolver el foco al campo de código para seguir capturando
-    setTimeout(() => document.getElementById("q-codigo")?.focus(), 50);
+      setQCodigo("");
+      setQCaja("");
+      setSugerencias([]);
+      await cargar();
+      // devolver el foco al campo de código para seguir capturando
+      setTimeout(() => document.getElementById("q-codigo")?.focus(), 50);
+    } finally {
+      setCapturandoRapido(false);
+    }
   }
 
   function elegirSugerencia(it: Item) {
@@ -1407,7 +1420,8 @@ export default function DetalleEtiquetadoPage() {
                   </div>
                   <button
                     onClick={capturaRapida}
-                    className="btn-primary text-[12.5px] font-semibold px-4 py-2 rounded-lg"
+                    disabled={capturandoRapido}
+                    className="btn-primary text-[12.5px] font-semibold px-4 py-2 rounded-lg disabled:opacity-50"
                   >
                     Agregar
                   </button>
