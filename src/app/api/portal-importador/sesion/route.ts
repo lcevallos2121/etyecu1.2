@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
 
   const { data: acceso } = await supabaseAdmin
     .from("portal_accesos")
-    .select("id, cliente_id, activo, clientes(nombre)")
+    .select("id, cliente_nombre, activo")
     .eq("id", accesoId)
     .maybeSingle();
 
@@ -29,8 +29,7 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     autenticado: true,
-    cliente_id: acceso.cliente_id,
-    cliente_nombre: (acceso.clientes as unknown as { nombre: string } | null)?.nombre ?? "",
+    cliente_nombre: acceso.cliente_nombre,
   });
 }
 

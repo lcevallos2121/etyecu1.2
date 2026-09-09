@@ -14,7 +14,7 @@ export async function GET(req: NextRequest) {
   const [accesoId] = cookie.split(":");
   const { data: acceso } = await supabaseAdmin
     .from("portal_accesos")
-    .select("id, cliente_id, activo")
+    .select("id, cliente_nombre, activo")
     .eq("id", accesoId)
     .maybeSingle();
 
@@ -22,15 +22,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Sesión inválida." }, { status: 401 });
   }
 
-  const clienteId = req.nextUrl.searchParams.get("cliente_id");
-  if (clienteId !== acceso.cliente_id) {
+  const clienteNombreParam = req.nextUrl.searchParams.get("cliente_nombre");
+  if (clienteNombreParam !== acceso.cliente_nombre) {
     return NextResponse.json({ error: "No autorizado." }, { status: 403 });
   }
 
   const { data: fasesConfig } = await supabaseAdmin
     .from("portal_ordenes_fases")
     .select("id, orden_dap_id, etq_orden_id, fases, fase_actual, visible")
-    .eq("cliente_id", clienteId)
+    .eq("cliente_nombre", acceso.cliente_nombre)
     .eq("visible", true);
 
   const idsDap = (fasesConfig ?? []).filter((f) => f.orden_dap_id).map((f) => f.orden_dap_id);

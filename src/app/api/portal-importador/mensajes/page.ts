@@ -9,22 +9,22 @@ const supabaseAdmin = createClient(
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-async function clienteIdDeLaSesion(req: NextRequest): Promise<string | null> {
+async function clienteNombreDeLaSesion(req: NextRequest): Promise<string | null> {
   const cookie = req.cookies.get("portal_sesion")?.value;
   if (!cookie) return null;
   const [accesoId] = cookie.split(":");
   const { data: acceso } = await supabaseAdmin
     .from("portal_accesos")
-    .select("id, cliente_id, activo, usuario")
+    .select("id, cliente_nombre, activo, usuario")
     .eq("id", accesoId)
     .maybeSingle();
   if (!acceso || !acceso.activo) return null;
-  return acceso.cliente_id;
+  return acceso.cliente_nombre;
 }
 
 export async function GET(req: NextRequest) {
-  const clienteId = await clienteIdDeLaSesion(req);
-  if (!clienteId) {
+  const clienteNombre = await clienteNombreDeLaSesion(req);
+  if (!clienteNombre) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
   }
 
@@ -35,10 +35,10 @@ export async function GET(req: NextRequest) {
 
   const { data: orden } = await supabaseAdmin
     .from("portal_ordenes_fases")
-    .select("id, cliente_id")
+    .select("id, cliente_nombre")
     .eq("id", ordenFaseId)
     .maybeSingle();
-  if (!orden || orden.cliente_id !== clienteId) {
+  if (!orden || orden.cliente_nombre !== clienteNombre) {
     return NextResponse.json({ error: "No autorizado." }, { status: 403 });
   }
 
@@ -52,8 +52,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  const clienteId = await clienteIdDeLaSesion(req);
-  if (!clienteId) {
+  const clienteNombre = await clienteNombreDeLaSesion(req);
+  if (!clienteNombre) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
   }
 
@@ -64,10 +64,10 @@ export async function POST(req: NextRequest) {
 
   const { data: orden } = await supabaseAdmin
     .from("portal_ordenes_fases")
-    .select("id, cliente_id, orden_dap_id, etq_orden_id")
+    .select("id, cliente_nombre, orden_dap_id, etq_orden_id")
     .eq("id", orden_fase_id)
     .maybeSingle();
-  if (!orden || orden.cliente_id !== clienteId) {
+  if (!orden || orden.cliente_nombre !== clienteNombre) {
     return NextResponse.json({ error: "No autorizado." }, { status: 403 });
   }
 
@@ -81,7 +81,7 @@ export async function POST(req: NextRequest) {
 
   const { error } = await supabaseAdmin.from("portal_mensajes").insert({
     orden_fase_id,
-    cliente_id: clienteId,
+    cliente_nombre: clienteNombre,
     autor: "cliente",
     autor_nombre: acceso?.usuario ?? "Cliente",
     mensaje: mensaje?.trim() || null,
@@ -99,7 +99,7 @@ export async function POST(req: NextRequest) {
   notificarPorCorreo({
     ordenDapId: orden.orden_dap_id,
     etqOrdenId: orden.etq_orden_id,
-    clienteId,
+    clienteNombre,
     autorNombre: acceso?.usuario ?? "Cliente",
     mensaje: mensaje?.trim() || null,
     tieneAdjunto: !!foto_url,
@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
 async function notificarPorCorreo(datos: {
   ordenDapId: string | null;
   etqOrdenId: string | null;
-  clienteId: string;
+  clienteNombre: string;
   autorNombre: string;
   mensaje: string | null;
   tieneAdjunto: boolean;
@@ -125,8 +125,7 @@ async function notificarPorCorreo(datos: {
 
   if (!destinatarios || destinatarios.length === 0) return;
 
-  const [{ data: cliente }, { data: ordenDap }, { data: etqOrden }] = await Promise.all([
-    supabaseAdmin.from("clientes").select("nombre").eq("id", datos.clienteId).maybeSingle(),
+  const [{ data: ordenDap }, { data: etqOrden }] = await Promise.all([
     datos.ordenDapId
       ? supabaseAdmin.from("ordenes_dap").select("numero_dap").eq("id", datos.ordenDapId).maybeSingle()
       : Promise.resolve({ data: null }),
@@ -141,9 +140,9 @@ async function notificarPorCorreo(datos: {
   await resend.emails.send({
     from: "ETYECU DAP <notificaciones@etyecu.ec>",
     to: destinatarios.map((d) => d.correo),
-    subject: `Nuevo mensaje de ${cliente?.nombre ?? "un cliente"} — Orden ${numeroOrden}`,
+    subject: `Nuevo mensaje de ${datos.clienteNombre} — Orden ${numeroOrden}`,
     html: `
-      <p><strong>${cliente?.nombre ?? "Cliente"}</strong> (usuario: ${datos.autorNombre}) escribió en el chat de la orden <strong>${numeroOrden}</strong>:</p>
+      <p><strong>${datos.clienteNombre}</strong> (usuario: ${datos.autorNombre}) escribió en el chat de la orden <strong>${numeroOrden}</strong>:</p>
       <blockquote style="border-left:3px solid #7c6cf0;padding-left:12px;color:#333;">${cuerpoMensaje}</blockquote>
       <p style="color:#888;font-size:12px;">Ingresa al panel de Tracking Importadores en el sistema ETYECU DAP para responder.</p>
     `,

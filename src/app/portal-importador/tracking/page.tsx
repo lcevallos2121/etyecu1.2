@@ -40,7 +40,7 @@ export default function PortalTrackingPage() {
     setClienteNombre(sesion.cliente_nombre ?? "");
 
     const ordenesRes = await fetch(
-      `/api/portal-importador/ordenes?cliente_id=${sesion.cliente_id}`
+      `/api/portal-importador/ordenes?cliente_nombre=${encodeURIComponent(sesion.cliente_nombre)}`
     );
     if (ordenesRes.ok) {
       const data = await ordenesRes.json();

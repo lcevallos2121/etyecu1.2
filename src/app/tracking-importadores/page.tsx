@@ -9,11 +9,21 @@ import { Toast, ConfirmModal } from "@/components/Feedback";
 
 export const dynamic = "force-dynamic";
 
-type Cliente = { id: string; nombre: string; ruc_ci: string };
+// Cliente combinado: un mismo cliente real (por nombre) puede tener un id
+// en la tabla "clientes" (DAP), un id en "etq_clientes" (Etiquetado), o
+// ambos a la vez con id's distintos. Se identifica por su NOMBRE, no por
+// un solo id, para que el portal le dé un único acceso combinado sin
+// importar de qué tabla(s) venga.
+type ClienteCombinado = {
+  nombre: string;
+  clienteDapId: string | null;
+  etqClienteId: string | null;
+  rucCi: string | null; // el que esté disponible, solo para mostrar en el selector
+};
 
 type Acceso = {
   id: string;
-  cliente_id: string;
+  cliente_nombre: string;
   usuario: string;
   activo: boolean;
   ultimo_acceso: string | null;
@@ -24,7 +34,7 @@ type EtqOrdenRef = { id: string; numero_etq: string; estado: string };
 
 type FaseOrden = {
   id: string;
-  cliente_id: string;
+  cliente_nombre: string;
   orden_dap_id: string | null;
   etq_orden_id: string | null;
   fases: string[];
@@ -35,8 +45,8 @@ type FaseOrden = {
 export default function TrackingImportadoresPage() {
   const supabase = createClient();
 
-  const [clientes, setClientes] = useState<Cliente[]>([]);
-  const [clienteId, setClienteId] = useState("");
+  const [clientes, setClientes] = useState<ClienteCombinado[]>([]);
+  const [clienteNombre, setClienteNombre] = useState("");
   const [loading, setLoading] = useState(true);
 
   const [acceso, setAcceso] = useState<Acceso | null>(null);
@@ -111,8 +121,45 @@ export default function TrackingImportadoresPage() {
   }
 
   const cargarClientes = useCallback(async () => {
-    const { data } = await supabase.from("clientes").select("id, nombre, ruc_ci").order("nombre");
-    setClientes((data as Cliente[]) ?? []);
+    const [dapRes, etqRes] = await Promise.all([
+      supabase.from("clientes").select("id, nombre, ruc_ci").order("nombre"),
+      supabase.from("etq_clientes").select("id, nombre, ruc_ci").order("nombre"),
+    ]);
+
+    // Combina ambas listas agrupando por nombre normalizado (mayúsculas,
+    // espacios recortados) — así un cliente que existe en ambas tablas
+    // (mismo nombre, id's distintos) aparece UNA SOLA VEZ en el selector.
+    const combinados = new Map<string, ClienteCombinado>();
+
+    (dapRes.data ?? []).forEach((c: { id: string; nombre: string; ruc_ci: string }) => {
+      const clave = c.nombre.trim().toUpperCase();
+      const actual = combinados.get(clave) ?? {
+        nombre: c.nombre,
+        clienteDapId: null,
+        etqClienteId: null,
+        rucCi: null,
+      };
+      actual.clienteDapId = c.id;
+      actual.rucCi = actual.rucCi ?? c.ruc_ci;
+      combinados.set(clave, actual);
+    });
+
+    (etqRes.data ?? []).forEach((c: { id: string; nombre: string; ruc_ci: string | null }) => {
+      const clave = c.nombre.trim().toUpperCase();
+      const actual = combinados.get(clave) ?? {
+        nombre: c.nombre,
+        clienteDapId: null,
+        etqClienteId: null,
+        rucCi: null,
+      };
+      actual.etqClienteId = c.id;
+      actual.rucCi = actual.rucCi ?? c.ruc_ci;
+      combinados.set(clave, actual);
+    });
+
+    setClientes(
+      Array.from(combinados.values()).sort((a, b) => a.nombre.localeCompare(b.nombre))
+    );
     setLoading(false);
   }, [supabase]);
 
@@ -121,21 +168,27 @@ export default function TrackingImportadoresPage() {
   }, [cargarClientes]);
 
   const cargarDatosCliente = useCallback(
-    async (cid: string) => {
-      if (!cid) return;
+    async (nombre: string) => {
+      if (!nombre) return;
+      const clienteInfo = clientes.find((c) => c.nombre === nombre);
+
       const [accRes, dapRes, etqRes, fasesRes] = await Promise.all([
-        supabase.from("portal_accesos").select("*").eq("cliente_id", cid).maybeSingle(),
-        supabase
-          .from("ordenes_dap")
-          .select("id, numero_dap")
-          .eq("cliente_id", cid)
-          .order("creado_en", { ascending: false }),
-        supabase
-          .from("etq_ordenes")
-          .select("id, numero_etq, estado")
-          .eq("etq_cliente_id", cid)
-          .order("creado_en", { ascending: false }),
-        supabase.from("portal_ordenes_fases").select("*").eq("cliente_id", cid),
+        supabase.from("portal_accesos").select("*").eq("cliente_nombre", nombre).maybeSingle(),
+        clienteInfo?.clienteDapId
+          ? supabase
+              .from("ordenes_dap")
+              .select("id, numero_dap")
+              .eq("cliente_id", clienteInfo.clienteDapId)
+              .order("creado_en", { ascending: false })
+          : Promise.resolve({ data: [] as OrdenDapRef[] }),
+        clienteInfo?.etqClienteId
+          ? supabase
+              .from("etq_ordenes")
+              .select("id, numero_etq, estado")
+              .eq("etq_cliente_id", clienteInfo.etqClienteId)
+              .order("creado_en", { ascending: false })
+          : Promise.resolve({ data: [] as EtqOrdenRef[] }),
+        supabase.from("portal_ordenes_fases").select("*").eq("cliente_nombre", nombre),
       ]);
       setAcceso((accRes.data as Acceso) ?? null);
       setOrdenesDap((dapRes.data as OrdenDapRef[]) ?? []);
@@ -160,12 +213,12 @@ export default function TrackingImportadoresPage() {
         setNoLeidosPorFase({});
       }
     },
-    [supabase]
+    [supabase, clientes]
   );
 
   useEffect(() => {
-    if (clienteId) cargarDatosCliente(clienteId);
-  }, [clienteId, cargarDatosCliente]);
+    if (clienteNombre) cargarDatosCliente(clienteNombre);
+  }, [clienteNombre, cargarDatosCliente]);
 
   async function generarAcceso() {
     if (!nuevoUsuario.trim()) {
@@ -178,7 +231,7 @@ export default function TrackingImportadoresPage() {
       const res = await fetch("/api/portal-importador/generar-acceso", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cliente_id: clienteId, usuario: nuevoUsuario }),
+        body: JSON.stringify({ cliente_nombre: clienteNombre, usuario: nuevoUsuario }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -186,7 +239,7 @@ export default function TrackingImportadoresPage() {
         return;
       }
       setClaveGenerada(data.clave);
-      cargarDatosCliente(clienteId);
+      cargarDatosCliente(clienteNombre);
     } finally {
       setGenerando(false);
     }
@@ -204,7 +257,7 @@ export default function TrackingImportadoresPage() {
       const res = await fetch("/api/portal-importador/generar-acceso", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cliente_id: clienteId, usuario: acceso.usuario }),
+        body: JSON.stringify({ cliente_nombre: clienteNombre, usuario: acceso.usuario }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -212,7 +265,7 @@ export default function TrackingImportadoresPage() {
         return;
       }
       setClaveGenerada(data.clave);
-      cargarDatosCliente(clienteId);
+      cargarDatosCliente(clienteNombre);
     } finally {
       setGenerando(false);
     }
@@ -223,14 +276,14 @@ export default function TrackingImportadoresPage() {
     await supabase.from("portal_accesos").update({ activo: false }).eq("id", acceso.id);
     setADesactivar(false);
     setToast("Acceso desactivado. El cliente ya no podrá iniciar sesión.");
-    cargarDatosCliente(clienteId);
+    cargarDatosCliente(clienteNombre);
   }
 
   async function reactivarAcceso() {
     if (!acceso) return;
     await supabase.from("portal_accesos").update({ activo: true }).eq("id", acceso.id);
     setToast("Acceso reactivado.");
-    cargarDatosCliente(clienteId);
+    cargarDatosCliente(clienteNombre);
   }
 
   function abrirEditarFases(tipo: "dap" | "etq", ordenId: string) {
@@ -260,7 +313,7 @@ export default function TrackingImportadoresPage() {
         .eq("id", existente.id);
     } else {
       await supabase.from("portal_ordenes_fases").insert({
-        cliente_id: clienteId,
+        cliente_nombre: clienteNombre,
         orden_dap_id: tipo === "dap" ? ordenId : null,
         etq_orden_id: tipo === "etq" ? ordenId : null,
         fases: fasesArr,
@@ -269,7 +322,7 @@ export default function TrackingImportadoresPage() {
     }
     setEditandoFasesId(null);
     setToast("Fases guardadas.");
-    cargarDatosCliente(clienteId);
+    cargarDatosCliente(clienteNombre);
   }
 
   async function avanzarFase(fase: FaseOrden, delta: number) {
@@ -278,7 +331,7 @@ export default function TrackingImportadoresPage() {
       .from("portal_ordenes_fases")
       .update({ fase_actual: nueva, actualizado_en: new Date().toISOString() })
       .eq("id", fase.id);
-    cargarDatosCliente(clienteId);
+    cargarDatosCliente(clienteNombre);
   }
 
   function copiarLink() {
@@ -287,7 +340,7 @@ export default function TrackingImportadoresPage() {
     setToast("Link copiado. Compártelo junto con el usuario y clave.");
   }
 
-  const clienteActivo = clientes.find((c) => c.id === clienteId);
+  const clienteActivo = clientes.find((c) => c.nombre === clienteNombre);
 
   return (
     <div className="flex min-h-screen">
@@ -384,23 +437,24 @@ export default function TrackingImportadoresPage() {
           <div className="card p-3 mb-5">
             <label className="text-[11px] text-text-faint block mb-1">Cliente</label>
             <select
-              value={clienteId}
+              value={clienteNombre}
               onChange={(e) => {
-                setClienteId(e.target.value);
+                setClienteNombre(e.target.value);
                 setClaveGenerada(null);
               }}
               className="card px-3 py-2 text-[12.5px] outline-none min-w-[320px]"
             >
               <option value="">Selecciona un cliente…</option>
               {clientes.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.nombre} ({c.ruc_ci})
+                <option key={c.nombre} value={c.nombre}>
+                  {c.nombre} {c.rucCi ? `(${c.rucCi})` : ""}
+                  {c.clienteDapId && c.etqClienteId ? " · DAP + Etiquetado" : ""}
                 </option>
               ))}
             </select>
           </div>
 
-          {!clienteId ? (
+          {!clienteNombre ? (
             <div className="card p-8 text-center">
               <p className="text-[13px] text-text-faint">Elige un cliente para configurar su acceso.</p>
             </div>
@@ -592,7 +646,7 @@ export default function TrackingImportadoresPage() {
           supabase={supabase}
           onCerrar={() => {
             setChatFaseId(null);
-            if (clienteId) cargarDatosCliente(clienteId);
+            if (clienteNombre) cargarDatosCliente(clienteNombre);
           }}
         />
       )}
@@ -662,12 +716,12 @@ function ModalChatInterno({
     try {
       const { data: fase } = await supabase
         .from("portal_ordenes_fases")
-        .select("cliente_id")
+        .select("cliente_nombre")
         .eq("id", orderFaseId)
         .maybeSingle();
       await supabase.from("portal_mensajes").insert({
         orden_fase_id: orderFaseId,
-        cliente_id: fase?.cliente_id,
+        cliente_nombre: fase?.cliente_nombre,
         autor: "equipo",
         autor_nombre: "ETYECU",
         mensaje: texto.trim() || null,

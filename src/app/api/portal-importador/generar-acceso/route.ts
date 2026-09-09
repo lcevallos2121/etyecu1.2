@@ -20,9 +20,9 @@ function generarClaveLegible(): string {
 
 export async function POST(req: NextRequest) {
   try {
-    const { cliente_id, usuario } = await req.json();
-    if (!cliente_id || !usuario) {
-      return NextResponse.json({ error: "cliente_id y usuario son requeridos." }, { status: 400 });
+    const { cliente_nombre, usuario } = await req.json();
+    if (!cliente_nombre || !usuario) {
+      return NextResponse.json({ error: "cliente_nombre y usuario son requeridos." }, { status: 400 });
     }
 
     const usuarioLimpio = String(usuario).trim().toLowerCase();
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
       .from("portal_accesos")
       .upsert(
         {
-          cliente_id,
+          cliente_nombre,
           usuario: usuarioLimpio,
           clave_hash: `${salt}:${hash}`,
           activo: true,

@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
 
     const { data: acceso, error } = await supabaseAdmin
       .from("portal_accesos")
-      .select("id, cliente_id, usuario, clave_hash, activo")
+      .select("id, cliente_nombre, usuario, clave_hash, activo")
       .eq("usuario", usuario.trim().toLowerCase())
       .maybeSingle();
 
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
 
     const response = NextResponse.json({
       ok: true,
-      cliente_id: acceso.cliente_id,
+      cliente_nombre: acceso.cliente_nombre,
     });
 
     // Cookie de sesión del portal (separada de la sesión del sistema interno)

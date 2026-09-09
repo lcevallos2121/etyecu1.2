@@ -6,17 +6,17 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-async function clienteIdDeLaSesion(req: NextRequest): Promise<string | null> {
+async function clienteNombreDeLaSesion(req: NextRequest): Promise<string | null> {
   const cookie = req.cookies.get("portal_sesion")?.value;
   if (!cookie) return null;
   const [accesoId] = cookie.split(":");
   const { data: acceso } = await supabaseAdmin
     .from("portal_accesos")
-    .select("id, cliente_id, activo")
+    .select("id, cliente_nombre, activo")
     .eq("id", accesoId)
     .maybeSingle();
   if (!acceso || !acceso.activo) return null;
-  return acceso.cliente_id;
+  return acceso.cliente_nombre;
 }
 
 // Preguntas de respuesta rápida que el bot sabe contestar automáticamente,
@@ -30,8 +30,8 @@ const PREGUNTAS_VALIDAS = [
 type PreguntaBot = (typeof PREGUNTAS_VALIDAS)[number];
 
 export async function POST(req: NextRequest) {
-  const clienteId = await clienteIdDeLaSesion(req);
-  if (!clienteId) {
+  const clienteNombre = await clienteNombreDeLaSesion(req);
+  if (!clienteNombre) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
   }
 
@@ -42,11 +42,11 @@ export async function POST(req: NextRequest) {
 
   const { data: fase } = await supabaseAdmin
     .from("portal_ordenes_fases")
-    .select("id, cliente_id, orden_dap_id, etq_orden_id, fases, fase_actual")
+    .select("id, cliente_nombre, orden_dap_id, etq_orden_id, fases, fase_actual")
     .eq("id", orden_fase_id)
     .maybeSingle();
 
-  if (!fase || fase.cliente_id !== clienteId) {
+  if (!fase || fase.cliente_nombre !== clienteNombre) {
     return NextResponse.json({ error: "No autorizado." }, { status: 403 });
   }
 
@@ -62,7 +62,7 @@ export async function POST(req: NextRequest) {
   // 1. Guardar la pregunta del cliente
   await supabaseAdmin.from("portal_mensajes").insert({
     orden_fase_id,
-    cliente_id: clienteId,
+    cliente_nombre: clienteNombre,
     autor: "cliente",
     autor_nombre: "Cliente",
     mensaje: textoPregunta[pregunta as PreguntaBot],
@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
   // 3. Guardar la respuesta del bot como mensaje del "equipo"
   await supabaseAdmin.from("portal_mensajes").insert({
     orden_fase_id,
-    cliente_id: clienteId,
+    cliente_nombre: clienteNombre,
     autor: "equipo",
     autor_nombre: "ETYECU (respuesta automática)",
     mensaje: respuesta,
