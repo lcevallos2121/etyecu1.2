@@ -1626,7 +1626,7 @@ export default function DetalleEtiquetadoPage() {
               </div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Tipo de etiqueta</label>
                 <select value={fTipoEtiqueta} onChange={(e) => setFTipoEtiqueta(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none">
-                  <option value="COSIDO">Cosido</option><option value="ADHESIVA">Adhesiva</option>
+                  <option value="COSIDO">Cosido</option><option value="TERMOFIJADO">Termofijado</option><option value="ADHESIVA">Adhesiva</option>
                 </select>
               </div>
               <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Novedad (ej. DOBLE, CONJUNTO)</label><input value={fNovedad} onChange={(e) => setFNovedad(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
