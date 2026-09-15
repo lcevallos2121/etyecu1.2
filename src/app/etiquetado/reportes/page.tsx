@@ -136,6 +136,9 @@ export default function ReportesEtiquetadoPage() {
   const [composicionFiltro, setComposicionFiltro] = useState<string>("todas");
   const [busquedaComposicion, setBusquedaComposicion] = useState("");
   const [sugerenciasComposicionAbiertas, setSugerenciasComposicionAbiertas] = useState(false);
+  const [tallaFiltro, setTallaFiltro] = useState<string>("todas");
+  const [busquedaTalla, setBusquedaTalla] = useState("");
+  const [sugerenciasTallaAbiertas, setSugerenciasTallaAbiertas] = useState(false);
 
   // Módulo de Inconsistencias
   const [tipoInconsistencia, setTipoInconsistencia] = useState<
@@ -474,6 +477,21 @@ export default function ReportesEtiquetadoPage() {
       .join(" ");
   }
 
+  // Cuando el filtro de Talla está activo, muestra SOLO esa talla con su
+  // cantidad en la columna de Tallas de la tabla — para que Isabel no
+  // tenga que buscarla visualmente entre todas las demás tallas del
+  // código. Sin filtro activo, se comporta igual que formatoTallas normal.
+  function formatoTallasSegunFiltro(
+    detalle: Record<string, number> | null,
+    filtro: string
+  ): string {
+    if (filtro === "todas") return formatoTallas(detalle);
+    if (!detalle) return "—";
+    const cantidad = detalle[filtro];
+    if (cantidad === undefined || Number(cantidad) <= 0) return "—";
+    return `${filtro}:${cantidad}`;
+  }
+
   // Total de etiquetas a imprimir: suma de las cantidades dentro de cada talla
   function sumarTallasDetalle(detalle: Record<string, number> | null): number {
     if (!detalle) return 0;
@@ -564,11 +582,41 @@ export default function ReportesEtiquetadoPage() {
     return itemsDeLaCaja.filter((it) => (it.composicion ?? "").trim() === composicionFiltro);
   }, [itemsDeLaCaja, composicionFiltro]);
 
+  // Tallas que existen dentro de la selección actual (Palet/Caja/Composición
+  // ya aplicados), para que el buscador de Talla solo sugiera lo que de
+  // verdad está presente ahí — mismo patrón que Composición. Se ordenan de
+  // forma lógica (S, M, L... o numeración de calzado) con la misma función
+  // que ya corrige el orden al imprimir.
+  const tallasDisponibles = useMemo(() => {
+    const set = new Set<string>();
+    itemsPorComposicion.forEach((it) => {
+      Object.keys(it.tallas_detalle ?? {}).forEach((t) => set.add(t));
+    });
+    return ordenarClavesDeTallas(Array.from(set));
+  }, [itemsPorComposicion]);
+
+  const tallasSugeridas = useMemo(() => {
+    const q = busquedaTalla.trim().toLowerCase();
+    if (!q) return tallasDisponibles;
+    return tallasDisponibles.filter((t) => t.toLowerCase().includes(q));
+  }, [tallasDisponibles, busquedaTalla]);
+
+  // Paso 2.75: filtro de talla — igual patrón que composición, como
+  // sub-filtro dentro de la selección actual. Se queda solo con los
+  // códigos que tengan esa talla presente con cantidad mayor a 0 (no basta
+  // con que la clave exista, porque una edición pudo dejarla en 0).
+  const itemsPorTalla = useMemo(() => {
+    if (tallaFiltro === "todas") return itemsPorComposicion;
+    return itemsPorComposicion.filter(
+      (it) => Number(it.tallas_detalle?.[tallaFiltro] ?? 0) > 0
+    );
+  }, [itemsPorComposicion, tallaFiltro]);
+
   // Paso 3: búsqueda de texto libre (código, descripción, tallas, etc.)
   const itemsInventarioFiltrados = useMemo(() => {
     const q = busquedaInventario.trim().toLowerCase();
-    if (!q) return itemsPorComposicion;
-    return itemsPorComposicion.filter((it) => {
+    if (!q) return itemsPorTalla;
+    return itemsPorTalla.filter((it) => {
       const codigo = (it.codigo ?? "").toLowerCase();
       const marca = (it.marca ?? "").toLowerCase();
       const descripcion = (it.descripcion ?? "").toLowerCase();
@@ -591,7 +639,7 @@ export default function ReportesEtiquetadoPage() {
         pais.includes(q)
       );
     });
-  }, [itemsPorComposicion, busquedaInventario, tipoBusqueda]);
+  }, [itemsPorTalla, busquedaInventario, tipoBusqueda]);
 
   // Extrae SOLO la caja buscada del texto completo: "164(24) 165(24)" + "165"
   // -> "165(24)". Si no hay filtro de caja activo, muestra el texto completo.
@@ -681,7 +729,7 @@ export default function ReportesEtiquetadoPage() {
           pais: it.pais,
           cajas: it.cajas,
           cantidad: it.cantidad_contada,
-          tallasTexto: formatoTallas(tallasAMostrar),
+          tallasTexto: formatoTallasSegunFiltro(tallasAMostrar, tallaFiltro),
           totalTallas: sumarTallasDetalle(tallasAMostrar),
           esVariante: false,
           sinDesgloseDeCaja: sinDesglose,
@@ -723,7 +771,7 @@ export default function ReportesEtiquetadoPage() {
             pais: it.pais,
             cajas: v.cajas,
             cantidad: v.cantidad,
-            tallasTexto: formatoTallas(tallasAMostrar),
+            tallasTexto: formatoTallasSegunFiltro(tallasAMostrar, tallaFiltro),
             totalTallas: sumarTallasDetalle(tallasAMostrar),
             esVariante: true,
             sinDesgloseDeCaja: sinDesglose,
@@ -735,7 +783,7 @@ export default function ReportesEtiquetadoPage() {
       }
     });
     return filas;
-  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro]);
+  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro, tallaFiltro]);
 
   // Marca/desmarca "Ya impreso" en la fila. Actualiza la tabla correcta
   // (etq_items o etq_variantes) según si la fila es un código simple o una
@@ -1522,13 +1570,65 @@ export default function ReportesEtiquetadoPage() {
                           )}
                         </div>
 
-                        {(paletSeleccionado !== "todos" || cajaFiltro || composicionFiltro !== "todas") && (
+                        <div className="relative">
+                          <label className="text-[11px] text-text-faint block mb-1">Talla</label>
+                          {tallaFiltro !== "todas" ? (
+                            <div className="flex items-center gap-1.5 card px-3 py-2 min-w-[110px]">
+                              <span className="text-[12.5px] flex-1 truncate">{tallaFiltro}</span>
+                              <button
+                                onClick={() => {
+                                  setTallaFiltro("todas");
+                                  setBusquedaTalla("");
+                                }}
+                                className="text-text-faint hover:text-text"
+                                title="Quitar filtro de talla"
+                              >
+                                <X size={13} />
+                              </button>
+                            </div>
+                          ) : (
+                            <input
+                              value={busquedaTalla}
+                              onChange={(e) => setBusquedaTalla(e.target.value)}
+                              onFocus={() => setSugerenciasTallaAbiertas(true)}
+                              onBlur={() => setTimeout(() => setSugerenciasTallaAbiertas(false), 150)}
+                              placeholder="Buscar talla…"
+                              className="card px-3 py-2 text-[12.5px] outline-none w-[110px]"
+                            />
+                          )}
+                          {sugerenciasTallaAbiertas && tallaFiltro === "todas" && (
+                            <div className="absolute z-20 top-full mt-1 w-[140px] max-h-[220px] overflow-y-auto card p-1 shadow-lg">
+                              {tallasSugeridas.length === 0 ? (
+                                <p className="text-[11.5px] text-text-faint px-2 py-2">
+                                  Ninguna talla coincide.
+                                </p>
+                              ) : (
+                                tallasSugeridas.map((t) => (
+                                  <button
+                                    key={t}
+                                    onClick={() => {
+                                      setTallaFiltro(t);
+                                      setBusquedaTalla("");
+                                    }}
+                                    className="w-full text-left px-2.5 py-1.5 rounded-md text-[12px] hover:bg-white/[0.06]"
+                                  >
+                                    {t}
+                                  </button>
+                                ))
+                              )}
+                            </div>
+                          )}
+                        </div>
+
+                        {(paletSeleccionado !== "todos" || cajaFiltro || composicionFiltro !== "todas" || tallaFiltro !== "todas") && (
                           <button
                             onClick={() => {
                               setPaletSeleccionado("todos");
                               setCajaFiltro("");
                               setComposicionFiltro("todas");
                               setBusquedaComposicion("");
+                              setTallaFiltro("todas");
+                              setBusquedaTalla("");
                             }}
                             className="text-[11.5px] text-text-faint hover:text-text underline self-end pb-2"
                           >
@@ -1546,6 +1646,11 @@ export default function ReportesEtiquetadoPage() {
                           <span className="text-[11px] text-[#c4b8ff] self-end pb-2">
                             Filtrando además por composición "{composicionFiltro}"
                             {(paletSeleccionado !== "todos" || cajaFiltro) && " dentro de la selección actual"}.
+                          </span>
+                        )}
+                        {tallaFiltro !== "todas" && (
+                          <span className="text-[11px] text-[#6ee7b7] self-end pb-2">
+                            Filtrando además por talla "{tallaFiltro}".
                           </span>
                         )}
                       </div>

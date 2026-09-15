@@ -327,6 +327,51 @@ function MultiplicadorTallas({
   );
 }
 
+// Botón + input inline para agregar una talla que no está en la lista
+// configurada de la orden, sin tener que salir a reconfigurar todo. Al
+// confirmar, la talla queda disponible de inmediato en el formulario
+// actual (útil sobre todo para calzado, donde a veces aparece una
+// numeración puntual que no estaba prevista).
+function BotonNuevaTalla({ onAgregar }: { onAgregar: (talla: string) => void }) {
+  const [abierto, setAbierto] = useState(false);
+  const [valor, setValor] = useState("");
+
+  if (!abierto) {
+    return (
+      <button
+        type="button"
+        onClick={() => setAbierto(true)}
+        className="flex flex-col items-center justify-end h-full text-[10px] text-[#c4b8ff] hover:underline px-1"
+      >
+        + Nueva talla
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center">
+      <span className="text-[10px] text-text-faint mb-0.5">Nueva</span>
+      <div className="flex gap-1">
+        <input
+          value={valor}
+          onChange={(e) => setValor(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && valor.trim()) {
+              onAgregar(valor.trim());
+              setValor("");
+              setAbierto(false);
+            }
+            if (e.key === "Escape") setAbierto(false);
+          }}
+          autoFocus
+          placeholder="ej. 45.5"
+          className="w-[60px] card px-1.5 py-1.5 text-[11px] outline-none text-center"
+        />
+      </div>
+    </div>
+  );
+}
+
 // Check de 2 estados: false (gris, sin marcar) -> true (verde, Sí) -> false.
 // Se usa para "Código Nuevo", que a diferencia de Tiene Código/Tiene Talla
 // no necesita un tercer estado "No" — solo importa marcarlo cuando aplica.
@@ -584,6 +629,25 @@ export default function DetalleEtiquetadoPage() {
     setTallasOrden(arr);
     setShowTallasConfig(false);
     setToast("Tallas configuradas.");
+  }
+
+  // Agrega UNA talla nueva a la lista de tallas de la orden, sin tener que
+  // reconfigurar toda la lista — para cuando aparece una talla que no
+  // estaba prevista (ej. una numeración de calzado puntual). Esto evita
+  // que alguien tenga que "improvisar" escribiendo el valor en un campo
+  // equivocado, que fue la causa real de datos corruptos en tallas.
+  async function agregarTallaNueva(nombreTalla: string) {
+    const limpio = nombreTalla.trim();
+    if (!limpio) return;
+    if (tallasOrden.some((t) => t.toLowerCase() === limpio.toLowerCase())) {
+      setToast(`La talla "${limpio}" ya está en la lista.`);
+      return;
+    }
+    const nuevoArr = [...tallasOrden, limpio];
+    const { error } = await supabase.from("etq_ordenes").update({ tallas: nuevoArr }).eq("id", id);
+    if (error) { setErrorMsg(error.message); return; }
+    setTallasOrden(nuevoArr);
+    setToast(`Talla "${limpio}" agregada.`);
   }
 
   function abrirDatosInforme() {
@@ -1593,6 +1657,7 @@ export default function DetalleEtiquetadoPage() {
                           />
                         </div>
                       ))}
+                      <BotonNuevaTalla onAgregar={agregarTallaNueva} />
                     </div>
                     <MultiplicadorTallas tallas={fTallas} onAplicar={setFTallas} />
                     {/* Aviso visual si tallas no cuadran con cajas */}
@@ -1841,6 +1906,7 @@ export default function DetalleEtiquetadoPage() {
                       />
                     </div>
                   ))}
+                  <BotonNuevaTalla onAgregar={agregarTallaNueva} />
                 </div>
               )}
               <MultiplicadorTallas tallas={vTallas} onAplicar={setVTallas} />
@@ -1932,6 +1998,7 @@ export default function DetalleEtiquetadoPage() {
                     />
                   </div>
                 ))}
+                <BotonNuevaTalla onAgregar={agregarTallaNueva} />
               </div>
             )}
             <MultiplicadorTallas tallas={tallasNuevas} onAplicar={setTallasNuevas} />
