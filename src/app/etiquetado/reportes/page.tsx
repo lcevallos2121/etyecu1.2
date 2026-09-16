@@ -6,7 +6,7 @@ import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
 import * as XLSX from "xlsx";
-import { Printer, X, Check, HelpCircle } from "lucide-react";
+import { Printer, X, Check, HelpCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import {
   BarChart,
@@ -34,6 +34,7 @@ type OrdenEtq = {
   estado: string;
   fecha: string;
   creado_en: string;
+  concluida_en: string | null;
   tallas: string[] | null;
 };
 
@@ -93,6 +94,7 @@ type Movimiento = {
   mesa_id: string | null;
   cantidad: number;
   creado_en: string;
+  fase: "inventario" | "etiquetado" | null;
 };
 
 type Mesa = {
@@ -103,6 +105,93 @@ type Mesa = {
 };
 
 const COLORES = ["#7c6cf0", "#6ee7b7", "#fbbf24", "#fca5a5", "#93c5fd", "#c4b8ff"];
+
+// --- Cálculo de tiempos de proceso (reportes) --------------------------------
+// Horas ACTIVAS y días trabajados de un conjunto de movimientos. Las horas se
+// suman por día (último − primer movimiento de cada día), de modo que los
+// huecos de una noche a otra NO cuentan como tiempo trabajado — así el número
+// refleja el trabajo real y no el calendario. Los días son las fechas
+// distintas en que hubo al menos un movimiento.
+function metricasDeMovimientos(movs: { creado_en: string }[]): { dias: number; horas: number } {
+  if (movs.length === 0) return { dias: 0, horas: 0 };
+  const porDia: Record<string, number[]> = {};
+  movs.forEach((m) => {
+    const dia = m.creado_en.slice(0, 10);
+    (porDia[dia] ||= []).push(new Date(m.creado_en).getTime());
+  });
+  let horas = 0;
+  Object.values(porDia).forEach((tiempos) => {
+    horas += (Math.max(...tiempos) - Math.min(...tiempos)) / (1000 * 60 * 60);
+  });
+  return { dias: Object.keys(porDia).length, horas: Math.round(horas * 10) / 10 };
+}
+
+// Duración total del proceso: desde que se creó la orden hasta que se concluyó
+// (o hasta ahora si sigue abierta). Devuelve días + horas de reloj (calendario).
+function duracionProceso(
+  creadoEn: string,
+  concluidaEn: string | null
+): { dias: number; horas: number; horasTotales: number; enCurso: boolean } {
+  const ini = new Date(creadoEn).getTime();
+  const fin = concluidaEn ? new Date(concluidaEn).getTime() : Date.now();
+  const ms = Math.max(0, fin - ini);
+  const horasTotales = ms / (1000 * 60 * 60);
+  const dias = Math.floor(horasTotales / 24);
+  const horas = Math.round(horasTotales - dias * 24);
+  return { dias, horas, horasTotales: Math.round(horasTotales * 10) / 10, enCurso: !concluidaEn };
+}
+
+// "2d 5h", "5h", "0h" — texto compacto de una duración en días + horas.
+function formatoDH(dias: number, horas: number): string {
+  if (dias <= 0 && horas <= 0) return "—";
+  if (dias <= 0) return `${horas}h`;
+  return `${dias}d ${horas}h`;
+}
+
+// Controles de paginación reutilizables (Anterior / Siguiente + rango). No
+// renderiza nada si todo cabe en una sola página.
+function Paginacion({
+  pagina,
+  total,
+  tamano,
+  onCambio,
+}: {
+  pagina: number;
+  total: number;
+  tamano: number;
+  onCambio: (p: number) => void;
+}) {
+  const totalPaginas = Math.max(1, Math.ceil(total / tamano));
+  if (totalPaginas <= 1) return null;
+  const desde = (pagina - 1) * tamano + 1;
+  const hasta = Math.min(total, pagina * tamano);
+  return (
+    <div className="flex items-center justify-between px-1 py-3 print:hidden">
+      <span className="text-[11.5px] text-text-faint">
+        {desde}–{hasta} de {total}
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => onCambio(Math.max(1, pagina - 1))}
+          disabled={pagina <= 1}
+          className="btn-secondary text-[11.5px] px-2.5 py-1.5 rounded-lg disabled:opacity-40 flex items-center gap-1"
+        >
+          <ChevronLeft size={14} /> Anterior
+        </button>
+        <span className="text-[11.5px] text-text-dim">
+          Página {pagina} de {totalPaginas}
+        </span>
+        <button
+          onClick={() => onCambio(Math.min(totalPaginas, pagina + 1))}
+          disabled={pagina >= totalPaginas}
+          className="btn-secondary text-[11.5px] px-2.5 py-1.5 rounded-lg disabled:opacity-40 flex items-center gap-1"
+        >
+          Siguiente <ChevronRight size={14} />
+        </button>
+      </div>
+    </div>
+  );
+}
 
 type ErrorConsulta = { message: string } | null;
 
@@ -220,6 +309,14 @@ export default function ReportesEtiquetadoPage() {
     "todos" | "codigo" | "descripcion" | "tallas" | "composicion" | "pais"
   >("todos");
 
+  // Paginación de las tablas/gráficas largas (para que no crezcan hasta el
+  // fondo de la página, mismo criterio que el resto del sistema).
+  const PAGINA = 20;
+  const PAGINA_MESAS = 12;
+  const [paginaOrdenes, setPaginaOrdenes] = useState(1);
+  const [paginaProduccion, setPaginaProduccion] = useState(1);
+  const [paginaProductividad, setPaginaProductividad] = useState(1);
+
   const cargar = useCallback(async () => {
     setLoading(true);
     // Cada tabla se trae PAGINADA (traerTodo) para no quedar cortada en las
@@ -229,7 +326,7 @@ export default function ReportesEtiquetadoPage() {
       traerTodo<OrdenEtq>((desde, hasta) =>
         supabase
           .from("etq_ordenes")
-          .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en, tallas")
+          .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en, concluida_en, tallas")
           .range(desde, hasta)
       ),
       traerTodo<ItemEtq>((desde, hasta) =>
@@ -243,7 +340,7 @@ export default function ReportesEtiquetadoPage() {
       traerTodo<Movimiento>((desde, hasta) =>
         supabase
           .from("etq_movimientos")
-          .select("id, orden_id, item_id, mesa_id, cantidad, creado_en")
+          .select("id, orden_id, item_id, mesa_id, cantidad, creado_en, fase")
           .range(desde, hasta)
       ),
       traerTodo<Mesa>((desde, hasta) =>
@@ -488,6 +585,47 @@ export default function ReportesEtiquetadoPage() {
       .map(([fecha, unidades]) => ({ fecha, unidades }))
       .sort((a, b) => a.fecha.localeCompare(b.fecha));
   }, [movimientosProductividad]);
+
+  // ---- Tiempos de proceso por orden ----
+  // Para cada orden: tiempo de inventario, tiempo de etiquetado (según la fase
+  // marcada en cada movimiento) y tiempo total del proceso (creación →
+  // conclusión). Alimenta la columna de tiempos en "Órdenes" y el resumen de
+  // la vista "Por orden específica" en Productividad.
+  type TiemposOrden = {
+    inventario: { dias: number; horas: number };
+    etiquetado: { dias: number; horas: number };
+    total: { dias: number; horas: number; horasTotales: number; enCurso: boolean };
+    concluida: boolean;
+  };
+
+  const tiemposPorOrden = useMemo(() => {
+    const movsPorOrden: Record<string, Movimiento[]> = {};
+    movimientos.forEach((m) => {
+      (movsPorOrden[m.orden_id] ||= []).push(m);
+    });
+    const map = new Map<string, TiemposOrden>();
+    ordenes.forEach((o) => {
+      const movs = movsPorOrden[o.id] ?? [];
+      map.set(o.id, {
+        inventario: metricasDeMovimientos(movs.filter((m) => m.fase === "inventario")),
+        etiquetado: metricasDeMovimientos(movs.filter((m) => m.fase === "etiquetado")),
+        total: duracionProceso(o.creado_en, o.concluida_en),
+        concluida: !!o.concluida_en,
+      });
+    });
+    return map;
+  }, [ordenes, movimientos]);
+
+  // Reiniciar la página al cambiar los filtros que afectan cada listado.
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- reset de página al cambiar de filtro
+  useEffect(() => setPaginaOrdenes(1), [fechaDesde, fechaHasta, filtroOrigen]);
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- reset de página al cambiar de filtro
+  useEffect(() => setPaginaProduccion(1), [fechaDesde, fechaHasta, filtroOrigen]);
+  useEffect(
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset de página al cambiar de filtro
+    () => setPaginaProductividad(1),
+    [vistaProductividad, ordenSeleccionadaId, prodFechaDesde, prodFechaHasta, prodMesaFiltro]
+  );
 
   // Inventario de la orden seleccionada (para el tab "Inventario", por orden)
   const itemsOrdenSeleccionada = useMemo(
@@ -1229,15 +1367,33 @@ export default function ReportesEtiquetadoPage() {
 
   function exportarCSV() {
     const filas = [
-      ["N° Etiquetado", "Origen", "Cliente", "Producto", "Estado", "Fecha"],
-      ...ordenesFiltradas.map((o) => [
-        o.numero_etq,
-        o.origen === "etyecu" ? "ETYECU" : "Cliente externo",
-        o.cliente_nombre ?? "",
-        o.tipo_producto ?? "",
-        o.estado,
-        new Date(o.fecha).toLocaleDateString("es-EC"),
-      ]),
+      [
+        "N° Etiquetado",
+        "Origen",
+        "Cliente",
+        "Producto",
+        "Estado",
+        "Fecha",
+        "Tiempo inventario",
+        "Tiempo etiquetado",
+        "Tiempo total proceso",
+        "Concluida el",
+      ],
+      ...ordenesFiltradas.map((o) => {
+        const t = tiemposPorOrden.get(o.id);
+        return [
+          o.numero_etq,
+          o.origen === "etyecu" ? "ETYECU" : "Cliente externo",
+          o.cliente_nombre ?? "",
+          o.tipo_producto ?? "",
+          t?.concluida ? "Concluida" : o.estado,
+          new Date(o.fecha).toLocaleDateString("es-EC"),
+          t ? formatoDH(t.inventario.dias, t.inventario.horas) : "",
+          t ? formatoDH(t.etiquetado.dias, t.etiquetado.horas) : "",
+          t ? formatoDH(t.total.dias, t.total.horas) + (t.total.enCurso ? " (en curso)" : "") : "",
+          o.concluida_en ? new Date(o.concluida_en).toLocaleString("es-EC") : "",
+        ];
+      }),
     ];
     const csv = filas.map((f) => f.map((c) => `"${c}"`).join(",")).join("\n");
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
@@ -1405,54 +1561,119 @@ export default function ReportesEtiquetadoPage() {
               )}
 
               {tab === "ordenes" && (
-                <div className="card overflow-hidden">
-                  <div className="grid grid-cols-[120px_1fr_100px_120px_100px_100px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
-                    <span>N° Etiquetado</span>
-                    <span>Cliente</span>
-                    <span>Origen</span>
-                    <span>Producto</span>
-                    <span>Estado</span>
-                    <span className="text-right">Fecha</span>
-                  </div>
-                  {ordenesFiltradas.length === 0 ? (
-                    <p className="text-[12.5px] text-text-faint p-5">No hay órdenes en el período.</p>
-                  ) : (
-                    ordenesFiltradas.map((o) => (
-                      <div
-                        key={o.id}
-                        className="grid grid-cols-[120px_1fr_100px_120px_100px_100px] gap-3 px-5 py-3 items-center border-b border-border last:border-b-0 text-[12.5px]"
-                      >
-                        <span className="font-medium">{o.numero_etq}</span>
-                        <span className="truncate">{o.cliente_nombre ?? "—"}</span>
-                        <span className="text-text-dim">{o.origen === "etyecu" ? "ETYECU" : "Externo"}</span>
-                        <span className="text-text-dim capitalize">{o.tipo_producto ?? "—"}</span>
-                        <span className="text-text-dim capitalize">{o.estado}</span>
-                        <span className="text-right text-text-dim">
-                          {new Date(o.fecha).toLocaleDateString("es-EC")}
-                        </span>
+                <>
+                  <div className="card overflow-x-auto">
+                    <div className="min-w-[1180px]">
+                      <div className="grid grid-cols-[110px_200px_80px_100px_110px_95px_105px_105px_130px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
+                        <span>N° Etiquetado</span>
+                        <span>Cliente</span>
+                        <span>Origen</span>
+                        <span>Producto</span>
+                        <span>Estado</span>
+                        <span className="text-right">Fecha</span>
+                        <span className="text-right">Inventario</span>
+                        <span className="text-right">Etiquetado</span>
+                        <span className="text-right">Total proceso</span>
                       </div>
-                    ))
-                  )}
-                </div>
+                      {ordenesFiltradas.length === 0 ? (
+                        <p className="text-[12.5px] text-text-faint p-5">No hay órdenes en el período.</p>
+                      ) : (
+                        ordenesFiltradas
+                          .slice((paginaOrdenes - 1) * PAGINA, paginaOrdenes * PAGINA)
+                          .map((o) => {
+                            const t = tiemposPorOrden.get(o.id);
+                            return (
+                              <div
+                                key={o.id}
+                                className="grid grid-cols-[110px_200px_80px_100px_110px_95px_105px_105px_130px] gap-3 px-5 py-3 items-center border-b border-border last:border-b-0 text-[12.5px]"
+                              >
+                                <span className="font-medium">{o.numero_etq}</span>
+                                <span className="truncate">{o.cliente_nombre ?? "—"}</span>
+                                <span className="text-text-dim">
+                                  {o.origen === "etyecu" ? "ETYECU" : "Externo"}
+                                </span>
+                                <span className="text-text-dim capitalize">{o.tipo_producto ?? "—"}</span>
+                                <span>
+                                  <span
+                                    className={`text-[10.5px] px-2 py-0.5 rounded-full capitalize ${
+                                      t?.concluida
+                                        ? "bg-green/15 text-[#6ee7b7]"
+                                        : "bg-accent/[0.18] text-[#c4b8ff]"
+                                    }`}
+                                  >
+                                    {t?.concluida ? "Concluida" : o.estado}
+                                  </span>
+                                </span>
+                                <span className="text-right text-text-dim">
+                                  {new Date(o.fecha).toLocaleDateString("es-EC")}
+                                </span>
+                                <span className="text-right text-[#fbbf24]">
+                                  {t ? formatoDH(t.inventario.dias, t.inventario.horas) : "—"}
+                                </span>
+                                <span className="text-right text-[#c4b8ff]">
+                                  {t ? formatoDH(t.etiquetado.dias, t.etiquetado.horas) : "—"}
+                                </span>
+                                <span className="text-right font-medium">
+                                  {t ? formatoDH(t.total.dias, t.total.horas) : "—"}
+                                  {t?.total.enCurso && (
+                                    <span className="text-[9px] text-text-faint ml-1">en curso</span>
+                                  )}
+                                </span>
+                              </div>
+                            );
+                          })
+                      )}
+                    </div>
+                  </div>
+                  <Paginacion
+                    pagina={paginaOrdenes}
+                    total={ordenesFiltradas.length}
+                    tamano={PAGINA}
+                    onCambio={setPaginaOrdenes}
+                  />
+                  <p className="text-[10.5px] text-text-faint mt-1">
+                    <b>Inventario</b> y <b>Etiquetado</b> = tiempo activo de trabajo (suma de horas por
+                    día, según la fase marcada al capturar). <b>Total proceso</b> = desde que se creó la
+                    orden hasta que se concluyó (o hasta ahora si sigue abierta).
+                  </p>
+                </>
               )}
 
               {tab === "produccion" && (
-                <div className="card p-4">
-                  <p className="text-[12.5px] font-semibold mb-3">Unidades procesadas por mesa</p>
-                  {produccionPorMesa.length === 0 ? (
-                    <p className="text-[12px] text-text-faint">No hay movimientos registrados en el período.</p>
-                  ) : (
-                    <ResponsiveContainer width="100%" height={320}>
-                      <BarChart data={produccionPorMesa} layout="vertical" margin={{ left: 20 }}>
-                        <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                        <XAxis type="number" />
-                        <YAxis type="category" dataKey="nombre" width={90} />
-                        <Tooltip />
-                        <Bar dataKey="unidades" fill="#7c6cf0" radius={[0, 4, 4, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  )}
-                </div>
+                <>
+                  <div className="card p-4">
+                    <p className="text-[12.5px] font-semibold mb-3">Unidades procesadas por mesa</p>
+                    {produccionPorMesa.length === 0 ? (
+                      <p className="text-[12px] text-text-faint">
+                        No hay movimientos registrados en el período.
+                      </p>
+                    ) : (
+                      (() => {
+                        const pagina = produccionPorMesa.slice(
+                          (paginaProduccion - 1) * PAGINA_MESAS,
+                          paginaProduccion * PAGINA_MESAS
+                        );
+                        return (
+                          <ResponsiveContainer width="100%" height={Math.max(160, pagina.length * 34)}>
+                            <BarChart data={pagina} layout="vertical" margin={{ left: 20 }}>
+                              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                              <XAxis type="number" />
+                              <YAxis type="category" dataKey="nombre" width={90} />
+                              <Tooltip />
+                              <Bar dataKey="unidades" fill="#7c6cf0" radius={[0, 4, 4, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        );
+                      })()
+                    )}
+                  </div>
+                  <Paginacion
+                    pagina={paginaProduccion}
+                    total={produccionPorMesa.length}
+                    tamano={PAGINA_MESAS}
+                    onCambio={setPaginaProduccion}
+                  />
+                </>
               )}
 
               {tab === "inventario" && (
@@ -2227,6 +2448,57 @@ export default function ReportesEtiquetadoPage() {
                         </div>
                       </div>
 
+                      {/* Tiempos del proceso (solo en la vista por orden) */}
+                      {vistaProductividad === "orden" &&
+                        ordenSeleccionadaId &&
+                        (() => {
+                          const t = tiemposPorOrden.get(ordenSeleccionadaId);
+                          if (!t) return null;
+                          return (
+                            <div className="card p-4 mb-4">
+                              <p className="text-[12.5px] font-semibold mb-3">
+                                Tiempos del proceso de esta orden
+                              </p>
+                              <div className="grid grid-cols-3 gap-3">
+                                <div className="card p-3.5 bg-amber/[0.04]">
+                                  <p className="text-[11px] text-text-faint">Inventario</p>
+                                  <p className="text-[22px] font-semibold mt-1 text-[#fbbf24]">
+                                    {formatoDH(t.inventario.dias, t.inventario.horas)}
+                                  </p>
+                                  <p className="text-[10.5px] text-text-faint mt-0.5">
+                                    {t.inventario.dias} día(s) con actividad
+                                  </p>
+                                </div>
+                                <div className="card p-3.5 bg-accent/[0.04]">
+                                  <p className="text-[11px] text-text-faint">Etiquetado</p>
+                                  <p className="text-[22px] font-semibold mt-1 text-[#c4b8ff]">
+                                    {formatoDH(t.etiquetado.dias, t.etiquetado.horas)}
+                                  </p>
+                                  <p className="text-[10.5px] text-text-faint mt-0.5">
+                                    {t.etiquetado.dias} día(s) con actividad
+                                  </p>
+                                </div>
+                                <div className="card p-3.5 bg-green/[0.04]">
+                                  <p className="text-[11px] text-text-faint">Total del proceso</p>
+                                  <p className="text-[22px] font-semibold mt-1 text-[#6ee7b7]">
+                                    {formatoDH(t.total.dias, t.total.horas)}
+                                  </p>
+                                  <p className="text-[10.5px] text-text-faint mt-0.5">
+                                    {t.concluida ? "Orden concluida" : "En curso (aún sin concluir)"}
+                                  </p>
+                                </div>
+                              </div>
+                              {!t.concluida && (
+                                <p className="text-[11px] text-[#fbbf24] mt-3">
+                                  Esta orden aún no está concluida: el “Total del proceso” sigue
+                                  corriendo. Ciérrala con el botón “Concluir orden” en la pantalla de la
+                                  orden para fijar el tiempo total.
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })()}
+
                       {/* Gráficas */}
                       <div className="grid grid-cols-2 gap-4 mb-4">
                         <div className="card p-4">
@@ -2280,26 +2552,34 @@ export default function ReportesEtiquetadoPage() {
                           <span className="text-right">Horas</span>
                           <span className="text-right">Ritmo (u/h)</span>
                         </div>
-                        {productividadPorMesa.map((f) => (
-                          <div
-                            key={f.mesaId}
-                            className="grid grid-cols-[1fr_90px_90px_90px_100px] gap-3 px-5 py-3 items-center border-b border-border last:border-b-0 text-[12.5px]"
-                          >
-                            <div>
-                              <p className="font-medium">{f.nombre}</p>
-                              <p className="text-[10.5px] text-text-faint">
-                                {f.integrantes.length > 0 ? f.integrantes.join(", ") : "—"}
-                              </p>
+                        {productividadPorMesa
+                          .slice((paginaProductividad - 1) * PAGINA, paginaProductividad * PAGINA)
+                          .map((f) => (
+                            <div
+                              key={f.mesaId}
+                              className="grid grid-cols-[1fr_90px_90px_90px_100px] gap-3 px-5 py-3 items-center border-b border-border last:border-b-0 text-[12.5px]"
+                            >
+                              <div>
+                                <p className="font-medium">{f.nombre}</p>
+                                <p className="text-[10.5px] text-text-faint">
+                                  {f.integrantes.length > 0 ? f.integrantes.join(", ") : "—"}
+                                </p>
+                              </div>
+                              <span className="text-right font-medium">
+                                {f.unidades.toLocaleString("es-EC")}
+                              </span>
+                              <span className="text-right text-text-dim">{f.cajas}</span>
+                              <span className="text-right text-text-dim">{f.horas}</span>
+                              <span className="text-right font-semibold text-[#c4b8ff]">{f.ritmo}</span>
                             </div>
-                            <span className="text-right font-medium">
-                              {f.unidades.toLocaleString("es-EC")}
-                            </span>
-                            <span className="text-right text-text-dim">{f.cajas}</span>
-                            <span className="text-right text-text-dim">{f.horas}</span>
-                            <span className="text-right font-semibold text-[#c4b8ff]">{f.ritmo}</span>
-                          </div>
-                        ))}
+                          ))}
                       </div>
+                      <Paginacion
+                        pagina={paginaProductividad}
+                        total={productividadPorMesa.length}
+                        tamano={PAGINA}
+                        onCambio={setPaginaProductividad}
+                      />
                       <p className="text-[10.5px] text-text-faint mt-2">
                         Ritmo = unidades ÷ horas trabajadas (tiempo entre el primer y último movimiento
                         de la mesa en el período). Horas = 0 si solo hay un movimiento registrado.

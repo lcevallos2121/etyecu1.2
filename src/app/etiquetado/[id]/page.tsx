@@ -19,6 +19,7 @@ type EtqOrden = {
   id: string; numero_etq: string; origen: "etyecu" | "externo";
   cliente_nombre: string | null; tipo_producto: string | null;
   estado: string; observaciones: string | null; fecha: string;
+  concluida_en: string | null;
   tallas: string[] | null;
   proveedor_factura: string | null;
   bodega_proceso: string | null;
@@ -482,6 +483,34 @@ export default function DetalleEtiquetadoPage() {
   const [nuevaMesaNombre, setNuevaMesaNombre] = useState("");
   const [nuevaMesaIntegrantes, setNuevaMesaIntegrantes] = useState("");
 
+  // Fase de trabajo activa (inventario vs etiquetado). Se adjunta a cada
+  // movimiento registrado, para que los reportes puedan medir por separado
+  // cuánto tiempo llevó cada fase. Se recuerda por navegador (localStorage)
+  // para no tener que reelegirla en cada recarga.
+  const [faseActiva, setFaseActiva] = useState<"inventario" | "etiquetado">("inventario");
+  useEffect(() => {
+    try {
+      const guardada = localStorage.getItem("etq_fase_activa");
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- se lee tras montar para no romper la hidratación SSR
+      if (guardada === "inventario" || guardada === "etiquetado") setFaseActiva(guardada);
+    } catch {
+      /* localStorage no disponible: se queda con el valor por defecto */
+    }
+  }, []);
+  function cambiarFase(f: "inventario" | "etiquetado") {
+    setFaseActiva(f);
+    try {
+      localStorage.setItem("etq_fase_activa", f);
+    } catch {
+      /* sin persistencia si localStorage falla */
+    }
+  }
+
+  // Concluir / reabrir la orden (registra concluida_en para medir el tiempo
+  // total del proceso en los reportes)
+  const [showConcluir, setShowConcluir] = useState(false);
+  const [concluyendo, setConcluyendo] = useState(false);
+
   const [aEliminar, setAEliminar] = useState<string | null>(null);
 
   // Catálogo de composiciones normalizado — global, no depende de la
@@ -737,6 +766,7 @@ export default function DetalleEtiquetadoPage() {
       orden_id: id,
       item_id: it.id,
       mesa_id: mesaActivaId || null,
+      fase: faseActiva,
       codigo: it.codigo,
       caja: cajaTxt,
       cantidad: sumarCajas(cajaTxt),
@@ -765,6 +795,7 @@ export default function DetalleEtiquetadoPage() {
         orden_id: id,
         item_id: data.id,
         mesa_id: mesaActivaId || null,
+        fase: faseActiva,
         codigo: codigo.trim(),
         caja: cajaTxt,
         cantidad: sumarCajas(cajaTxt),
@@ -997,6 +1028,7 @@ export default function DetalleEtiquetadoPage() {
         orden_id: id,
         item_id: itemId,
         mesa_id: mesaActivaId || null,
+        fase: faseActiva,
         codigo: fCodigo.trim() || null,
         caja: fCajas.trim() || null,
         cantidad: incremento,
@@ -1030,6 +1062,35 @@ export default function DetalleEtiquetadoPage() {
     setAEliminar(null);
     setToast("Código eliminado.");
     cargar();
+  }
+
+  // Marca la orden como CONCLUIDA (estado 'cerrada' + fecha/hora de conclusión)
+  // para poder medir el tiempo total del proceso en los reportes. Si ya estaba
+  // concluida, la reabre (vuelve a 'abierta' y limpia concluida_en).
+  async function alternarConcluida() {
+    if (!orden) return;
+    const yaConcluida = !!orden.concluida_en;
+    setConcluyendo(true);
+    setErrorMsg(null);
+    try {
+      const { error } = await supabase
+        .from("etq_ordenes")
+        .update(
+          yaConcluida
+            ? { estado: "abierta", concluida_en: null }
+            : { estado: "cerrada", concluida_en: new Date().toISOString() }
+        )
+        .eq("id", orden.id);
+      if (error) {
+        setErrorMsg(error.message);
+        return;
+      }
+      setShowConcluir(false);
+      setToast(yaConcluida ? "Orden reabierta." : "Orden concluida.");
+      cargar();
+    } finally {
+      setConcluyendo(false);
+    }
   }
 
   function abrirAgregarTallas(it: Item) {
@@ -1083,6 +1144,7 @@ export default function DetalleEtiquetadoPage() {
         orden_id: id,
         item_id: itemAgregarTallas.id,
         mesa_id: mesaActivaId || null,
+        fase: faseActiva,
         codigo: itemAgregarTallas.codigo,
         caja: cajaNuevaTallas.trim(),
         cantidad: sumarCajas(cajaNuevaTallas),
@@ -1172,6 +1234,7 @@ export default function DetalleEtiquetadoPage() {
       orden_id: id,
       item_id: itemVarianteId,
       mesa_id: mesaActivaId || null,
+      fase: faseActiva,
       codigo: item.codigo,
       caja: vCajas.trim(),
       cantidad: cantidadVariante,
@@ -1338,12 +1401,35 @@ export default function DetalleEtiquetadoPage() {
             <>
               <div className="flex items-center gap-3 mb-5 flex-wrap">
                 <h1 className="text-[21px] font-semibold">{orden.numero_etq}</h1>
-                <span className="text-[10.5px] px-2 py-0.5 rounded-full bg-accent/[0.18] text-[#c4b8ff] capitalize">{orden.estado}</span>
+                <span
+                  className={`text-[10.5px] px-2 py-0.5 rounded-full capitalize ${
+                    orden.concluida_en
+                      ? "bg-green/15 text-[#6ee7b7]"
+                      : "bg-accent/[0.18] text-[#c4b8ff]"
+                  }`}
+                >
+                  {orden.estado}
+                </span>
+                {orden.concluida_en && (
+                  <span className="text-[11px] text-text-faint">
+                    Concluida el {new Date(orden.concluida_en).toLocaleString("es-EC")}
+                  </span>
+                )}
                 <span className="flex items-center gap-1.5 text-[12.5px] text-text-dim">
                   {orden.origen === "etyecu" ? <Package size={14} /> : <Building2 size={14} />}
                   {orden.cliente_nombre} · <span className="capitalize">{orden.tipo_producto}</span>
                 </span>
                 <div className="ml-auto flex gap-2">
+                  <button
+                    onClick={() => setShowConcluir(true)}
+                    className={`text-[11.5px] font-semibold px-3 py-1.5 rounded-lg ${
+                      orden.concluida_en
+                        ? "btn-secondary"
+                        : "bg-green/[0.18] text-[#6ee7b7] hover:bg-green/[0.28]"
+                    }`}
+                  >
+                    {orden.concluida_en ? "Reabrir orden" : "Concluir orden"}
+                  </button>
                   <button
                     onClick={abrirDatosInforme}
                     className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
@@ -1393,6 +1479,29 @@ export default function DetalleEtiquetadoPage() {
                   >
                     <Users size={14} />
                   </button>
+                  {/* Fase de trabajo: se guarda en cada movimiento para medir
+                      por separado el tiempo de inventario y el de etiquetado */}
+                  <div
+                    className="flex items-center gap-0.5 card p-0.5"
+                    title="Fase que se está registrando (para los reportes de tiempo)"
+                  >
+                    {(["inventario", "etiquetado"] as const).map((f) => (
+                      <button
+                        key={f}
+                        type="button"
+                        onClick={() => cambiarFase(f)}
+                        className={`text-[11px] font-semibold px-2.5 py-1.5 rounded-md capitalize transition-colors ${
+                          faseActiva === f
+                            ? f === "inventario"
+                              ? "bg-amber/[0.22] text-[#fbbf24]"
+                              : "bg-accent/[0.22] text-[#c4b8ff]"
+                            : "text-text-faint hover:text-text"
+                        }`}
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
                   <div className="relative flex-1 min-w-[180px]">
                     <input
                       id="q-codigo"
@@ -2244,6 +2353,25 @@ export default function DetalleEtiquetadoPage() {
       )}
 
       <ConfirmModal abierto={aEliminar !== null} titulo="¿Eliminar este código?" mensaje="Se eliminará el renglón del inventario." onConfirmar={confirmarEliminar} onCancelar={() => setAEliminar(null)} />
+      <ConfirmModal
+        abierto={showConcluir}
+        peligro={!!orden?.concluida_en}
+        textoConfirmar={
+          concluyendo
+            ? "Guardando…"
+            : orden?.concluida_en
+            ? "Sí, reabrir"
+            : "Sí, concluir"
+        }
+        titulo={orden?.concluida_en ? "¿Reabrir esta orden?" : "¿Concluir esta orden?"}
+        mensaje={
+          orden?.concluida_en
+            ? "La orden volverá a estado 'abierta' y se borrará su fecha de conclusión (el tiempo total del proceso dejará de contar)."
+            : "Se marcará la orden como concluida con la fecha y hora de ahora. Con esto los reportes calculan el tiempo total del proceso. Podrás reabrirla si lo necesitas."
+        }
+        onConfirmar={concluyendo ? () => {} : alternarConcluida}
+        onCancelar={() => setShowConcluir(false)}
+      />
       <Toast mensaje={toast} onCerrar={() => setToast(null)} />
     </div>
   );
