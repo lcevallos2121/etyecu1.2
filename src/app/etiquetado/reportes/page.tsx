@@ -104,6 +104,31 @@ type Mesa = {
 
 const COLORES = ["#7c6cf0", "#6ee7b7", "#fbbf24", "#fca5a5", "#93c5fd", "#c4b8ff"];
 
+type ErrorConsulta = { message: string } | null;
+
+// Supabase devuelve como máximo 1000 filas por consulta. Si una tabla del
+// sistema (items, movimientos, variantes...) supera ese tope, las filas
+// sobrantes quedan fuera del resultado y desaparecen del reporte sin ningún
+// aviso — por eso códigos cargados recientemente pueden "no aparecer" aunque
+// estén guardados. Este helper pagina en bloques de 1000 con .range() hasta
+// traerlas TODAS, sin importar cuánto crezca el sistema.
+async function traerTodo<T>(
+  pagina: (desde: number, hasta: number) => PromiseLike<{ data: T[] | null; error: ErrorConsulta }>
+): Promise<{ data: T[]; error: ErrorConsulta }> {
+  const TAMANO = 1000;
+  const acumulado: T[] = [];
+  let desde = 0;
+  for (;;) {
+    const { data, error } = await pagina(desde, desde + TAMANO - 1);
+    if (error) return { data: acumulado, error };
+    const lote = data ?? [];
+    acumulado.push(...lote);
+    if (lote.length < TAMANO) break; // último bloque: ya no hay más filas
+    desde += TAMANO;
+  }
+  return { data: acumulado, error: null };
+}
+
 const tabs = [
   { id: "resumen", label: "Resumen" },
   { id: "ordenes", label: "Órdenes" },
@@ -197,21 +222,47 @@ export default function ReportesEtiquetadoPage() {
 
   const cargar = useCallback(async () => {
     setLoading(true);
+    // Cada tabla se trae PAGINADA (traerTodo) para no quedar cortada en las
+    // primeras 1000 filas: este panel calcula KPIs y gráficos sobre TODAS las
+    // órdenes a la vez, así que necesita el dataset completo.
     const [ordRes, itemsRes, movRes, mesasRes, varRes, tallasCajaRes] = await Promise.all([
-      supabase
-        .from("etq_ordenes")
-        .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en, tallas"),
-      supabase
-        .from("etq_items")
-        .select(
-          "id, orden_id, palet, cajas, codigo, descripcion, marca, tienda, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla, codigo_nuevo, tipo_etiqueta, novedad, ya_impreso, inen_marquilla, revisado"
-        ),
-      supabase.from("etq_movimientos").select("id, orden_id, item_id, mesa_id, cantidad, creado_en"),
-      supabase.from("etq_mesas").select("id, orden_id, nombre, integrantes"),
-      supabase.from("etq_variantes").select("id, item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla, revisado"),
-      supabase
-        .from("etq_tallas_por_caja")
-        .select("id, item_id, variante_id, caja, numero_caja, tallas_detalle"),
+      traerTodo<OrdenEtq>((desde, hasta) =>
+        supabase
+          .from("etq_ordenes")
+          .select("id, numero_etq, origen, cliente_nombre, tipo_producto, estado, fecha, creado_en, tallas")
+          .range(desde, hasta)
+      ),
+      traerTodo<ItemEtq>((desde, hasta) =>
+        supabase
+          .from("etq_items")
+          .select(
+            "id, orden_id, palet, cajas, codigo, descripcion, marca, tienda, cantidad_contada, cantidad_factura, tallas_detalle, composicion, pais, tiene_codigo, tiene_talla, codigo_nuevo, tipo_etiqueta, novedad, ya_impreso, inen_marquilla, revisado"
+          )
+          .range(desde, hasta)
+      ),
+      traerTodo<Movimiento>((desde, hasta) =>
+        supabase
+          .from("etq_movimientos")
+          .select("id, orden_id, item_id, mesa_id, cantidad, creado_en")
+          .range(desde, hasta)
+      ),
+      traerTodo<Mesa>((desde, hasta) =>
+        supabase.from("etq_mesas").select("id, orden_id, nombre, integrantes").range(desde, hasta)
+      ),
+      traerTodo<VarianteEtq>((desde, hasta) =>
+        supabase
+          .from("etq_variantes")
+          .select(
+            "id, item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla, revisado"
+          )
+          .range(desde, hasta)
+      ),
+      traerTodo<TallasPorCaja>((desde, hasta) =>
+        supabase
+          .from("etq_tallas_por_caja")
+          .select("id, item_id, variante_id, caja, numero_caja, tallas_detalle")
+          .range(desde, hasta)
+      ),
     ]);
 
     if (ordRes.error) {
