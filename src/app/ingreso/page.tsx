@@ -64,6 +64,7 @@ type OrdenDap = {
   peso_total_kg: number | null;
   paletizada: boolean | null;
   tipo_carga: string | null;
+  contenedor_tamano: string | null;
   nombre_transportista: string | null;
   cedula_transportista: string | null;
   placa_vehiculo: string | null;
@@ -77,6 +78,15 @@ type OrdenDap = {
   cdas: CdaRef | null;
   clientes: { nombre: string } | null;
 };
+
+// Texto legible de cómo llega la carga, con el tamaño del contenedor.
+function formatoCargaLlega(tipoCarga: string | null, tamano: string | null): string {
+  if (!tipoCarga) return "";
+  if (tipoCarga === "contenedor") return tamano ? `Contenedor de ${tamano}` : "Contenedor";
+  if (tipoCarga === "plataforma") return "Plataforma";
+  if (tipoCarga === "camion") return "Camión";
+  return tipoCarga;
+}
 
 export default function IngresoPage() {
   const supabase = createClient();
@@ -114,6 +124,7 @@ export default function IngresoPage() {
   const [pesoTotal, setPesoTotal] = useState("");
   const [paletizada, setPaletizada] = useState<"si" | "no" | "">("");
   const [tipoCarga, setTipoCarga] = useState<"contenedor" | "plataforma" | "camion" | "">("");
+  const [contenedorTamano, setContenedorTamano] = useState<"20" | "40" | "">("");
 
   // Sección 3
   const [nombreTransportista, setNombreTransportista] = useState("");
@@ -224,6 +235,7 @@ export default function IngresoPage() {
     setPesoTotal("");
     setPaletizada("");
     setTipoCarga("");
+    setContenedorTamano("");
     setNombreTransportista("");
     setCedulaTransportista("");
     setTransporteId("");
@@ -315,6 +327,7 @@ export default function IngresoPage() {
     setPesoTotal(o.peso_total_kg?.toString() ?? "");
     setPaletizada(o.paletizada === true ? "si" : o.paletizada === false ? "no" : "");
     setTipoCarga((o.tipo_carga as typeof tipoCarga) ?? "");
+    setContenedorTamano((o.contenedor_tamano as typeof contenedorTamano) ?? "");
     setNombreTransportista(o.nombre_transportista ?? "");
     setCedulaTransportista(o.cedula_transportista ?? "");
     setTransporteId(o.transporte_id ?? "");
@@ -429,6 +442,7 @@ export default function IngresoPage() {
       peso_total_kg: pesoTotal ? Number(pesoTotal) : null,
       paletizada: paletizada === "si" ? true : paletizada === "no" ? false : null,
       tipo_carga: tipoCarga || null,
+      contenedor_tamano: tipoCarga === "contenedor" ? contenedorTamano || null : null,
       nombre_transportista: nombreTransportista.trim() || null,
       cedula_transportista: cedulaTransportista.trim() || null,
       transporte_id: transporteId || null,
@@ -514,11 +528,15 @@ export default function IngresoPage() {
     cargarDatos();
   }
 
-  const ordenesFiltradas = ordenes.filter(
-    (o) =>
-      o.numero_dap.toLowerCase().includes(search.toLowerCase()) ||
-      nombreCliente(o).toLowerCase().includes(search.toLowerCase())
-  );
+  const ordenesFiltradas = ordenes
+    .filter(
+      (o) =>
+        o.numero_dap.toLowerCase().includes(search.toLowerCase()) ||
+        nombreCliente(o).toLowerCase().includes(search.toLowerCase())
+    )
+    // De la más reciente a la más antigua, por el número de orden (2026-057
+    // antes que 2026-056). numeric:true ordena bien aunque no esté cero-rellenado.
+    .sort((a, b) => b.numero_dap.localeCompare(a.numero_dap, undefined, { numeric: true }));
 
   // Vuelve a la página 1 cada vez que cambia la búsqueda, para no quedar
   // "atrapado" en una página que ya no tiene resultados.
@@ -901,14 +919,39 @@ export default function IngresoPage() {
               <div className="col-span-3">
                 <label className="text-[11.5px] text-text-faint block mb-1">Carga llega como</label>
                 <select
-                  value={tipoCarga}
-                  onChange={(e) => setTipoCarga(e.target.value as typeof tipoCarga)}
+                  value={
+                    tipoCarga === "contenedor"
+                      ? contenedorTamano === "40"
+                        ? "contenedor_40"
+                        : contenedorTamano === "20"
+                        ? "contenedor_20"
+                        : "contenedor"
+                      : tipoCarga
+                  }
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "contenedor_20") {
+                      setTipoCarga("contenedor");
+                      setContenedorTamano("20");
+                    } else if (v === "contenedor_40") {
+                      setTipoCarga("contenedor");
+                      setContenedorTamano("40");
+                    } else {
+                      setTipoCarga(v as typeof tipoCarga);
+                      setContenedorTamano("");
+                    }
+                  }}
                   className="w-full card px-3 py-2 text-[13px] outline-none"
                 >
                   <option value="">Selecciona…</option>
-                  <option value="contenedor">Contenedor</option>
+                  <option value="contenedor_20">Contenedor de 20</option>
+                  <option value="contenedor_40">Contenedor de 40</option>
                   <option value="plataforma">Plataforma</option>
                   <option value="camion">Camión</option>
+                  {/* Registros viejos sin tamaño definido */}
+                  {tipoCarga === "contenedor" && !contenedorTamano && (
+                    <option value="contenedor">Contenedor (sin tamaño)</option>
+                  )}
                 </select>
               </div>
             </div>
@@ -1164,7 +1207,7 @@ export default function IngresoPage() {
                 <tr>
                   <td className="border border-black/40 p-1.5 font-bold">Carga llega:</td>
                   <td className="border border-black/40 p-1.5 capitalize">
-                    {ordenImprimir.tipo_carga ?? ""}
+                    {formatoCargaLlega(ordenImprimir.tipo_carga, ordenImprimir.contenedor_tamano)}
                   </td>
                   <td className="border border-black/40 p-1.5 font-bold">Cod. Transp:</td>
                   <td className="border border-black/40 p-1.5 text-right">{transporteImprimir}</td>
@@ -1210,7 +1253,7 @@ export default function IngresoPage() {
               <tbody>
                 <tr>
                   <td className="border border-black/40 p-1.5 capitalize">
-                    {ordenImprimir.tipo_carga ?? ""}
+                    {formatoCargaLlega(ordenImprimir.tipo_carga, ordenImprimir.contenedor_tamano)}
                   </td>
                   <td className="border border-black/40 p-1.5 text-center">
                     {ordenImprimir.total_pallets ?? ""}

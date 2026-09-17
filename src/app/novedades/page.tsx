@@ -15,13 +15,18 @@ type OrdenRef = {
   regimen: string | null;
   tipo_carga_regimen: string | null;
   tipo_carga: string | null;
+  contenedor_tamano: string | null;
   cantidad_actual: number | null;
   nombre_transportista: string | null;
   placa_vehiculo: string | null;
   candados: string | null;
+  sellos: string | null;
+  cda_id: string | null;
   clientes: { nombre: string; ruc_ci: string | null } | null;
   cdas: {
+    id: string;
     numero_cda: string | null;
+    valor_garantia: number | null;
     clientes: { nombre: string; ruc_ci: string | null } | null;
   } | null;
 };
@@ -36,6 +41,15 @@ type Novedad = {
   creado_en: string;
   ordenes_dap: OrdenRef | null;
 };
+
+// Texto legible de cómo llega la carga, con el tamaño del contenedor.
+function formatoCargaLlega(tipoCarga: string | null, tamano: string | null): string {
+  if (!tipoCarga) return "—";
+  if (tipoCarga === "contenedor") return tamano ? `Contenedor de ${tamano}` : "Contenedor";
+  if (tipoCarga === "plataforma") return "Plataforma";
+  if (tipoCarga === "camion") return "Camión";
+  return tipoCarga;
+}
 
 const tipoLabel: Record<Novedad["tipo"], string> = {
   faltante: "Faltante",
@@ -66,6 +80,10 @@ export default function NovedadesPage() {
   const [tipo, setTipo] = useState<Novedad["tipo"]>("dano");
   const [descripcion, setDescripcion] = useState("");
   const [mrn, setMrn] = useState("");
+  // N° de CDA y garantía: viven en el CDA vinculado a la orden. Se autocompletan
+  // al elegir la orden y, si se cambian, se guardan de vuelta en ese CDA.
+  const [numeroCda, setNumeroCda] = useState("");
+  const [valorGarantia, setValorGarantia] = useState("");
   const [archivos, setArchivos] = useState<File[]>([]);
   const [fotosExistentes, setFotosExistentes] = useState<{ id: string; foto_url: string }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -117,10 +135,13 @@ export default function NovedadesPage() {
       supabase
         .from("novedades")
         .select(
-          "*, ordenes_dap(id, numero_dap, regimen, tipo_carga_regimen, tipo_carga, cantidad_actual, nombre_transportista, placa_vehiculo, candados, clientes(nombre, ruc_ci), cdas(numero_cda, clientes(nombre, ruc_ci)))"
+          "*, ordenes_dap(id, numero_dap, regimen, tipo_carga_regimen, tipo_carga, contenedor_tamano, cantidad_actual, nombre_transportista, placa_vehiculo, candados, sellos, cda_id, clientes(nombre, ruc_ci), cdas(id, numero_cda, valor_garantia, clientes(nombre, ruc_ci)))"
         )
         .order("creado_en", { ascending: false }),
-      supabase.from("ordenes_dap").select("id, numero_dap, cdas(clientes(nombre))").order("numero_dap"),
+      supabase
+        .from("ordenes_dap")
+        .select("id, numero_dap, cda_id, cdas(id, numero_cda, valor_garantia, clientes(nombre))")
+        .order("numero_dap", { ascending: false }),
     ]);
 
     if (novError) {
@@ -147,10 +168,22 @@ export default function NovedadesPage() {
     setTipo("dano");
     setDescripcion("");
     setMrn("");
+    setNumeroCda("");
+    setValorGarantia("");
     setArchivos([]);
     setFotosExistentes([]);
     setErrorMsg(null);
     setShowForm(true);
+  }
+
+  // Al elegir una orden, autocompleta N° CDA y garantía desde el CDA vinculado
+  // (si ya los tiene). Si están vacíos, el usuario los llena y se guardarán
+  // de vuelta en ese CDA al guardar la novedad.
+  function seleccionarOrden(id: string) {
+    setOrdenId(id);
+    const orden = ordenes.find((o) => o.id === id);
+    setNumeroCda(orden?.cdas?.numero_cda ?? "");
+    setValorGarantia(orden?.cdas?.valor_garantia != null ? String(orden.cdas.valor_garantia) : "");
   }
 
   async function abrirEditar(n: Novedad) {
@@ -159,6 +192,10 @@ export default function NovedadesPage() {
     setTipo(n.tipo);
     setDescripcion(n.descripcion ?? "");
     setMrn(n.mrn ?? "");
+    setNumeroCda(n.ordenes_dap?.cdas?.numero_cda ?? "");
+    setValorGarantia(
+      n.ordenes_dap?.cdas?.valor_garantia != null ? String(n.ordenes_dap.cdas.valor_garantia) : ""
+    );
     setArchivos([]);
     setErrorMsg(null);
 
@@ -249,6 +286,27 @@ export default function NovedadesPage() {
       if (fotosError) {
         setSaving(false);
         setErrorMsg(fotosError.message);
+        return;
+      }
+    }
+
+    // Guardar N° de CDA y garantía de vuelta en el CDA vinculado a la orden,
+    // para que queden disponibles en el reporte de novedad y en el resto del
+    // sistema (Ingreso / CDA). Toda orden tiene un CDA vinculado (cda_id).
+    const ordenSel = ordenes.find((o) => o.id === ordenId);
+    const cdaVinculadoId = ordenSel?.cda_id ?? ordenSel?.cdas?.id ?? null;
+    if (cdaVinculadoId) {
+      const { error: cdaError } = await supabase
+        .from("cdas")
+        .update({
+          numero_cda: numeroCda.trim() || null,
+          valor_garantia: valorGarantia.trim() ? Number(valorGarantia) : null,
+        })
+        .eq("id", cdaVinculadoId);
+      if (cdaError) {
+        setSaving(false);
+        setErrorMsg(`La novedad se guardó, pero no se pudo actualizar el CDA: ${cdaError.message}`);
+        cargarDatos();
         return;
       }
     }
@@ -448,7 +506,7 @@ export default function NovedadesPage() {
                 <label className="text-[11.5px] text-text-faint block mb-1">Orden DAP *</label>
                 <select
                   value={ordenId}
-                  onChange={(e) => setOrdenId(e.target.value)}
+                  onChange={(e) => seleccionarOrden(e.target.value)}
                   className="w-full card px-3 py-2 text-[13px] outline-none"
                 >
                   <option value="">Selecciona una orden…</option>
@@ -497,6 +555,38 @@ export default function NovedadesPage() {
                   placeholder="Déjalo vacío si no lo tienes"
                 />
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11.5px] text-text-faint block mb-1">N° de CDA</label>
+                  <input
+                    value={numeroCda}
+                    onChange={(e) => setNumeroCda(e.target.value)}
+                    disabled={!ordenId}
+                    className="w-full card px-3 py-2 text-[13px] outline-none disabled:opacity-50"
+                    placeholder={ordenId ? "N° del CDA" : "Elige una orden primero"}
+                  />
+                </div>
+                <div>
+                  <label className="text-[11.5px] text-text-faint block mb-1">
+                    Valor de garantía (USD)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={valorGarantia}
+                    onChange={(e) => setValorGarantia(e.target.value)}
+                    disabled={!ordenId}
+                    className="w-full card px-3 py-2 text-[13px] outline-none disabled:opacity-50"
+                    placeholder={ordenId ? "0.00" : "—"}
+                  />
+                </div>
+              </div>
+              {ordenId && (
+                <p className="text-[10.5px] text-text-faint -mt-1.5">
+                  Se guardan en el CDA de la orden (si ya los tenía, aparecen aquí; si los cambias,
+                  se actualizan también en Ingreso/CDA).
+                </p>
+              )}
               <div>
                 <label className="text-[11.5px] text-text-faint block mb-1">
                   Fotos (opcional, puedes subir varias)
@@ -560,8 +650,8 @@ export default function NovedadesPage() {
 
       {/* VISTA DE IMPRESIÓN: REPORTE DE NOVEDAD */}
       {novedadImprimir && (
-        <div className="print-area hidden print:block text-black bg-white p-10">
-          <div className="max-w-[640px] mx-auto">
+        <div className="print-area hidden print:flex print:flex-col min-h-screen text-black bg-white p-10">
+          <div className="max-w-[640px] mx-auto w-full flex-1 flex flex-col">
             <div className="flex items-center justify-center gap-3 mb-1">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/logo-etyecu.png" alt="ETYECU" className="h-12" />
@@ -590,18 +680,22 @@ export default function NovedadesPage() {
                       <td className="border border-black/40 p-1.5">{cliente?.ruc_ci ?? "—"}</td>
                     </tr>
                     <tr>
-                      <td className="border border-black/40 p-1.5 font-bold">N° de CDA:</td>
-                      <td className="border border-black/40 p-1.5">{orden?.cdas?.numero_cda ?? "—"}</td>
-                      <td className="border border-black/40 p-1.5 font-bold">MRN:</td>
-                      <td className="border border-black/40 p-1.5">{novedadImprimir.mrn ?? "—"}</td>
-                    </tr>
-                    <tr>
                       <td className="border border-black/40 p-1.5 font-bold">Orden DAP / Régimen:</td>
                       <td className="border border-black/40 p-1.5">
                         {orden?.numero_dap ?? "—"} · {regimenLabel}
                       </td>
+                      <td className="border border-black/40 p-1.5 font-bold">MRN:</td>
+                      <td className="border border-black/40 p-1.5">{novedadImprimir.mrn ?? "—"}</td>
+                    </tr>
+                    <tr>
                       <td className="border border-black/40 p-1.5 font-bold">Carga llega:</td>
-                      <td className="border border-black/40 p-1.5">{orden?.tipo_carga ?? "—"}</td>
+                      <td className="border border-black/40 p-1.5">
+                        {formatoCargaLlega(orden?.tipo_carga ?? null, orden?.contenedor_tamano ?? null)}
+                      </td>
+                      <td className="border border-black/40 p-1.5 font-bold">Cantidad:</td>
+                      <td className="border border-black/40 p-1.5">
+                        {orden?.cantidad_actual != null ? orden.cantidad_actual : "—"}
+                      </td>
                     </tr>
                     <tr>
                       <td className="border border-black/40 p-1.5 font-bold">Transportista:</td>
@@ -612,12 +706,10 @@ export default function NovedadesPage() {
                       <td className="border border-black/40 p-1.5">{orden?.placa_vehiculo ?? "—"}</td>
                     </tr>
                     <tr>
-                      <td className="border border-black/40 p-1.5 font-bold">Cantidad:</td>
-                      <td className="border border-black/40 p-1.5">
-                        {orden?.cantidad_actual != null ? orden.cantidad_actual : "—"}
-                      </td>
                       <td className="border border-black/40 p-1.5 font-bold">Candado satelital #:</td>
                       <td className="border border-black/40 p-1.5">{orden?.candados ?? "—"}</td>
+                      <td className="border border-black/40 p-1.5 font-bold">Sello(s):</td>
+                      <td className="border border-black/40 p-1.5">{orden?.sellos ?? "—"}</td>
                     </tr>
                     <tr>
                       <td className="border border-black/40 p-1.5 font-bold">Tipo de novedad:</td>
@@ -652,13 +744,13 @@ export default function NovedadesPage() {
                   {fotosImprimir.map((url, i) => (
                     <div
                       key={i}
-                      className="border border-black/40 flex items-center justify-center h-[190px] overflow-hidden bg-gray-50"
+                      className="border border-black/40 overflow-hidden bg-gray-50 h-[230px] w-full"
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={url}
                         alt={`Evidencia ${i + 1}`}
-                        className="max-w-full max-h-full object-contain"
+                        className="block w-full h-full object-cover"
                       />
                     </div>
                   ))}
@@ -666,7 +758,7 @@ export default function NovedadesPage() {
               </>
             )}
 
-            <div className="flex justify-between text-[10px] mt-16">
+            <div className="flex justify-between text-[10px] mt-auto pt-10">
               <p className="border-t border-black w-[240px] text-center pt-1">
                 Reportado por (DAP ETYECU)
               </p>

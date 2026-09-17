@@ -13,9 +13,6 @@ import {
   Bar,
   LineChart,
   Line,
-  PieChart,
-  Pie,
-  Cell,
   XAxis,
   YAxis,
   Tooltip,
@@ -104,8 +101,6 @@ type Mesa = {
   integrantes: string[] | null;
 };
 
-const COLORES = ["#7c6cf0", "#6ee7b7", "#fbbf24", "#fca5a5", "#93c5fd", "#c4b8ff"];
-
 // --- Cálculo de tiempos de proceso (reportes) --------------------------------
 // Horas ACTIVAS y días trabajados de un conjunto de movimientos. Las horas se
 // suman por día (último − primer movimiento de cada día), de modo que los
@@ -146,6 +141,15 @@ function formatoDH(dias: number, horas: number): string {
   if (dias <= 0 && horas <= 0) return "—";
   if (dias <= 0) return `${horas}h`;
   return `${dias}d ${horas}h`;
+}
+
+// Convierte un total de horas (puede venir con decimales, ej. promedios) a
+// texto "Xd Yh".
+function formatoHorasTotales(horasTotales: number): string {
+  if (!horasTotales || horasTotales <= 0) return "—";
+  const dias = Math.floor(horasTotales / 24);
+  const horas = Math.round(horasTotales - dias * 24);
+  return formatoDH(dias, horas);
 }
 
 // Controles de paginación reutilizables (Anterior / Siguiente + rango). No
@@ -221,7 +225,6 @@ async function traerTodo<T>(
 const tabs = [
   { id: "resumen", label: "Resumen" },
   { id: "ordenes", label: "Órdenes" },
-  { id: "produccion", label: "Producción por mesa" },
   { id: "inventario", label: "Inventario" },
   { id: "inconsistencias", label: "Inconsistencias" },
   { id: "productividad", label: "Productividad" },
@@ -244,6 +247,7 @@ export default function ReportesEtiquetadoPage() {
   const [fechaDesde, setFechaDesde] = useState("");
   const [fechaHasta, setFechaHasta] = useState("");
   const [filtroOrigen, setFiltroOrigen] = useState<"todos" | "etyecu" | "externo">("todos");
+  const [filtroCliente, setFiltroCliente] = useState<string>("todos");
   const [ordenSeleccionadaId, setOrdenSeleccionadaId] = useState<string>("");
   const [paletSeleccionado, setPaletSeleccionado] = useState<string>("todos");
   const [cajaFiltro, setCajaFiltro] = useState("");
@@ -312,9 +316,7 @@ export default function ReportesEtiquetadoPage() {
   // Paginación de las tablas/gráficas largas (para que no crezcan hasta el
   // fondo de la página, mismo criterio que el resto del sistema).
   const PAGINA = 20;
-  const PAGINA_MESAS = 12;
   const [paginaOrdenes, setPaginaOrdenes] = useState(1);
-  const [paginaProduccion, setPaginaProduccion] = useState(1);
   const [paginaProductividad, setPaginaProductividad] = useState(1);
 
   const cargar = useCallback(async () => {
@@ -385,16 +387,29 @@ export default function ReportesEtiquetadoPage() {
     cargar();
   }, [cargar]);
 
-  // Órdenes filtradas por fecha y origen
+  // Órdenes filtradas por fecha y origen, de la más reciente a la más antigua.
   const ordenesFiltradas = useMemo(() => {
-    return ordenes.filter((o) => {
-      const f = new Date(o.fecha).getTime();
-      if (fechaDesde && f < new Date(fechaDesde).getTime()) return false;
-      if (fechaHasta && f > new Date(fechaHasta + "T23:59:59").getTime()) return false;
-      if (filtroOrigen !== "todos" && o.origen !== filtroOrigen) return false;
-      return true;
+    return ordenes
+      .filter((o) => {
+        const f = new Date(o.fecha).getTime();
+        if (fechaDesde && f < new Date(fechaDesde).getTime()) return false;
+        if (fechaHasta && f > new Date(fechaHasta + "T23:59:59").getTime()) return false;
+        if (filtroOrigen !== "todos" && o.origen !== filtroOrigen) return false;
+        if (filtroCliente !== "todos" && (o.cliente_nombre ?? "") !== filtroCliente) return false;
+        return true;
+      })
+      .sort((a, b) => b.numero_etq.localeCompare(a.numero_etq, undefined, { numeric: true }));
+  }, [ordenes, fechaDesde, fechaHasta, filtroOrigen, filtroCliente]);
+
+  // Lista de clientes distintos (para el filtro), ordenada alfabéticamente.
+  const clientesDisponibles = useMemo(() => {
+    const set = new Set<string>();
+    ordenes.forEach((o) => {
+      const c = (o.cliente_nombre ?? "").trim();
+      if (c) set.add(c);
     });
-  }, [ordenes, fechaDesde, fechaHasta, filtroOrigen]);
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [ordenes]);
 
   const idsFiltrados = useMemo(() => new Set(ordenesFiltradas.map((o) => o.id)), [ordenesFiltradas]);
 
@@ -406,11 +421,6 @@ export default function ReportesEtiquetadoPage() {
   const movimientosFiltrados = useMemo(
     () => movimientos.filter((m) => idsFiltrados.has(m.orden_id)),
     [movimientos, idsFiltrados]
-  );
-
-  const mesasFiltradas = useMemo(
-    () => mesas.filter((m) => idsFiltrados.has(m.orden_id)),
-    [mesas, idsFiltrados]
   );
 
   // KPIs de resumen
@@ -447,28 +457,6 @@ export default function ReportesEtiquetadoPage() {
       .slice(0, 8);
   }, [ordenesFiltradas]);
 
-  // Órdenes por tipo de producto
-  const porProducto = useMemo(() => {
-    const conteo: Record<string, number> = {};
-    ordenesFiltradas.forEach((o) => {
-      const p = o.tipo_producto ?? "otro";
-      conteo[p] = (conteo[p] ?? 0) + 1;
-    });
-    return Object.entries(conteo).map(([name, value]) => ({ name, value }));
-  }, [ordenesFiltradas]);
-
-  // Producción por mesa (unidades totales)
-  const produccionPorMesa = useMemo(() => {
-    return mesasFiltradas
-      .map((m) => {
-        const movs = movimientosFiltrados.filter((mv) => mv.mesa_id === m.id);
-        const unidades = movs.reduce((a, mv) => a + Number(mv.cantidad || 0), 0);
-        return { nombre: m.nombre, unidades };
-      })
-      .filter((m) => m.unidades > 0)
-      .sort((a, b) => b.unidades - a.unidades);
-  }, [mesasFiltradas, movimientosFiltrados]);
-
   // ---- Módulo de Productividad ----
 
   // Movimientos según la vista elegida: general (rango de fechas, todas las
@@ -488,6 +476,14 @@ export default function ReportesEtiquetadoPage() {
         base = base.filter((m) => new Date(m.creado_en).getTime() <= hasta);
       }
     }
+    // El filtro de Cliente (barra superior) también acota Productividad, para
+    // poder ver el rendimiento con las órdenes de un cliente puntual.
+    if (filtroCliente !== "todos") {
+      const idsCliente = new Set(
+        ordenes.filter((o) => (o.cliente_nombre ?? "") === filtroCliente).map((o) => o.id)
+      );
+      base = base.filter((m) => idsCliente.has(m.orden_id));
+    }
     if (prodMesaFiltro !== "todas") {
       // "Mesa 1" puede existir con IDs distintos en cada orden (cada orden
       // crea sus propias mesas), así que se filtra por NOMBRE, agrupando
@@ -501,6 +497,8 @@ export default function ReportesEtiquetadoPage() {
   }, [
     movimientos,
     mesas,
+    ordenes,
+    filtroCliente,
     vistaProductividad,
     ordenSeleccionadaId,
     prodFechaDesde,
@@ -522,6 +520,7 @@ export default function ReportesEtiquetadoPage() {
     mesaId: string;
     nombre: string;
     integrantes: string[];
+    etiqueta: string; // nombres de las personas/equipo (o el nombre de la mesa si no hay)
     unidades: number;
     cajas: number;
     horas: number;
@@ -548,10 +547,15 @@ export default function ReportesEtiquetadoPage() {
         const ritmo = horas > 0 ? unidades / horas : 0;
         // Integrantes: de la mesa más reciente con este nombre que tenga movimiento
         const mesaConIntegrantes = mesasEnRango.find((m) => m.nombre === nombre);
+        const integrantes = mesaConIntegrantes?.integrantes ?? [];
+        // Etiqueta legible: los nombres de las personas/equipo. Si esa mesa no
+        // tiene integrantes cargados, se usa el nombre de la mesa como respaldo.
+        const etiqueta = integrantes.length > 0 ? integrantes.join(", ") : nombre;
         return {
           mesaId: nombre, // usado solo como key en la tabla, no como id real
           nombre,
-          integrantes: mesaConIntegrantes?.integrantes ?? [],
+          integrantes,
+          etiqueta,
           unidades,
           cajas,
           horas: Math.round(horas * 10) / 10,
@@ -569,7 +573,7 @@ export default function ReportesEtiquetadoPage() {
     const ritmoPromedio = horasTotales > 0 ? Math.round(unidadesTotales / horasTotales) : 0;
     const mesaTop =
       productividadPorMesa.length > 0
-        ? [...productividadPorMesa].sort((a, b) => b.ritmo - a.ritmo)[0]?.nombre ?? "—"
+        ? [...productividadPorMesa].sort((a, b) => b.ritmo - a.ritmo)[0]?.etiqueta ?? "—"
         : "—";
     return { unidadesTotales, horasTotales: Math.round(horasTotales * 10) / 10, ritmoPromedio, mesaTop };
   }, [productividadPorMesa]);
@@ -616,11 +620,60 @@ export default function ReportesEtiquetadoPage() {
     return map;
   }, [ordenes, movimientos]);
 
+  // ---- KPIs de tiempos para el Resumen (panel ejecutivo) ----
+  // Promedios sobre las órdenes del período: inventario y etiquetado sobre las
+  // que tienen esa fase registrada; total del proceso solo sobre las concluidas
+  // (una orden en curso aún no tiene tiempo total definitivo).
+  const resumenTiempos = useMemo(() => {
+    let concluidas = 0;
+    let sumaInv = 0;
+    let nInv = 0;
+    let sumaEtq = 0;
+    let nEtq = 0;
+    let sumaTotal = 0;
+    let nTotal = 0;
+    ordenesFiltradas.forEach((o) => {
+      const t = tiemposPorOrden.get(o.id);
+      if (!t) return;
+      if (t.concluida) {
+        concluidas++;
+        sumaTotal += t.total.horasTotales;
+        nTotal++;
+      }
+      if (t.inventario.horas > 0) {
+        sumaInv += t.inventario.horas;
+        nInv++;
+      }
+      if (t.etiquetado.horas > 0) {
+        sumaEtq += t.etiquetado.horas;
+        nEtq++;
+      }
+    });
+    return {
+      concluidas,
+      enCurso: ordenesFiltradas.length - concluidas,
+      promInventario: nInv > 0 ? sumaInv / nInv : 0,
+      promEtiquetado: nEtq > 0 ? sumaEtq / nEtq : 0,
+      promTotal: nTotal > 0 ? sumaTotal / nTotal : 0,
+    };
+  }, [ordenesFiltradas, tiemposPorOrden]);
+
+  // Evolución diaria de unidades del período (para la gráfica del Resumen),
+  // sobre los movimientos de las órdenes filtradas por fecha/origen.
+  const evolucionResumen = useMemo(() => {
+    const porDia: Record<string, number> = {};
+    movimientosFiltrados.forEach((mv) => {
+      const dia = mv.creado_en.slice(0, 10);
+      porDia[dia] = (porDia[dia] ?? 0) + Number(mv.cantidad || 0);
+    });
+    return Object.entries(porDia)
+      .map(([fecha, unidades]) => ({ fecha, unidades }))
+      .sort((a, b) => a.fecha.localeCompare(b.fecha));
+  }, [movimientosFiltrados]);
+
   // Reiniciar la página al cambiar los filtros que afectan cada listado.
   // eslint-disable-next-line react-hooks/set-state-in-effect -- reset de página al cambiar de filtro
-  useEffect(() => setPaginaOrdenes(1), [fechaDesde, fechaHasta, filtroOrigen]);
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- reset de página al cambiar de filtro
-  useEffect(() => setPaginaProduccion(1), [fechaDesde, fechaHasta, filtroOrigen]);
+  useEffect(() => setPaginaOrdenes(1), [fechaDesde, fechaHasta, filtroOrigen, filtroCliente]);
   useEffect(
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reset de página al cambiar de filtro
     () => setPaginaProductividad(1),
@@ -1489,15 +1542,32 @@ export default function ReportesEtiquetadoPage() {
                 <option value="externo">Cliente externo</option>
               </select>
             </div>
-            {(fechaDesde || fechaHasta) && (
+            <div>
+              <label className="text-[10.5px] text-text-faint block mb-1">Cliente</label>
+              <select
+                value={filtroCliente}
+                onChange={(e) => setFiltroCliente(e.target.value)}
+                className="card px-3 py-1.5 text-[12px] outline-none max-w-[240px]"
+              >
+                <option value="todos">Todos los clientes</option>
+                {clientesDisponibles.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {(fechaDesde || fechaHasta || filtroCliente !== "todos" || filtroOrigen !== "todos") && (
               <button
                 onClick={() => {
                   setFechaDesde("");
                   setFechaHasta("");
+                  setFiltroCliente("todos");
+                  setFiltroOrigen("todos");
                 }}
                 className="text-[11.5px] text-text-faint hover:text-text underline py-1.5"
               >
-                Limpiar fechas
+                Limpiar filtros
               </button>
             )}
           </div>
@@ -1508,21 +1578,90 @@ export default function ReportesEtiquetadoPage() {
             <>
               {tab === "resumen" && (
                 <>
-                  <div className="grid grid-cols-4 gap-3 mb-4">
-                    {[
-                      { label: "Órdenes en el período", value: resumen.totalOrdenes },
-                      { label: "Unidades etiquetadas", value: resumen.totalContado.toLocaleString("es-EC") },
-                      { label: "% Completos vs factura", value: `${resumen.pctCompletos}%` },
-                      { label: "Códigos con inconsistencia", value: resumen.conProblema },
-                    ].map((k) => (
-                      <div key={k.label} className="card p-3.5">
-                        <p className="text-[11px] text-text-faint">{k.label}</p>
-                        <p className="text-[22px] font-semibold mt-1">{k.value}</p>
-                      </div>
-                    ))}
+                  {/* KPIs principales del período */}
+                  <div className="grid grid-cols-4 gap-3 mb-3">
+                    <div className="card p-3.5">
+                      <p className="text-[11px] text-text-faint">Órdenes en el período</p>
+                      <p className="text-[22px] font-semibold mt-1">{resumen.totalOrdenes}</p>
+                    </div>
+                    <div className="card p-3.5">
+                      <p className="text-[11px] text-text-faint">Concluidas / En curso</p>
+                      <p className="text-[22px] font-semibold mt-1">
+                        <span className="text-[#6ee7b7]">{resumenTiempos.concluidas}</span>
+                        <span className="text-text-faint"> / </span>
+                        <span className="text-[#fbbf24]">{resumenTiempos.enCurso}</span>
+                      </p>
+                    </div>
+                    <div className="card p-3.5">
+                      <p className="text-[11px] text-text-faint">Unidades etiquetadas</p>
+                      <p className="text-[22px] font-semibold mt-1">
+                        {resumen.totalContado.toLocaleString("es-EC")}
+                      </p>
+                    </div>
+                    <div className="card p-3.5">
+                      <p className="text-[11px] text-text-faint">% Completos vs factura</p>
+                      <p className="text-[22px] font-semibold mt-1">{resumen.pctCompletos}%</p>
+                    </div>
                   </div>
 
+                  {/* KPIs de tiempos del proceso */}
+                  <div className="grid grid-cols-4 gap-3 mb-4">
+                    <div className="card p-3.5 bg-amber/[0.04]">
+                      <p className="text-[11px] text-text-faint">Tiempo prom. inventario</p>
+                      <p className="text-[22px] font-semibold mt-1 text-[#fbbf24]">
+                        {formatoHorasTotales(resumenTiempos.promInventario)}
+                      </p>
+                    </div>
+                    <div className="card p-3.5 bg-accent/[0.04]">
+                      <p className="text-[11px] text-text-faint">Tiempo prom. etiquetado</p>
+                      <p className="text-[22px] font-semibold mt-1 text-[#c4b8ff]">
+                        {formatoHorasTotales(resumenTiempos.promEtiquetado)}
+                      </p>
+                    </div>
+                    <div className="card p-3.5 bg-green/[0.04]">
+                      <p className="text-[11px] text-text-faint">Tiempo prom. total proceso</p>
+                      <p className="text-[22px] font-semibold mt-1 text-[#6ee7b7]">
+                        {formatoHorasTotales(resumenTiempos.promTotal)}
+                      </p>
+                      <p className="text-[10px] text-text-faint mt-0.5">
+                        promedio de {resumenTiempos.concluidas} concluida
+                        {resumenTiempos.concluidas !== 1 ? "s" : ""}
+                      </p>
+                    </div>
+                    <div className="card p-3.5">
+                      <p className="text-[11px] text-text-faint">Códigos con inconsistencia</p>
+                      <p className="text-[22px] font-semibold mt-1">{resumen.conProblema}</p>
+                    </div>
+                  </div>
+
+                  {/* Gráficas útiles */}
                   <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div className="card p-4">
+                      <p className="text-[12.5px] font-semibold mb-3">
+                        Evolución diaria de unidades etiquetadas
+                      </p>
+                      {evolucionResumen.length <= 1 ? (
+                        <p className="text-[12px] text-text-faint">
+                          Se necesita más de un día con datos para ver la evolución.
+                        </p>
+                      ) : (
+                        <ResponsiveContainer width="100%" height={220}>
+                          <LineChart data={evolucionResumen}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="fecha" tick={{ fontSize: 10.5 }} />
+                            <YAxis />
+                            <Tooltip />
+                            <Line
+                              type="monotone"
+                              dataKey="unidades"
+                              stroke="#7c6cf0"
+                              strokeWidth={2}
+                              dot={{ r: 3 }}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      )}
+                    </div>
                     <div className="card p-4">
                       <p className="text-[12.5px] font-semibold mb-3">Órdenes por cliente (top 8)</p>
                       {porCliente.length === 0 ? (
@@ -1534,25 +1673,8 @@ export default function ReportesEtiquetadoPage() {
                             <XAxis type="number" allowDecimals={false} />
                             <YAxis type="category" dataKey="nombre" width={110} tick={{ fontSize: 10.5 }} />
                             <Tooltip />
-                            <Bar dataKey="ordenes" fill="#7c6cf0" radius={[0, 4, 4, 0]} />
+                            <Bar dataKey="ordenes" fill="#6ee7b7" radius={[0, 4, 4, 0]} />
                           </BarChart>
-                        </ResponsiveContainer>
-                      )}
-                    </div>
-                    <div className="card p-4">
-                      <p className="text-[12.5px] font-semibold mb-3">Órdenes por tipo de producto</p>
-                      {porProducto.length === 0 ? (
-                        <p className="text-[12px] text-text-faint">Sin datos en el período.</p>
-                      ) : (
-                        <ResponsiveContainer width="100%" height={220}>
-                          <PieChart>
-                            <Pie data={porProducto} dataKey="value" nameKey="name" outerRadius={80} label>
-                              {porProducto.map((_, i) => (
-                                <Cell key={i} fill={COLORES[i % COLORES.length]} />
-                              ))}
-                            </Pie>
-                            <Tooltip />
-                          </PieChart>
                         </ResponsiveContainer>
                       )}
                     </div>
@@ -1636,43 +1758,6 @@ export default function ReportesEtiquetadoPage() {
                     día, según la fase marcada al capturar). <b>Total proceso</b> = desde que se creó la
                     orden hasta que se concluyó (o hasta ahora si sigue abierta).
                   </p>
-                </>
-              )}
-
-              {tab === "produccion" && (
-                <>
-                  <div className="card p-4">
-                    <p className="text-[12.5px] font-semibold mb-3">Unidades procesadas por mesa</p>
-                    {produccionPorMesa.length === 0 ? (
-                      <p className="text-[12px] text-text-faint">
-                        No hay movimientos registrados en el período.
-                      </p>
-                    ) : (
-                      (() => {
-                        const pagina = produccionPorMesa.slice(
-                          (paginaProduccion - 1) * PAGINA_MESAS,
-                          paginaProduccion * PAGINA_MESAS
-                        );
-                        return (
-                          <ResponsiveContainer width="100%" height={Math.max(160, pagina.length * 34)}>
-                            <BarChart data={pagina} layout="vertical" margin={{ left: 20 }}>
-                              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
-                              <XAxis type="number" />
-                              <YAxis type="category" dataKey="nombre" width={90} />
-                              <Tooltip />
-                              <Bar dataKey="unidades" fill="#7c6cf0" radius={[0, 4, 4, 0]} />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        );
-                      })()
-                    )}
-                  </div>
-                  <Paginacion
-                    pagina={paginaProduccion}
-                    total={produccionPorMesa.length}
-                    tamano={PAGINA_MESAS}
-                    onCambio={setPaginaProduccion}
-                  />
                 </>
               )}
 
@@ -2441,7 +2526,7 @@ export default function ReportesEtiquetadoPage() {
                           </p>
                         </div>
                         <div className="card p-3.5">
-                          <p className="text-[11px] text-text-faint">Mesa con mejor ritmo</p>
+                          <p className="text-[11px] text-text-faint">Equipo con mejor ritmo</p>
                           <p className="text-[18px] font-semibold mt-1 text-[#6ee7b7]">
                             {kpisProductividad.mesaTop}
                           </p>
@@ -2503,50 +2588,65 @@ export default function ReportesEtiquetadoPage() {
                       <div className="grid grid-cols-2 gap-4 mb-4">
                         <div className="card p-4">
                           <p className="text-[12.5px] font-semibold mb-3">
-                            Ritmo por mesa (unidades/hora)
+                            Unidades por equipo / personas
                           </p>
                           <ResponsiveContainer width="100%" height={240}>
                             <BarChart data={productividadPorMesa} layout="vertical" margin={{ left: 20 }}>
                               <CartesianGrid strokeDasharray="3 3" horizontal={false} />
                               <XAxis type="number" />
-                              <YAxis type="category" dataKey="nombre" width={80} />
+                              <YAxis type="category" dataKey="etiqueta" width={130} tick={{ fontSize: 10.5 }} />
                               <Tooltip />
-                              <Bar dataKey="ritmo" fill="#7c6cf0" radius={[0, 4, 4, 0]} />
+                              <Bar dataKey="unidades" fill="#6ee7b7" radius={[0, 4, 4, 0]} />
                             </BarChart>
                           </ResponsiveContainer>
                         </div>
                         <div className="card p-4">
                           <p className="text-[12.5px] font-semibold mb-3">
-                            Evolución diaria de unidades producidas
+                            Ritmo por equipo / personas (u/h)
                           </p>
-                          {evolucionDiaria.length <= 1 ? (
-                            <p className="text-[12px] text-text-faint">
-                              Se necesita más de un día con datos para ver la evolución.
-                            </p>
-                          ) : (
-                            <ResponsiveContainer width="100%" height={240}>
-                              <LineChart data={evolucionDiaria}>
-                                <CartesianGrid strokeDasharray="3 3" />
-                                <XAxis dataKey="fecha" tick={{ fontSize: 10.5 }} />
-                                <YAxis />
-                                <Tooltip />
-                                <Line
-                                  type="monotone"
-                                  dataKey="unidades"
-                                  stroke="#7c6cf0"
-                                  strokeWidth={2}
-                                  dot={{ r: 3 }}
-                                />
-                              </LineChart>
-                            </ResponsiveContainer>
-                          )}
+                          <ResponsiveContainer width="100%" height={240}>
+                            <BarChart data={productividadPorMesa} layout="vertical" margin={{ left: 20 }}>
+                              <CartesianGrid strokeDasharray="3 3" horizontal={false} />
+                              <XAxis type="number" />
+                              <YAxis type="category" dataKey="etiqueta" width={130} tick={{ fontSize: 10.5 }} />
+                              <Tooltip />
+                              <Bar dataKey="ritmo" fill="#7c6cf0" radius={[0, 4, 4, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
                         </div>
+                      </div>
+
+                      <div className="card p-4 mb-4">
+                        <p className="text-[12.5px] font-semibold mb-3">
+                          Evolución diaria de unidades producidas
+                        </p>
+                        {evolucionDiaria.length <= 1 ? (
+                          <p className="text-[12px] text-text-faint">
+                            Se necesita más de un día con datos para ver la evolución.
+                          </p>
+                        ) : (
+                          <ResponsiveContainer width="100%" height={240}>
+                            <LineChart data={evolucionDiaria}>
+                              <CartesianGrid strokeDasharray="3 3" />
+                              <XAxis dataKey="fecha" tick={{ fontSize: 10.5 }} />
+                              <YAxis />
+                              <Tooltip />
+                              <Line
+                                type="monotone"
+                                dataKey="unidades"
+                                stroke="#7c6cf0"
+                                strokeWidth={2}
+                                dot={{ r: 3 }}
+                              />
+                            </LineChart>
+                          </ResponsiveContainer>
+                        )}
                       </div>
 
                       {/* Tabla detallada */}
                       <div className="card overflow-hidden">
                         <div className="grid grid-cols-[1fr_90px_90px_90px_100px] gap-3 px-5 py-3 text-[11px] uppercase tracking-wide text-text-faint border-b border-border">
-                          <span>Mesa / integrantes</span>
+                          <span>Personas / equipo</span>
                           <span className="text-right">Unidades</span>
                           <span className="text-right">Cajas</span>
                           <span className="text-right">Horas</span>
@@ -2560,9 +2660,11 @@ export default function ReportesEtiquetadoPage() {
                               className="grid grid-cols-[1fr_90px_90px_90px_100px] gap-3 px-5 py-3 items-center border-b border-border last:border-b-0 text-[12.5px]"
                             >
                               <div>
-                                <p className="font-medium">{f.nombre}</p>
+                                <p className="font-medium">
+                                  {f.integrantes.length > 0 ? f.integrantes.join(", ") : f.nombre}
+                                </p>
                                 <p className="text-[10.5px] text-text-faint">
-                                  {f.integrantes.length > 0 ? f.integrantes.join(", ") : "—"}
+                                  {f.integrantes.length > 0 ? f.nombre : "Sin personas registradas"}
                                 </p>
                               </div>
                               <span className="text-right font-medium">

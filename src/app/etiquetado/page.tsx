@@ -66,7 +66,8 @@ export default function EtiquetadoPage() {
   }
 
   const ordenesOrdenadas = useMemo(() => {
-    return [...ordenes].sort((a, b) => ultimoNumero(a.numero_etq) - ultimoNumero(b.numero_etq));
+    // De la más reciente (número más alto) a la más antigua.
+    return [...ordenes].sort((a, b) => ultimoNumero(b.numero_etq) - ultimoNumero(a.numero_etq));
   }, [ordenes]);
 
   const ordenesFiltradas = useMemo(() => {
