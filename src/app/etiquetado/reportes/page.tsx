@@ -932,6 +932,7 @@ export default function ReportesEtiquetadoPage() {
     tieneCodigo: boolean | null;
     tieneTalla: boolean | null;
     yaImpreso: boolean;
+    tipoEtiqueta: string | null; // del código (las variantes heredan el del item)
   };
 
   const filasInventario: FilaInventario[] = useMemo(() => {
@@ -978,6 +979,7 @@ export default function ReportesEtiquetadoPage() {
           tieneCodigo: it.tiene_codigo,
           tieneTalla: it.tiene_talla,
           yaImpreso: it.ya_impreso ?? false,
+          tipoEtiqueta: it.tipo_etiqueta,
         });
       } else {
         variantesDelItem.forEach((v, i) => {
@@ -1020,6 +1022,7 @@ export default function ReportesEtiquetadoPage() {
             tieneCodigo: v.tiene_codigo,
             tieneTalla: v.tiene_talla,
             yaImpreso: v.ya_impreso ?? false,
+            tipoEtiqueta: it.tipo_etiqueta,
           });
         });
       }
@@ -1091,6 +1094,7 @@ export default function ReportesEtiquetadoPage() {
         Color: f.color ?? "",
         Tallas: f.tallasTexto,
         Composición: f.composicion ?? "",
+        "Tipo etiqueta": f.tipoEtiqueta ?? "",
         Tienda: itemOriginal?.tienda ?? "",
         País: f.pais ?? "",
         Factura: f.esVariante ? "" : itemOriginal?.cantidad_factura ?? "",
