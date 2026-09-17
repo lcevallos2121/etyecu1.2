@@ -209,22 +209,23 @@ function BotonInenMarquilla({
   );
 }
 
-// Buscador con autocompletado para el campo Composición, contra el
-// catálogo normalizado — evita que la misma composición se escriba de
-// muchas formas distintas (ej. "100% Poliéster" vs "10O %poliester"),
-// que era lo que hacía inútil el filtro de composición al imprimir.
-// Si el texto escrito no existe en el catálogo, muestra un botón para
-// agregarlo de una vez, sin bloquear la captura.
-function BuscadorComposicion({
+// Buscador con autocompletado contra un catálogo normalizado (Composición,
+// Marca, etc.) — evita que un mismo valor se escriba de muchas formas
+// distintas (ej. "100% Poliéster" vs "10O %poliester"), que era lo que hacía
+// inútil el filtro al imprimir. Si el texto escrito no existe en el catálogo,
+// muestra un botón para agregarlo de una vez, sin bloquear la captura.
+function BuscadorCatalogo({
   valor,
   onChange,
   catalogo,
   onAgregarAlCatalogo,
+  placeholder,
 }: {
   valor: string;
   onChange: (v: string) => void;
   catalogo: string[];
   onAgregarAlCatalogo: (texto: string) => void;
+  placeholder?: string;
 }) {
   const [abierto, setAbierto] = useState(false);
 
@@ -243,7 +244,7 @@ function BuscadorComposicion({
         onChange={(e) => onChange(e.target.value)}
         onFocus={() => setAbierto(true)}
         onBlur={() => setTimeout(() => setAbierto(false), 150)}
-        placeholder="Ej. 95% Algodón, 5% Elastano"
+        placeholder={placeholder}
         className="w-full card px-3 py-2 text-[13px] outline-none"
       />
       {abierto && (
@@ -546,6 +547,36 @@ export default function DetalleEtiquetadoPage() {
       setErrorMsg(`No se pudo agregar la composición al catálogo: ${error.message}`);
     }
     cargarCatalogoComposiciones();
+  }
+
+  // Catálogo de marcas normalizado — mismo patrón que composiciones, global
+  // (las marcas se repiten entre distintas cargas/clientes).
+  const [catalogoMarcas, setCatalogoMarcas] = useState<string[]>([]);
+
+  const cargarCatalogoMarcas = useCallback(async () => {
+    const { data } = await supabase
+      .from("etq_marcas_catalogo")
+      .select("marca")
+      .order("marca");
+    setCatalogoMarcas((data ?? []).map((d: { marca: string }) => d.marca));
+  }, [supabase]);
+
+  useEffect(() => {
+    cargarCatalogoMarcas();
+  }, [cargarCatalogoMarcas]);
+
+  async function agregarMarcaAlCatalogo(texto: string) {
+    const limpio = texto.trim();
+    if (!limpio) return;
+    const { error } = await supabase
+      .from("etq_marcas_catalogo")
+      .insert({ marca: limpio })
+      .select()
+      .maybeSingle();
+    if (error && !error.message.includes("duplicate")) {
+      setErrorMsg(`No se pudo agregar la marca al catálogo: ${error.message}`);
+    }
+    cargarCatalogoMarcas();
   }
 
   const cargar = useCallback(async () => {
@@ -1706,17 +1737,27 @@ export default function DetalleEtiquetadoPage() {
               <div><label className="text-[11.5px] text-text-faint block mb-1">Palet</label><input value={fPalet} onChange={(e) => setFPalet(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Código</label><input value={fCodigo} onChange={(e) => setFCodigo(e.target.value)} placeholder="EL001" className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Descripción</label><input value={fDescripcion} onChange={(e) => setFDescripcion(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
-              <div><label className="text-[11.5px] text-text-faint block mb-1">Marca</label><input value={fMarca} onChange={(e) => setFMarca(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">Marca</label>
+                <BuscadorCatalogo
+                  valor={fMarca}
+                  onChange={setFMarca}
+                  catalogo={catalogoMarcas}
+                  onAgregarAlCatalogo={agregarMarcaAlCatalogo}
+                  placeholder="Ej. Nike, Adidas…"
+                />
+              </div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Color</label><input value={fColor} onChange={(e) => setFColor(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">País de origen</label><input value={fPais} onChange={(e) => setFPais(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Tienda</label><input value={fTienda} onChange={(e) => setFTienda(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
-                <BuscadorComposicion
+                <BuscadorCatalogo
                   valor={fComposicion}
                   onChange={setFComposicion}
                   catalogo={catalogoComposiciones}
                   onAgregarAlCatalogo={agregarComposicionAlCatalogo}
+                  placeholder="Ej. 95% Algodón, 5% Elastano"
                 />
               </div>
               <div className="col-span-2">
@@ -1976,11 +2017,12 @@ export default function DetalleEtiquetadoPage() {
                 </div>
                 <div>
                   <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
-                  <BuscadorComposicion
+                  <BuscadorCatalogo
                     valor={vComposicion}
                     onChange={setVComposicion}
                     catalogo={catalogoComposiciones}
                     onAgregarAlCatalogo={agregarComposicionAlCatalogo}
+                    placeholder="Ej. 95% Algodón, 5% Elastano"
                   />
                 </div>
               </div>
