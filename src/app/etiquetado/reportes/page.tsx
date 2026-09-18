@@ -903,12 +903,28 @@ export default function ReportesEtiquetadoPage() {
     });
   }, [itemsPorTalla, busquedaInventario, tipoBusqueda]);
 
+  // Ordena los números de caja de un código de menor a mayor, sin importar
+  // en qué orden se hayan tipeado al capturar el inventario: "227(6) 223(35)"
+  // -> "223(35) 227(6)". Los rangos ("179 A 182(96)") se ordenan como un
+  // solo bloque, por su número inicial.
+  function ordenarCajasTexto(cajasTexto: string | null | undefined): string {
+    if (!cajasTexto) return "";
+    const tokens = cajasTexto.match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi);
+    if (!tokens || tokens.length <= 1) return cajasTexto;
+    return tokens
+      .map((t) => ({ texto: t.trim(), numero: Number(t.match(/\d+/)?.[0] ?? 0) }))
+      .sort((a, b) => a.numero - b.numero)
+      .map((c) => c.texto)
+      .join(" ");
+  }
+
   // Extrae SOLO la caja buscada del texto completo: "164(24) 165(24)" + "165"
-  // -> "165(24)". Si no hay filtro de caja activo, muestra el texto completo.
+  // -> "165(24)". Si no hay filtro de caja activo, muestra el texto completo
+  // (ya ordenado de menor a mayor).
   function textoCajaFiltrada(cajasTexto: string | null): string {
     if (!cajasTexto) return "—";
     const caja = cajaFiltro.trim();
-    if (!caja) return cajasTexto;
+    if (!caja) return ordenarCajasTexto(cajasTexto);
     const objetivo = Number(caja);
     if (Number.isNaN(objetivo)) return cajasTexto;
 
@@ -1163,7 +1179,7 @@ export default function ReportesEtiquetadoPage() {
         : itemOriginal?.inen_marquilla;
       return {
         Palet: f.palet ?? "",
-        Cajas: f.cajas ?? "",
+        Cajas: ordenarCajasTexto(f.cajas),
         Código: f.codigo ?? "",
         Marca: itemOriginal?.marca ?? "",
         Descripción: f.descripcion ?? "",
