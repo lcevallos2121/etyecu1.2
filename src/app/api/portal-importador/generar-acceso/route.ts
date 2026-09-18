@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import crypto from "crypto";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 function hashClave(clave: string, salt: string): string {
   return crypto.pbkdf2Sync(clave, salt, 100_000, 64, "sha512").toString("hex");
@@ -30,7 +25,7 @@ export async function POST(req: NextRequest) {
     const salt = crypto.randomBytes(16).toString("hex");
     const hash = hashClave(claveGenerada, salt);
 
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await getSupabaseAdmin()
       .from("portal_accesos")
       .upsert(
         {

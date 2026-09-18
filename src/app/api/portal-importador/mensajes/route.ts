@@ -1,11 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import { Resend } from "resend";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
@@ -13,7 +8,7 @@ async function clienteNombreDeLaSesion(req: NextRequest): Promise<string | null>
   const cookie = req.cookies.get("portal_sesion")?.value;
   if (!cookie) return null;
   const [accesoId] = cookie.split(":");
-  const { data: acceso } = await supabaseAdmin
+  const { data: acceso } = await getSupabaseAdmin()
     .from("portal_accesos")
     .select("id, cliente_nombre, activo, usuario")
     .eq("id", accesoId)
@@ -33,7 +28,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "orden_fase_id es requerido." }, { status: 400 });
   }
 
-  const { data: orden } = await supabaseAdmin
+  const { data: orden } = await getSupabaseAdmin()
     .from("portal_ordenes_fases")
     .select("id, cliente_nombre")
     .eq("id", ordenFaseId)
@@ -42,7 +37,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "No autorizado." }, { status: 403 });
   }
 
-  const { data: mensajes } = await supabaseAdmin
+  const { data: mensajes } = await getSupabaseAdmin()
     .from("portal_mensajes")
     .select("id, autor, autor_nombre, mensaje, foto_url, creado_en")
     .eq("orden_fase_id", ordenFaseId)
@@ -62,7 +57,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Escribe un mensaje o adjunta una foto." }, { status: 400 });
   }
 
-  const { data: orden } = await supabaseAdmin
+  const { data: orden } = await getSupabaseAdmin()
     .from("portal_ordenes_fases")
     .select("id, cliente_nombre, orden_dap_id, etq_orden_id")
     .eq("id", orden_fase_id)
@@ -73,13 +68,13 @@ export async function POST(req: NextRequest) {
 
   const cookie = req.cookies.get("portal_sesion")!.value;
   const [accesoId] = cookie.split(":");
-  const { data: acceso } = await supabaseAdmin
+  const { data: acceso } = await getSupabaseAdmin()
     .from("portal_accesos")
     .select("usuario")
     .eq("id", accesoId)
     .maybeSingle();
 
-  const { error } = await supabaseAdmin.from("portal_mensajes").insert({
+  const { error } = await getSupabaseAdmin().from("portal_mensajes").insert({
     orden_fase_id,
     cliente_nombre: clienteNombre,
     autor: "cliente",
@@ -118,7 +113,7 @@ async function notificarPorCorreo(datos: {
 }) {
   if (!resend) return; // sin RESEND_API_KEY configurada, no se envía nada
 
-  const { data: destinatarios } = await supabaseAdmin
+  const { data: destinatarios } = await getSupabaseAdmin()
     .from("portal_notificaciones_correos")
     .select("correo")
     .eq("activo", true);
@@ -127,10 +122,10 @@ async function notificarPorCorreo(datos: {
 
   const [{ data: ordenDap }, { data: etqOrden }] = await Promise.all([
     datos.ordenDapId
-      ? supabaseAdmin.from("ordenes_dap").select("numero_dap").eq("id", datos.ordenDapId).maybeSingle()
+      ? getSupabaseAdmin().from("ordenes_dap").select("numero_dap").eq("id", datos.ordenDapId).maybeSingle()
       : Promise.resolve({ data: null }),
     datos.etqOrdenId
-      ? supabaseAdmin.from("etq_ordenes").select("numero_etq").eq("id", datos.etqOrdenId).maybeSingle()
+      ? getSupabaseAdmin().from("etq_ordenes").select("numero_etq").eq("id", datos.etqOrdenId).maybeSingle()
       : Promise.resolve({ data: null }),
   ]);
 
