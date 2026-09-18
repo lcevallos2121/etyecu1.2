@@ -82,6 +82,7 @@ type Variante = {
 
 // Deshace (como Ctrl+Z) el último cambio tipeado en un campo de texto,
 // usando el historial de valores anteriores guardado junto al campo.
+// No hace nada si el historial está vacío (nada que deshacer todavía).
 function deshacerTexto(
   historial: string[],
   setHistorial: (h: string[]) => void,
