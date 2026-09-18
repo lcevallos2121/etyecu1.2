@@ -11,6 +11,7 @@ import {
   Check, HelpCircle,
 } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
+import { PAISES_IMPORTACION } from "@/lib/paises";
 import * as XLSX from "xlsx";
 
 export const dynamic = "force-dynamic";
@@ -67,6 +68,7 @@ type Mesa = {
 type Variante = {
   id: string;
   item_id: string;
+  palet: string | null;
   color: string | null;
   composicion: string | null;
   cajas: string | null;
@@ -455,6 +457,7 @@ export default function DetalleEtiquetadoPage() {
   // del mismo código, sin descuadrar el total contra factura.
   const [showAgregarVariante, setShowAgregarVariante] = useState(false);
   const [itemVarianteId, setItemVarianteId] = useState<string | null>(null);
+  const [vPalet, setVPalet] = useState("");
   const [vColor, setVColor] = useState("");
   const [vComposicion, setVComposicion] = useState("");
   const [vCajas, setVCajas] = useState("");
@@ -1200,6 +1203,7 @@ export default function DetalleEtiquetadoPage() {
 
   function abrirAgregarVariante(it: Item) {
     setItemVarianteId(it.id);
+    setVPalet(it.palet ?? "");
     setVColor("");
     setVComposicion("");
     setVCajas("");
@@ -1228,6 +1232,7 @@ export default function DetalleEtiquetadoPage() {
       .from("etq_variantes")
       .insert({
         item_id: itemVarianteId,
+        palet: vPalet.trim() || null,
         color: vColor.trim() || null,
         composicion: vComposicion.trim() || null,
         cajas: vCajas.trim(),
@@ -1704,8 +1709,9 @@ export default function DetalleEtiquetadoPage() {
                               {variantesDelItem.map((v) => (
                                 <div
                                   key={v.id}
-                                  className="grid grid-cols-[100px_1fr_1fr_70px] gap-2 px-2 py-1.5 rounded-md bg-white/[0.03] text-[11.5px] items-start"
+                                  className="grid grid-cols-[70px_100px_1fr_1fr_70px] gap-2 px-2 py-1.5 rounded-md bg-white/[0.03] text-[11.5px] items-start"
                                 >
+                                  <span className="text-text-faint" title="Palet de esta variante">{v.palet ?? it.palet ?? "—"}</span>
                                   <span className="font-medium">{v.color ?? "—"}</span>
                                   <span className="text-text-dim">{v.composicion ?? "—"}</span>
                                   <span className="text-text-dim font-mono text-[10.5px]">{v.cajas ?? "—"}</span>
@@ -1748,7 +1754,16 @@ export default function DetalleEtiquetadoPage() {
                 />
               </div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Color</label><input value={fColor} onChange={(e) => setFColor(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
-              <div><label className="text-[11.5px] text-text-faint block mb-1">País de origen</label><input value={fPais} onChange={(e) => setFPais(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">País de origen</label>
+                <select value={fPais} onChange={(e) => setFPais(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none">
+                  <option value="">Selecciona…</option>
+                  {PAISES_IMPORTACION.map((p) => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                  {fPais && !PAISES_IMPORTACION.includes(fPais) && <option value={fPais}>{fPais}</option>}
+                </select>
+              </div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Tienda</label><input value={fTienda} onChange={(e) => setFTienda(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
@@ -2012,10 +2027,20 @@ export default function DetalleEtiquetadoPage() {
 
               <div className="grid grid-cols-2 gap-3 mb-3">
                 <div>
+                  <label className="text-[11.5px] text-text-faint block mb-1">Palet</label>
+                  <input
+                    value={vPalet}
+                    onChange={(e) => setVPalet(e.target.value)}
+                    placeholder={item?.palet ?? ""}
+                    className="w-full card px-3 py-2 text-[13px] outline-none"
+                  />
+                  <p className="text-[10.5px] text-text-faint mt-1">Déjalo así si esta variante viene en el mismo palet que el código.</p>
+                </div>
+                <div>
                   <label className="text-[11.5px] text-text-faint block mb-1">Color</label>
                   <input value={vColor} onChange={(e) => setVColor(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" />
                 </div>
-                <div>
+                <div className="col-span-2">
                   <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
                   <BuscadorCatalogo
                     valor={vComposicion}

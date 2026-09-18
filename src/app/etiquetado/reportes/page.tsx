@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase-browser";
 import * as XLSX from "xlsx";
 import { Printer, X, Check, HelpCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
+import { PAISES_IMPORTACION } from "@/lib/paises";
 import {
   BarChart,
   Bar,
@@ -62,6 +63,7 @@ type ItemEtq = {
 type VarianteEtq = {
   id: string;
   item_id: string;
+  palet: string | null;
   color: string | null;
   composicion: string | null;
   cajas: string | null;
@@ -352,7 +354,7 @@ export default function ReportesEtiquetadoPage() {
         supabase
           .from("etq_variantes")
           .select(
-            "id, item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla, revisado"
+            "id, item_id, palet, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla, revisado"
           )
           .range(desde, hasta)
       ),
@@ -1005,7 +1007,7 @@ export default function ReportesEtiquetadoPage() {
             key: `${it.id}-${i}`,
             idReal: v.id,
             esVarianteParaGuardar: true,
-            palet: it.palet,
+            palet: v.palet ?? it.palet,
             codigo: it.codigo,
             marca: it.marca,
             tienda: it.tienda,
@@ -2793,11 +2795,17 @@ export default function ReportesEtiquetadoPage() {
                   </div>
                   <div>
                     <label className="text-[10.5px] text-text-faint block mb-1">País de origen</label>
-                    <input
+                    <select
                       value={egPais}
                       onChange={(e) => setEgPais(e.target.value)}
                       className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
-                    />
+                    >
+                      <option value="">Selecciona…</option>
+                      {PAISES_IMPORTACION.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                      {egPais && !PAISES_IMPORTACION.includes(egPais) && <option value={egPais}>{egPais}</option>}
+                    </select>
                   </div>
                   <div>
                     <label className="text-[10.5px] text-text-faint block mb-1">Tienda</label>
