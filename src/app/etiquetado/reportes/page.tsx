@@ -983,6 +983,55 @@ export default function ReportesEtiquetadoPage() {
           tipoEtiqueta: it.tipo_etiqueta,
         });
       } else {
+        // Fila del propio código: su caja base, ANTES de sumarle las cajas
+        // de sus variantes (que ya están sumadas dentro de it.cajas /
+        // it.cantidad_contada para cuadrar contra factura). it.tallas_detalle
+        // nunca se toca al agregar una variante, así que sigue representando
+        // solo el desglose propio del código.
+        let cajasPropias = (it.cajas ?? "").trim();
+        variantesDelItem.forEach((v) => {
+          const cajaVariante = (v.cajas ?? "").trim();
+          if (cajaVariante) {
+            cajasPropias = cajasPropias.replace(cajaVariante, "").replace(/\s+/g, " ").trim();
+          }
+        });
+
+        let tallasPropiasAMostrar = it.tallas_detalle;
+        let sinDesglosePropio = false;
+        if (cajaActiva) {
+          const registro = tallasPorCajaTodas.find(
+            (t) => t.item_id === it.id && t.variante_id === null && t.numero_caja === cajaActiva
+          );
+          if (registro) {
+            tallasPropiasAMostrar = registro.tallas_detalle;
+          } else {
+            sinDesglosePropio = true;
+          }
+        }
+        filas.push({
+          key: it.id,
+          idReal: it.id,
+          esVarianteParaGuardar: false,
+          palet: it.palet,
+          codigo: it.codigo,
+          marca: it.marca,
+          tienda: it.tienda,
+          descripcion: it.descripcion,
+          color: null,
+          composicion: it.composicion,
+          pais: it.pais,
+          cajas: cajasPropias || null,
+          cantidad: sumarCajasTexto(cajasPropias),
+          tallasTexto: formatoTallasSegunFiltro(tallasPropiasAMostrar, tallaFiltro),
+          totalTallas: sumarTallasDetalle(tallasPropiasAMostrar),
+          esVariante: false,
+          sinDesgloseDeCaja: sinDesglosePropio,
+          tieneCodigo: it.tiene_codigo,
+          tieneTalla: it.tiene_talla,
+          yaImpreso: it.ya_impreso ?? false,
+          tipoEtiqueta: it.tipo_etiqueta,
+        });
+
         variantesDelItem.forEach((v, i) => {
           let tallasAMostrar = v.tallas_detalle;
           let sinDesglose = false;
