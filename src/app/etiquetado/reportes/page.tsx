@@ -74,7 +74,6 @@ type VarianteEtq = {
   codigo_nuevo: boolean | null;
   ya_impreso: boolean | null;
   inen_marquilla: "inen" | "marquilla" | null;
-  revisado: boolean | null;
 };
 
 type TallasPorCaja = {
@@ -354,7 +353,7 @@ export default function ReportesEtiquetadoPage() {
         supabase
           .from("etq_variantes")
           .select(
-            "id, item_id, palet, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla, revisado"
+            "id, item_id, palet, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla"
           )
           .range(desde, hasta)
       ),
