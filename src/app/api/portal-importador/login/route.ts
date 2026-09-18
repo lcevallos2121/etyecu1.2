@@ -1,13 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 import crypto from "crypto";
-
-// Cliente con permisos de servidor (service role) — solo se usa aquí, en
-// una API route que corre en el servidor, nunca se expone al navegador.
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
 
 function hashClave(clave: string, salt: string): string {
   return crypto.pbkdf2Sync(clave, salt, 100_000, 64, "sha512").toString("hex");
@@ -20,7 +13,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Usuario y clave son requeridos." }, { status: 400 });
     }
 
-    const { data: acceso, error } = await supabaseAdmin
+    const { data: acceso, error } = await getSupabaseAdmin()
       .from("portal_accesos")
       .select("id, cliente_nombre, usuario, clave_hash, activo")
       .eq("usuario", usuario.trim().toLowerCase())
@@ -45,7 +38,7 @@ export async function POST(req: NextRequest) {
     // Token de sesión simple: se guarda en una cookie httpOnly
     const token = crypto.randomBytes(32).toString("hex");
 
-    await supabaseAdmin
+    await getSupabaseAdmin()
       .from("portal_accesos")
       .update({ ultimo_acceso: new Date().toISOString() })
       .eq("id", acceso.id);

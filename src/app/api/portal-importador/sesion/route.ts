@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 export async function GET(req: NextRequest) {
   const cookie = req.cookies.get("portal_sesion")?.value;
@@ -17,7 +12,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ autenticado: false }, { status: 401 });
   }
 
-  const { data: acceso } = await supabaseAdmin
+  const { data: acceso } = await getSupabaseAdmin()
     .from("portal_accesos")
     .select("id, cliente_nombre, activo")
     .eq("id", accesoId)

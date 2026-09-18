@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 export async function GET(req: NextRequest) {
   const cookie = req.cookies.get("portal_sesion")?.value;
@@ -12,7 +7,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
   }
   const [accesoId] = cookie.split(":");
-  const { data: acceso } = await supabaseAdmin
+  const { data: acceso } = await getSupabaseAdmin()
     .from("portal_accesos")
     .select("id, cliente_nombre, activo")
     .eq("id", accesoId)
@@ -27,7 +22,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "No autorizado." }, { status: 403 });
   }
 
-  const { data: fasesConfig } = await supabaseAdmin
+  const { data: fasesConfig } = await getSupabaseAdmin()
     .from("portal_ordenes_fases")
     .select("id, orden_dap_id, etq_orden_id, fases, fase_actual, visible")
     .eq("cliente_nombre", acceso.cliente_nombre)
@@ -38,10 +33,10 @@ export async function GET(req: NextRequest) {
 
   const [dapRes, etqRes] = await Promise.all([
     idsDap.length > 0
-      ? supabaseAdmin.from("ordenes_dap").select("id, numero_dap").in("id", idsDap)
+      ? getSupabaseAdmin().from("ordenes_dap").select("id, numero_dap").in("id", idsDap)
       : Promise.resolve({ data: [] as { id: string; numero_dap: string }[] }),
     idsEtq.length > 0
-      ? supabaseAdmin.from("etq_ordenes").select("id, numero_etq").in("id", idsEtq)
+      ? getSupabaseAdmin().from("etq_ordenes").select("id, numero_etq").in("id", idsEtq)
       : Promise.resolve({ data: [] as { id: string; numero_etq: string }[] }),
   ]);
 

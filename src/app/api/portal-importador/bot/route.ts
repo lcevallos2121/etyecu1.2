@@ -1,16 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 async function clienteNombreDeLaSesion(req: NextRequest): Promise<string | null> {
   const cookie = req.cookies.get("portal_sesion")?.value;
   if (!cookie) return null;
   const [accesoId] = cookie.split(":");
-  const { data: acceso } = await supabaseAdmin
+  const { data: acceso } = await getSupabaseAdmin()
     .from("portal_accesos")
     .select("id, cliente_nombre, activo")
     .eq("id", accesoId)
@@ -40,7 +35,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Pregunta inválida." }, { status: 400 });
   }
 
-  const { data: fase } = await supabaseAdmin
+  const { data: fase } = await getSupabaseAdmin()
     .from("portal_ordenes_fases")
     .select("id, cliente_nombre, orden_dap_id, etq_orden_id, fases, fase_actual")
     .eq("id", orden_fase_id)
@@ -60,7 +55,7 @@ export async function POST(req: NextRequest) {
   };
 
   // 1. Guardar la pregunta del cliente
-  await supabaseAdmin.from("portal_mensajes").insert({
+  await getSupabaseAdmin().from("portal_mensajes").insert({
     orden_fase_id,
     cliente_nombre: clienteNombre,
     autor: "cliente",
@@ -92,7 +87,7 @@ export async function POST(req: NextRequest) {
     if (!fase.etq_orden_id) {
       respuesta = "Esta orden no tiene un proceso de etiquetado asociado, así que no aplica revisión de inconsistencias.";
     } else {
-      const { data: items } = await supabaseAdmin
+      const { data: items } = await getSupabaseAdmin()
         .from("etq_items")
         .select("cantidad_contada, cantidad_factura")
         .eq("orden_id", fase.etq_orden_id)
@@ -108,7 +103,7 @@ export async function POST(req: NextRequest) {
   }
 
   // 3. Guardar la respuesta del bot como mensaje del "equipo"
-  await supabaseAdmin.from("portal_mensajes").insert({
+  await getSupabaseAdmin().from("portal_mensajes").insert({
     orden_fase_id,
     cliente_nombre: clienteNombre,
     autor: "equipo",

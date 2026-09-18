@@ -127,11 +127,19 @@ export default function ClasificacionCargaPage() {
       actual.push(f);
       grupos.set(clave, actual);
     });
+    // Dentro de cada grupo, las filas se muestran por palet ascendente
+    // (1, 2, 3…) sin importar el orden en que el operador las haya
+    // ingresado.
+    const porPaletAscendente = (a: FilaClasificacion, b: FilaClasificacion) => {
+      const na = Number(a.palet), nb = Number(b.palet);
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
+      return a.palet.localeCompare(b.palet);
+    };
     return Array.from(grupos.entries())
       .map(([, items]) => ({
         tipo: items[0].tipo_agrupacion,
         valor: items[0].valor,
-        filas: items,
+        filas: [...items].sort(porPaletAscendente),
         totalCajas: items.reduce((a, f) => a + Number(f.total_cajas || 0), 0),
       }))
       .sort((a, b) => a.valor.localeCompare(b.valor));

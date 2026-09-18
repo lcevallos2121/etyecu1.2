@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseAdmin = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+import { getSupabaseAdmin } from "@/lib/supabase-admin";
 
 export async function POST(req: NextRequest) {
   const cookie = req.cookies.get("portal_sesion")?.value;
@@ -12,7 +7,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "No autenticado." }, { status: 401 });
   }
   const [accesoId] = cookie.split(":");
-  const { data: acceso } = await supabaseAdmin
+  const { data: acceso } = await getSupabaseAdmin()
     .from("portal_accesos")
     .select("id, activo")
     .eq("id", accesoId)
@@ -37,7 +32,7 @@ export async function POST(req: NextRequest) {
   const nombreArchivo = `${crypto.randomUUID()}.${ext}`;
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  const { error } = await supabaseAdmin.storage
+  const { error } = await getSupabaseAdmin().storage
     .from("portal-chat-fotos")
     .upload(nombreArchivo, buffer, { contentType: file.type });
 
@@ -45,7 +40,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 400 });
   }
 
-  const { data: urlData } = supabaseAdmin.storage
+  const { data: urlData } = getSupabaseAdmin().storage
     .from("portal-chat-fotos")
     .getPublicUrl(nombreArchivo);
 

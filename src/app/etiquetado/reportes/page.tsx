@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase-browser";
 import * as XLSX from "xlsx";
 import { Printer, X, Check, HelpCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
+import { PAISES_IMPORTACION } from "@/lib/paises";
 import {
   BarChart,
   Bar,
@@ -62,6 +63,7 @@ type ItemEtq = {
 type VarianteEtq = {
   id: string;
   item_id: string;
+  palet: string | null;
   color: string | null;
   composicion: string | null;
   cajas: string | null;
@@ -72,7 +74,6 @@ type VarianteEtq = {
   codigo_nuevo: boolean | null;
   ya_impreso: boolean | null;
   inen_marquilla: "inen" | "marquilla" | null;
-  revisado: boolean | null;
 };
 
 type TallasPorCaja = {
@@ -352,7 +353,7 @@ export default function ReportesEtiquetadoPage() {
         supabase
           .from("etq_variantes")
           .select(
-            "id, item_id, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla, revisado"
+            "id, item_id, palet, color, composicion, cajas, cantidad, tallas_detalle, tiene_codigo, tiene_talla, codigo_nuevo, ya_impreso, inen_marquilla"
           )
           .range(desde, hasta)
       ),
@@ -765,23 +766,42 @@ export default function ReportesEtiquetadoPage() {
   }
 
   // Filtro de búsqueda: código, descripción o tallas
-  // Lista de palets disponibles en la orden (para el selector)
+  // Lista de palets disponibles en la orden (para el selector). Incluye
+  // también el palet propio de cada variante, por si viene en un palet
+  // que ningún código de la orden tiene como palet principal.
   const paletsDisponibles = useMemo(() => {
+    const idsDeLaOrden = new Set(itemsOrdenSeleccionada.map((it) => it.id));
     const set = new Set(
       itemsOrdenSeleccionada.map((it) => (it.palet ?? "").trim()).filter(Boolean)
     );
+    variantesTodas.forEach((v) => {
+      if (!idsDeLaOrden.has(v.item_id)) return;
+      const p = (v.palet ?? "").trim();
+      if (p) set.add(p);
+    });
     return Array.from(set).sort((a, b) => {
       const na = Number(a), nb = Number(b);
       if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
       return a.localeCompare(b);
     });
-  }, [itemsOrdenSeleccionada]);
+  }, [itemsOrdenSeleccionada, variantesTodas]);
 
-  // Paso 1: filtrar por el palet elegido
+  // Paso 1: filtrar por el palet elegido. Un código entra si SU propio
+  // palet coincide, o si alguna de sus variantes tiene ese palet (una
+  // variante puede venir en un palet distinto al del código) — el filtro
+  // final por fila (dentro de filasInventario) es el que decide qué fila
+  // exacta se muestra, esto solo evita descartar códigos completos cuyo
+  // único punto de coincidencia está en una variante.
   const itemsDelPalet = useMemo(() => {
     if (paletSeleccionado === "todos") return itemsOrdenSeleccionada;
-    return itemsOrdenSeleccionada.filter((it) => (it.palet ?? "").trim() === paletSeleccionado);
-  }, [itemsOrdenSeleccionada, paletSeleccionado]);
+    return itemsOrdenSeleccionada.filter(
+      (it) =>
+        (it.palet ?? "").trim() === paletSeleccionado ||
+        variantesTodas.some(
+          (v) => v.item_id === it.id && (v.palet ?? it.palet ?? "").trim() === paletSeleccionado
+        )
+    );
+  }, [itemsOrdenSeleccionada, paletSeleccionado, variantesTodas]);
 
   // Paso 2: dentro del palet, filtrar por número de caja exacto (tipo Excel)
   const itemsDeLaCaja = useMemo(() => {
@@ -883,12 +903,29 @@ export default function ReportesEtiquetadoPage() {
     });
   }, [itemsPorTalla, busquedaInventario, tipoBusqueda]);
 
+  // Ordena los números de caja de un código de menor a mayor, sin importar
+  // en qué orden se hayan tipeado al capturar el inventario: "227(6) 223(35)"
+  // -> "223(35) 227(6)". Los rangos ("179 A 182(96)") se ordenan como un
+  // solo bloque, por su número inicial. No modifica el texto guardado, solo
+  // cómo se muestra aquí.
+  function ordenarCajasTexto(cajasTexto: string | null | undefined): string {
+    if (!cajasTexto) return "";
+    const tokens = cajasTexto.match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi);
+    if (!tokens || tokens.length <= 1) return cajasTexto;
+    return tokens
+      .map((t) => ({ texto: t.trim(), numero: Number(t.match(/\d+/)?.[0] ?? 0) }))
+      .sort((a, b) => a.numero - b.numero)
+      .map((c) => c.texto)
+      .join(" ");
+  }
+
   // Extrae SOLO la caja buscada del texto completo: "164(24) 165(24)" + "165"
-  // -> "165(24)". Si no hay filtro de caja activo, muestra el texto completo.
+  // -> "165(24)". Si no hay filtro de caja activo, muestra el texto completo
+  // (ya ordenado de menor a mayor).
   function textoCajaFiltrada(cajasTexto: string | null): string {
     if (!cajasTexto) return "—";
     const caja = cajaFiltro.trim();
-    if (!caja) return cajasTexto;
+    if (!caja) return ordenarCajasTexto(cajasTexto);
     const objetivo = Number(caja);
     if (Number.isNaN(objetivo)) return cajasTexto;
 
@@ -982,6 +1019,55 @@ export default function ReportesEtiquetadoPage() {
           tipoEtiqueta: it.tipo_etiqueta,
         });
       } else {
+        // Fila del propio código: su caja base, ANTES de sumarle las cajas
+        // de sus variantes (que ya están sumadas dentro de it.cajas /
+        // it.cantidad_contada para cuadrar contra factura). it.tallas_detalle
+        // nunca se toca al agregar una variante, así que sigue representando
+        // solo el desglose propio del código.
+        let cajasPropias = (it.cajas ?? "").trim();
+        variantesDelItem.forEach((v) => {
+          const cajaVariante = (v.cajas ?? "").trim();
+          if (cajaVariante) {
+            cajasPropias = cajasPropias.replace(cajaVariante, "").replace(/\s+/g, " ").trim();
+          }
+        });
+
+        let tallasPropiasAMostrar = it.tallas_detalle;
+        let sinDesglosePropio = false;
+        if (cajaActiva) {
+          const registro = tallasPorCajaTodas.find(
+            (t) => t.item_id === it.id && t.variante_id === null && t.numero_caja === cajaActiva
+          );
+          if (registro) {
+            tallasPropiasAMostrar = registro.tallas_detalle;
+          } else {
+            sinDesglosePropio = true;
+          }
+        }
+        filas.push({
+          key: it.id,
+          idReal: it.id,
+          esVarianteParaGuardar: false,
+          palet: it.palet,
+          codigo: it.codigo,
+          marca: it.marca,
+          tienda: it.tienda,
+          descripcion: it.descripcion,
+          color: null,
+          composicion: it.composicion,
+          pais: it.pais,
+          cajas: cajasPropias || null,
+          cantidad: sumarCajasTexto(cajasPropias),
+          tallasTexto: formatoTallasSegunFiltro(tallasPropiasAMostrar, tallaFiltro),
+          totalTallas: sumarTallasDetalle(tallasPropiasAMostrar),
+          esVariante: false,
+          sinDesgloseDeCaja: sinDesglosePropio,
+          tieneCodigo: it.tiene_codigo,
+          tieneTalla: it.tiene_talla,
+          yaImpreso: it.ya_impreso ?? false,
+          tipoEtiqueta: it.tipo_etiqueta,
+        });
+
         variantesDelItem.forEach((v, i) => {
           let tallasAMostrar = v.tallas_detalle;
           let sinDesglose = false;
@@ -1005,7 +1091,7 @@ export default function ReportesEtiquetadoPage() {
             key: `${it.id}-${i}`,
             idReal: v.id,
             esVarianteParaGuardar: true,
-            palet: it.palet,
+            palet: v.palet ?? it.palet,
             codigo: it.codigo,
             marca: it.marca,
             tienda: it.tienda,
@@ -1027,8 +1113,15 @@ export default function ReportesEtiquetadoPage() {
         });
       }
     });
-    return filas;
-  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro, tallaFiltro]);
+    // Filtro final por PALET a nivel de fila: itemsDelPalet ya dejó pasar el
+    // código completo si el código o alguna de sus variantes coincidía, pero
+    // aquí se decide qué fila exacta se muestra — para que un código en un
+    // palet no arrastre a la vista la fila de una variante de OTRO palet
+    // (y viceversa: seleccionar el palet de una variante muestra solo esa
+    // fila, no la del código base que está en otro palet).
+    if (paletSeleccionado === "todos") return filas;
+    return filas.filter((f) => (f.palet ?? "").trim() === paletSeleccionado);
+  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
 
   // Marca/desmarca "Ya impreso" en la fila. Actualiza la tabla correcta
   // (etq_items o etq_variantes) según si la fila es un código simple o una
@@ -1087,7 +1180,7 @@ export default function ReportesEtiquetadoPage() {
         : itemOriginal?.inen_marquilla;
       return {
         Palet: f.palet ?? "",
-        Cajas: f.cajas ?? "",
+        Cajas: ordenarCajasTexto(f.cajas),
         Código: f.codigo ?? "",
         Marca: itemOriginal?.marca ?? "",
         Descripción: f.descripcion ?? "",
@@ -2793,11 +2886,17 @@ export default function ReportesEtiquetadoPage() {
                   </div>
                   <div>
                     <label className="text-[10.5px] text-text-faint block mb-1">País de origen</label>
-                    <input
+                    <select
                       value={egPais}
                       onChange={(e) => setEgPais(e.target.value)}
                       className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
-                    />
+                    >
+                      <option value="">Selecciona…</option>
+                      {PAISES_IMPORTACION.map((p) => (
+                        <option key={p} value={p}>{p}</option>
+                      ))}
+                      {egPais && !PAISES_IMPORTACION.includes(egPais) && <option value={egPais}>{egPais}</option>}
+                    </select>
                   </div>
                   <div>
                     <label className="text-[10.5px] text-text-faint block mb-1">Tienda</label>
