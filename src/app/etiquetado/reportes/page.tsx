@@ -766,23 +766,42 @@ export default function ReportesEtiquetadoPage() {
   }
 
   // Filtro de búsqueda: código, descripción o tallas
-  // Lista de palets disponibles en la orden (para el selector)
+  // Lista de palets disponibles en la orden (para el selector). Incluye
+  // también el palet propio de cada variante, por si viene en un palet
+  // que ningún código de la orden tiene como palet principal.
   const paletsDisponibles = useMemo(() => {
+    const idsDeLaOrden = new Set(itemsOrdenSeleccionada.map((it) => it.id));
     const set = new Set(
       itemsOrdenSeleccionada.map((it) => (it.palet ?? "").trim()).filter(Boolean)
     );
+    variantesTodas.forEach((v) => {
+      if (!idsDeLaOrden.has(v.item_id)) return;
+      const p = (v.palet ?? "").trim();
+      if (p) set.add(p);
+    });
     return Array.from(set).sort((a, b) => {
       const na = Number(a), nb = Number(b);
       if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb;
       return a.localeCompare(b);
     });
-  }, [itemsOrdenSeleccionada]);
+  }, [itemsOrdenSeleccionada, variantesTodas]);
 
-  // Paso 1: filtrar por el palet elegido
+  // Paso 1: filtrar por el palet elegido. Un código entra si SU propio
+  // palet coincide, o si alguna de sus variantes tiene ese palet (una
+  // variante puede venir en un palet distinto al del código) — el filtro
+  // final por fila (dentro de filasInventario) es el que decide qué fila
+  // exacta se muestra, esto solo evita descartar códigos completos cuyo
+  // único punto de coincidencia está en una variante.
   const itemsDelPalet = useMemo(() => {
     if (paletSeleccionado === "todos") return itemsOrdenSeleccionada;
-    return itemsOrdenSeleccionada.filter((it) => (it.palet ?? "").trim() === paletSeleccionado);
-  }, [itemsOrdenSeleccionada, paletSeleccionado]);
+    return itemsOrdenSeleccionada.filter(
+      (it) =>
+        (it.palet ?? "").trim() === paletSeleccionado ||
+        variantesTodas.some(
+          (v) => v.item_id === it.id && (v.palet ?? it.palet ?? "").trim() === paletSeleccionado
+        )
+    );
+  }, [itemsOrdenSeleccionada, paletSeleccionado, variantesTodas]);
 
   // Paso 2: dentro del palet, filtrar por número de caja exacto (tipo Excel)
   const itemsDeLaCaja = useMemo(() => {
@@ -1077,8 +1096,15 @@ export default function ReportesEtiquetadoPage() {
         });
       }
     });
-    return filas;
-  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro, tallaFiltro]);
+    // Filtro final por PALET a nivel de fila: itemsDelPalet ya dejó pasar el
+    // código completo si el código o alguna de sus variantes coincidía, pero
+    // aquí se decide qué fila exacta se muestra — para que un código en un
+    // palet no arrastre a la vista la fila de una variante de OTRO palet
+    // (y viceversa: seleccionar el palet de una variante muestra solo esa
+    // fila, no la del código base que está en otro palet).
+    if (paletSeleccionado === "todos") return filas;
+    return filas.filter((f) => (f.palet ?? "").trim() === paletSeleccionado);
+  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
 
   // Marca/desmarca "Ya impreso" en la fila. Actualiza la tabla correcta
   // (etq_items o etq_variantes) según si la fila es un código simple o una
