@@ -80,6 +80,20 @@ type Variante = {
   inen_marquilla: "inen" | "marquilla" | null;
 };
 
+// Deshace (como Ctrl+Z) el último cambio tipeado en un campo de texto,
+// usando el historial de valores anteriores guardado junto al campo.
+function deshacerTexto(
+  historial: string[],
+  setHistorial: (h: string[]) => void,
+  setValor: (v: string) => void
+) {
+  if (historial.length === 0) return;
+  const nuevo = historial.slice(0, -1);
+  const anterior = historial[historial.length - 1];
+  setHistorial(nuevo);
+  setValor(anterior);
+}
+
 // Suma lo que está dentro de paréntesis: "164(24) 165(24)" -> 48
 // También maneja rangos de calzado "179 A 182(96)" -> 96
 function sumarCajas(texto: string | null | undefined): number {
@@ -289,8 +303,8 @@ function BuscadorCatalogo({
 // Multiplica los valores YA escritos en las tallas por un factor (×2, ×3,
 // ×4...) — útil cuando se captura la primera caja y las siguientes son
 // iguales en la misma proporción, sin tener que reescribir cada talla a
-// mano. Pide confirmación antes de aplicar, porque sobreescribe los
-// valores actuales y no se puede deshacer.
+// mano. Pide confirmación antes de aplicar, y si te arrepientes justo
+// después, "Deshacer" restaura los valores que había antes de multiplicar.
 function MultiplicadorTallas({
   tallas,
   onAplicar,
@@ -299,19 +313,21 @@ function MultiplicadorTallas({
   onAplicar: (nuevo: Record<string, number>) => void;
 }) {
   const hayValores = Object.keys(tallas).length > 0;
+  const [anterior, setAnterior] = useState<{ factor: number; valores: Record<string, number> } | null>(null);
 
   function multiplicarPor(factor: number) {
     const nuevo: Record<string, number> = {};
     Object.entries(tallas).forEach(([talla, cant]) => {
       nuevo[talla] = Math.round(Number(cant || 0) * factor);
     });
+    setAnterior({ factor, valores: tallas });
     onAplicar(nuevo);
   }
 
   if (!hayValores) return null;
 
   return (
-    <div className="flex items-center gap-1.5 mt-1.5">
+    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
       <span className="text-[10.5px] text-text-faint">Multiplicar por:</span>
       {[2, 3, 4].map((factor) => (
         <button
@@ -327,6 +343,18 @@ function MultiplicadorTallas({
           ×{factor}
         </button>
       ))}
+      {anterior && (
+        <button
+          type="button"
+          onClick={() => {
+            onAplicar(anterior.valores);
+            setAnterior(null);
+          }}
+          className="px-2 py-0.5 rounded-md bg-red/[0.12] text-[#fca5a5] text-[11px] font-medium hover:bg-red/[0.22]"
+        >
+          ↩ Deshacer ×{anterior.factor}
+        </button>
+      )}
     </div>
   );
 }
@@ -437,6 +465,10 @@ export default function DetalleEtiquetadoPage() {
   const [fPais, setFPais] = useState("");
   const [fTienda, setFTienda] = useState("");
   const [fCajas, setFCajas] = useState("");
+  // Historial de lo tipeado en "Cajas" durante esta sesión del formulario,
+  // para poder deshacer (como Ctrl+Z) si se cuenta mal una caja. Se
+  // resetea al abrir el formulario (limpiar/abrirEditar) o al guardar.
+  const [historialFCajas, setHistorialFCajas] = useState<string[]>([]);
   const [fFactura, setFFactura] = useState("");
   const [fTipoEtiqueta, setFTipoEtiqueta] = useState("COSIDO");
   const [fNovedad, setFNovedad] = useState("");
@@ -451,6 +483,7 @@ export default function DetalleEtiquetadoPage() {
   const [showAgregarTallas, setShowAgregarTallas] = useState(false);
   const [itemAgregarTallas, setItemAgregarTallas] = useState<Item | null>(null);
   const [cajaNuevaTallas, setCajaNuevaTallas] = useState("");
+  const [historialCajaNuevaTallas, setHistorialCajaNuevaTallas] = useState<string[]>([]);
   const [tallasNuevas, setTallasNuevas] = useState<Record<string, number>>({});
 
   // Modal "+ Variante": agrega una variante de color/composición distinta
@@ -461,6 +494,7 @@ export default function DetalleEtiquetadoPage() {
   const [vColor, setVColor] = useState("");
   const [vComposicion, setVComposicion] = useState("");
   const [vCajas, setVCajas] = useState("");
+  const [historialVCajas, setHistorialVCajas] = useState<string[]>([]);
   const [vTallas, setVTallas] = useState<Record<string, number>>({});
   const [vTieneCodigo, setVTieneCodigo] = useState<boolean | null>(null);
   const [vTieneTalla, setVTieneTalla] = useState<boolean | null>(null);
@@ -984,7 +1018,7 @@ export default function DetalleEtiquetadoPage() {
   function limpiar() {
     setEditId(undefined); setFPalet(""); setFCodigo(""); setFDescripcion("");
     setFMarca(""); setFColor(""); setFComposicion(""); setFPais(""); setFTienda("");
-    setFCajas(""); setFFactura("");
+    setFCajas(""); setHistorialFCajas([]); setFFactura("");
     setFTipoEtiqueta("COSIDO"); setFNovedad(""); setFTallas({});
     setFTieneCodigo(null); setFTieneTalla(null); setFCodigoNuevo(false); setFInenMarquilla(null); setErrorMsg(null);
   }
@@ -1130,6 +1164,7 @@ export default function DetalleEtiquetadoPage() {
   function abrirAgregarTallas(it: Item) {
     setItemAgregarTallas(it);
     setCajaNuevaTallas("");
+    setHistorialCajaNuevaTallas([]);
     setTallasNuevas({});
     setErrorMsg(null);
     setShowAgregarTallas(true);
@@ -1207,6 +1242,7 @@ export default function DetalleEtiquetadoPage() {
     setVColor("");
     setVComposicion("");
     setVCajas("");
+    setHistorialVCajas([]);
     setVTallas({});
     setVTieneCodigo(null);
     setVTieneTalla(null);
@@ -1777,8 +1813,27 @@ export default function DetalleEtiquetadoPage() {
               </div>
               <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1">Cajas (con cantidad en paréntesis)</label>
-                <input value={fCajas} onChange={(e) => setFCajas(e.target.value)} placeholder="164(24) 165(24) 166(24)" className="w-full card px-3 py-2 text-[13px] outline-none font-mono" />
-                <p className="text-[11px] text-[#6ee7b7] mt-1">Suma automática: {previewSuma} unidades</p>
+                <input
+                  value={fCajas}
+                  onChange={(e) => {
+                    setHistorialFCajas((h) => [...h, fCajas]);
+                    setFCajas(e.target.value);
+                  }}
+                  placeholder="164(24) 165(24) 166(24)"
+                  className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
+                />
+                <div className="flex items-center gap-2 mt-1">
+                  <p className="text-[11px] text-[#6ee7b7]">Suma automática: {previewSuma} unidades</p>
+                  {historialFCajas.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => deshacerTexto(historialFCajas, setHistorialFCajas, setFCajas)}
+                      className="text-[10.5px] text-[#c4b8ff] hover:underline"
+                    >
+                      ↩ Deshacer
+                    </button>
+                  )}
+                </div>
               </div>
 
               {/* Grid de tallas */}
@@ -2054,8 +2109,27 @@ export default function DetalleEtiquetadoPage() {
 
               <div className="mb-3">
                 <label className="text-[11.5px] text-text-faint block mb-1">Caja(s) de esta variante *</label>
-                <input value={vCajas} onChange={(e) => setVCajas(e.target.value)} placeholder="245(12)" className="w-full card px-3 py-2 text-[13px] outline-none font-mono" />
-                <p className="text-[11px] text-[#6ee7b7] mt-1">Suma automática: {sumaCajaVariante} unidades</p>
+                <input
+                  value={vCajas}
+                  onChange={(e) => {
+                    setHistorialVCajas((h) => [...h, vCajas]);
+                    setVCajas(e.target.value);
+                  }}
+                  placeholder="245(12)"
+                  className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
+                />
+                <div className="flex items-center gap-2 mt-1">
+                  <p className="text-[11px] text-[#6ee7b7]">Suma automática: {sumaCajaVariante} unidades</p>
+                  {historialVCajas.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => deshacerTexto(historialVCajas, setHistorialVCajas, setVCajas)}
+                      className="text-[10.5px] text-[#c4b8ff] hover:underline"
+                    >
+                      ↩ Deshacer
+                    </button>
+                  )}
+                </div>
               </div>
 
               <label className="text-[11.5px] text-text-faint block mb-1">Tallas de esta variante (opcional)</label>
@@ -2142,10 +2216,24 @@ export default function DetalleEtiquetadoPage() {
               </label>
               <input
                 value={cajaNuevaTallas}
-                onChange={(e) => setCajaNuevaTallas(e.target.value)}
+                onChange={(e) => {
+                  setHistorialCajaNuevaTallas((h) => [...h, cajaNuevaTallas]);
+                  setCajaNuevaTallas(e.target.value);
+                }}
                 placeholder="Ej. 245(12)"
                 className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
               />
+              {historialCajaNuevaTallas.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    deshacerTexto(historialCajaNuevaTallas, setHistorialCajaNuevaTallas, setCajaNuevaTallas)
+                  }
+                  className="text-[10.5px] text-[#c4b8ff] hover:underline mt-1"
+                >
+                  ↩ Deshacer
+                </button>
+              )}
             </div>
 
             <label className="text-[11.5px] text-text-faint block mb-1">Tallas de esta caja</label>
