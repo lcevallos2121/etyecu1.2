@@ -906,7 +906,8 @@ export default function ReportesEtiquetadoPage() {
   // Ordena los números de caja de un código de menor a mayor, sin importar
   // en qué orden se hayan tipeado al capturar el inventario: "227(6) 223(35)"
   // -> "223(35) 227(6)". Los rangos ("179 A 182(96)") se ordenan como un
-  // solo bloque, por su número inicial.
+  // solo bloque, por su número inicial. No modifica el texto guardado, solo
+  // cómo se muestra aquí.
   function ordenarCajasTexto(cajasTexto: string | null | undefined): string {
     if (!cajasTexto) return "";
     const tokens = cajasTexto.match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi);
