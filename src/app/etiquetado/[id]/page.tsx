@@ -8,7 +8,7 @@ import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
 import {
   ArrowLeft, Package, Building2, Plus, Upload, Trash2, RefreshCw, X, Users, BarChart3, FileText,
-  Check, HelpCircle, Pencil, History,
+  Check, HelpCircle, Pencil, History, Layers,
 } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import { PAISES_IMPORTACION } from "@/lib/paises";
@@ -2106,9 +2106,10 @@ export default function DetalleEtiquetadoPage() {
                             {variantesDelItem.length > 0 && (
                               <button
                                 onClick={() => setItemExpandidoId(expandido ? null : it.id)}
-                                className="text-[11px] px-2 py-1 rounded-md bg-accent/[0.18] text-[#c4b8ff] hover:bg-accent/[0.28] whitespace-nowrap font-medium"
+                                className="flex items-center gap-0.5 text-[11px] px-1.5 py-1 rounded-md bg-accent/[0.18] text-[#c4b8ff] hover:bg-accent/[0.28] whitespace-nowrap font-medium"
+                                title="Ver variantes de este código"
                               >
-                                {expandido ? "▾" : "▸"} Ver variantes ({variantesDelItem.length})
+                                <Layers size={12} />{variantesDelItem.length}
                               </button>
                             )}
                             <button onClick={() => abrirAgregarVariante(it)} className="text-[11px] px-2 py-1 rounded-md bg-amber/[0.15] text-[#fbbf24] hover:bg-amber/[0.25] whitespace-nowrap">+ Variante</button>
