@@ -2231,8 +2231,24 @@ export default function ReportesEtiquetadoPage() {
                                     {f.esVariante ? "—" : itemsInventarioFiltrados.find((it) => it.id === f.key)?.cantidad_factura}
                                   </span>
                                   <span className="text-right pt-0.5 font-medium">{f.cantidad}</span>
-                                  <span className="text-right pt-0.5 font-semibold text-[#c4b8ff]">
-                                    {f.totalTallas}
+                                  <span className="text-right pt-0.5">
+                                    <span
+                                      className={`font-semibold ${
+                                        !f.sinDesgloseDeCaja && f.cantidad > 0 && f.totalTallas > 0 && f.totalTallas !== f.cantidad
+                                          ? "text-[#fbbf24]"
+                                          : "text-[#c4b8ff]"
+                                      }`}
+                                    >
+                                      {f.totalTallas}
+                                    </span>
+                                    {!f.sinDesgloseDeCaja && f.cantidad > 0 && f.totalTallas > 0 && f.totalTallas !== f.cantidad && (
+                                      <span
+                                        className="block text-[9.5px] text-[#fbbf24] font-sans leading-tight"
+                                        title={`Esta fila trae ${f.cantidad} unidades en cajas, pero sus tallas suman ${f.totalTallas}. Revisa el desglose antes de imprimir.`}
+                                      >
+                                        ⚠ no cuadra con las cajas
+                                      </span>
+                                    )}
                                   </span>
                                   <span className="text-right pt-0.5">
                                     {f.esVariante ? (
@@ -2285,6 +2301,14 @@ export default function ReportesEtiquetadoPage() {
                         <p className="text-[11px] text-text-faint mt-2">
                           Las filas resaltadas son variantes de color/composición de un mismo código. Su
                           suma es la que cuadra contra la factura del código.
+                        </p>
+                      )}
+                      {filasInventario.some(
+                        (f) => !f.sinDesgloseDeCaja && f.cantidad > 0 && f.totalTallas > 0 && f.totalTallas !== f.cantidad
+                      ) && (
+                        <p className="text-[11px] text-[#fbbf24] mt-1">
+                          ⚠ &ldquo;No cuadra con las cajas&rdquo; significa que el desglose de tallas guardado
+                          para esa fila no suma lo mismo que sus cajas — revísalo antes de imprimir esas etiquetas.
                         </p>
                       )}
                     </>
