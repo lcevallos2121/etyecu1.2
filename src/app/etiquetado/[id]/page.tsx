@@ -1994,6 +1994,20 @@ export default function DetalleEtiquetadoPage() {
                               <span className="flex items-center gap-2 shrink-0">
                                 <span className="text-text-faint">{s.cantidad_contada}/{s.cantidad_factura}</span>
                                 <span className={`text-[9.5px] px-1.5 py-0.5 rounded-full ${est.clase}`}>{est.texto}</span>
+                                {variantes.some((v) => v.item_id === s.id) && (
+                                  <button
+                                    onClick={() => {
+                                      setSugerencias([]);
+                                      setQCodigo("");
+                                      setItemExpandidoId(s.id);
+                                    }}
+                                    className="flex items-center gap-0.5 text-[10.5px] px-1.5 py-0.5 rounded-md bg-accent/[0.18] text-[#c4b8ff] hover:bg-accent/[0.28]"
+                                    title="Ver variantes de este código"
+                                  >
+                                    <Layers size={11} />
+                                    {variantes.filter((v) => v.item_id === s.id).length}
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => {
                                     setSugerencias([]);
