@@ -8,7 +8,7 @@ import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
 import {
   ArrowLeft, Package, Building2, Plus, Upload, Trash2, RefreshCw, X, Users, BarChart3, FileText,
-  Check, HelpCircle,
+  Check, HelpCircle, Pencil, History,
 } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import { PAISES_IMPORTACION } from "@/lib/paises";
@@ -78,6 +78,19 @@ type Variante = {
   tiene_talla: boolean | null;
   codigo_nuevo: boolean | null;
   inen_marquilla: "inen" | "marquilla" | null;
+};
+
+// Un registro de etq_variantes_historial: qué se hizo (creó/editó/eliminó)
+// a una variante, con los valores de antes y después, para poder auditar
+// si alguien pregunta por qué cambió un total.
+type HistorialVarianteEntry = {
+  id: string;
+  variante_id: string | null;
+  accion: "creada" | "editada" | "eliminada";
+  valores_antes: Record<string, unknown> | null;
+  valores_despues: Record<string, unknown> | null;
+  mesa_id: string | null;
+  creado_en: string;
 };
 
 // Snapshots usados por los "deshacer" (Ctrl+Z) de cada modal: cada uno
@@ -498,6 +511,32 @@ export default function DetalleEtiquetadoPage() {
   const [vInenMarquilla, setVInenMarquilla] = useState<"inen" | "marquilla" | null>(null);
   // Historial de TODOS los campos de este modal, para el "↩ Deshacer" general.
   const [historialVariante, setHistorialVariante] = useState<SnapshotVariante[]>([]);
+
+  // Modal "Editar variante": corrige una variante ya creada (palet, color,
+  // composición, cajas, tallas, impresión). Al guardar se reemplaza la caja
+  // vieja de esta variante dentro del total del código padre (no se suma
+  // de nuevo) y queda un registro en etq_variantes_historial para poder
+  // auditar qué cambió.
+  const [showEditarVariante, setShowEditarVariante] = useState(false);
+  const [itemEditarVarianteId, setItemEditarVarianteId] = useState<string | null>(null);
+  const [varianteEditId, setVarianteEditId] = useState<string | null>(null);
+  const [edvPalet, setEdvPalet] = useState("");
+  const [edvColor, setEdvColor] = useState("");
+  const [edvComposicion, setEdvComposicion] = useState("");
+  const [edvCajas, setEdvCajas] = useState("");
+  const [edvTallas, setEdvTallas] = useState<Record<string, number>>({});
+  const [edvTieneCodigo, setEdvTieneCodigo] = useState<boolean | null>(null);
+  const [edvTieneTalla, setEdvTieneTalla] = useState<boolean | null>(null);
+  const [edvCodigoNuevo, setEdvCodigoNuevo] = useState(false);
+  const [edvInenMarquilla, setEdvInenMarquilla] = useState<"inen" | "marquilla" | null>(null);
+  const [historialEditarVariante, setHistorialEditarVariante] = useState<SnapshotVariante[]>([]);
+
+  // Variante marcada para eliminar (con su código padre, para el mensaje de
+  // confirmación) y el modal con el historial de cambios de variantes.
+  const [varianteAEliminar, setVarianteAEliminar] = useState<{ item: Item; variante: Variante } | null>(null);
+  const [showHistorialVariantes, setShowHistorialVariantes] = useState(false);
+  const [itemHistorialId, setItemHistorialId] = useState<string | null>(null);
+  const [historialVariantesCargado, setHistorialVariantesCargado] = useState<HistorialVarianteEntry[]>([]);
 
   // Configuración de tallas de la orden
   const [showTallasConfig, setShowTallasConfig] = useState(false);
@@ -1405,14 +1444,278 @@ export default function DetalleEtiquetadoPage() {
       tallas_detalle: vTallas,
     });
 
+    // Dejar registro en el historial, para poder auditar más adelante
+    // cuándo se creó esta variante y con qué valores.
+    await supabase.from("etq_variantes_historial").insert({
+      variante_id: varianteCreada?.id ?? null,
+      item_id: itemVarianteId,
+      orden_id: id,
+      codigo: item.codigo,
+      accion: "creada",
+      valores_antes: null,
+      valores_despues: {
+        palet: vPalet.trim() || null,
+        color: vColor.trim() || null,
+        composicion: vComposicion.trim() || null,
+        cajas: vCajas.trim(),
+        cantidad: cantidadVariante,
+        tallas_detalle: vTallas,
+        tiene_codigo: vTieneCodigo,
+        tiene_talla: vTieneTalla,
+        codigo_nuevo: vCodigoNuevo,
+        inen_marquilla: vInenMarquilla,
+      },
+      mesa_id: mesaActivaId || null,
+    });
+
     setShowAgregarVariante(false);
     setToast(`Variante agregada a ${item.codigo}.`);
     setItemExpandidoId(itemVarianteId);
     cargar();
   }
 
+  function abrirEditarVariante(item: Item, v: Variante) {
+    setItemEditarVarianteId(item.id);
+    setVarianteEditId(v.id);
+    setEdvPalet(v.palet ?? "");
+    setEdvColor(v.color ?? "");
+    setEdvComposicion(v.composicion ?? "");
+    setEdvCajas(v.cajas ?? "");
+    setEdvTallas(v.tallas_detalle ?? {});
+    setEdvTieneCodigo(v.tiene_codigo ?? null);
+    setEdvTieneTalla(v.tiene_talla ?? null);
+    setEdvCodigoNuevo(v.codigo_nuevo ?? false);
+    setEdvInenMarquilla(v.inen_marquilla ?? null);
+    setHistorialEditarVariante([]);
+    setErrorMsg(null);
+    setShowEditarVariante(true);
+  }
+
+  function registrarHistorialEditarVariante() {
+    setHistorialEditarVariante((h) => [
+      ...h,
+      {
+        vPalet: edvPalet, vColor: edvColor, vComposicion: edvComposicion, vCajas: edvCajas,
+        vTallas: edvTallas, vTieneCodigo: edvTieneCodigo, vTieneTalla: edvTieneTalla,
+        vCodigoNuevo: edvCodigoNuevo, vInenMarquilla: edvInenMarquilla,
+      },
+    ]);
+  }
+
+  function deshacerEditarVariante() {
+    setHistorialEditarVariante((h) => {
+      if (h.length === 0) return h;
+      const nuevo = h.slice(0, -1);
+      const anterior = h[h.length - 1];
+      setEdvPalet(anterior.vPalet);
+      setEdvColor(anterior.vColor);
+      setEdvComposicion(anterior.vComposicion);
+      setEdvCajas(anterior.vCajas);
+      setEdvTallas(anterior.vTallas);
+      setEdvTieneCodigo(anterior.vTieneCodigo);
+      setEdvTieneTalla(anterior.vTieneTalla);
+      setEdvCodigoNuevo(anterior.vCodigoNuevo);
+      setEdvInenMarquilla(anterior.vInenMarquilla);
+      return nuevo;
+    });
+  }
+
+  // Guarda los cambios de una variante existente. Como su caja ya estaba
+  // sumada dentro del campo Cajas del código padre, si la caja cambió hay
+  // que REEMPLAZAR el texto viejo por el nuevo ahí (no sumarla de nuevo),
+  // y recalcular el contado. Deja además un registro de auditoría con los
+  // valores de antes y después.
+  async function guardarEditarVariante() {
+    if (!itemEditarVarianteId || !varianteEditId) return;
+    const cantidadVariante = sumarCajas(edvCajas);
+    if (cantidadVariante === 0) {
+      setErrorMsg("Ingresa la caja de esta variante con su cantidad, ej. 245(12).");
+      return;
+    }
+
+    const item = items.find((i) => i.id === itemEditarVarianteId);
+    const varianteOriginal = variantes.find((v) => v.id === varianteEditId);
+    if (!item || !varianteOriginal) return;
+
+    const valoresAntes = {
+      palet: varianteOriginal.palet,
+      color: varianteOriginal.color,
+      composicion: varianteOriginal.composicion,
+      cajas: varianteOriginal.cajas,
+      cantidad: varianteOriginal.cantidad,
+      tallas_detalle: varianteOriginal.tallas_detalle,
+      tiene_codigo: varianteOriginal.tiene_codigo,
+      tiene_talla: varianteOriginal.tiene_talla,
+      codigo_nuevo: varianteOriginal.codigo_nuevo,
+      inen_marquilla: varianteOriginal.inen_marquilla,
+    };
+    const valoresDespues = {
+      palet: edvPalet.trim() || null,
+      color: edvColor.trim() || null,
+      composicion: edvComposicion.trim() || null,
+      cajas: edvCajas.trim(),
+      cantidad: cantidadVariante,
+      tallas_detalle: edvTallas,
+      tiene_codigo: edvTieneCodigo,
+      tiene_talla: edvTieneTalla,
+      codigo_nuevo: edvCodigoNuevo,
+      inen_marquilla: edvInenMarquilla,
+    };
+
+    const { error: errVar } = await supabase
+      .from("etq_variantes")
+      .update(valoresDespues)
+      .eq("id", varianteEditId);
+    if (errVar) {
+      setErrorMsg(errVar.message);
+      return;
+    }
+
+    // Si cambió el texto de la caja, reemplazarlo dentro del total de cajas
+    // del código padre (la caja vieja de esta variante ya estaba ahí sumada).
+    const cajaVieja = (varianteOriginal.cajas ?? "").trim();
+    const cajaNueva = edvCajas.trim();
+    if (cajaVieja !== cajaNueva) {
+      const cajasActuales = item.cajas ?? "";
+      const nuevasCajasItem = (
+        cajaVieja && cajasActuales.includes(cajaVieja)
+          ? cajasActuales.replace(cajaVieja, cajaNueva)
+          : (cajasActuales + " " + cajaNueva)
+      ).replace(/\s+/g, " ").trim();
+      const { error: errItem } = await supabase
+        .from("etq_items")
+        .update({
+          cajas: nuevasCajasItem,
+          cantidad_contada: sumarCajas(nuevasCajasItem),
+          actualizado_en: new Date().toISOString(),
+        })
+        .eq("id", item.id);
+      if (errItem) {
+        setErrorMsg(errItem.message);
+        return;
+      }
+    }
+
+    // Actualizar (o crear si no existía) el desglose de tallas-por-caja de
+    // esta variante, para que el reporte de Isabel siga sacando bien el total.
+    const matchNumero = cajaNueva.match(/^\s*(\d+)/);
+    const { data: filaExistente } = await supabase
+      .from("etq_tallas_por_caja")
+      .select("id")
+      .eq("variante_id", varianteEditId)
+      .maybeSingle();
+    if (filaExistente) {
+      await supabase
+        .from("etq_tallas_por_caja")
+        .update({
+          caja: cajaNueva,
+          numero_caja: matchNumero ? matchNumero[1] : null,
+          tallas_detalle: edvTallas,
+        })
+        .eq("id", filaExistente.id);
+    } else {
+      await supabase.from("etq_tallas_por_caja").insert({
+        item_id: item.id,
+        variante_id: varianteEditId,
+        caja: cajaNueva,
+        numero_caja: matchNumero ? matchNumero[1] : null,
+        tallas_detalle: edvTallas,
+      });
+    }
+
+    await supabase.from("etq_variantes_historial").insert({
+      variante_id: varianteEditId,
+      item_id: item.id,
+      orden_id: id,
+      codigo: item.codigo,
+      accion: "editada",
+      valores_antes: valoresAntes,
+      valores_despues: valoresDespues,
+      mesa_id: mesaActivaId || null,
+    });
+
+    setShowEditarVariante(false);
+    setToast(`Variante de ${item.codigo} actualizada.`);
+    cargar();
+  }
+
+  // Quita la caja de la variante del total del código padre, borra su
+  // desglose de tallas-por-caja y la variante misma, dejando registro en
+  // el historial con los valores que tenía antes de eliminarla.
+  async function confirmarEliminarVariante() {
+    if (!varianteAEliminar) return;
+    const { item, variante: v } = varianteAEliminar;
+
+    const cajaVariante = (v.cajas ?? "").trim();
+    const cajasActuales = item.cajas ?? "";
+    const nuevasCajasItem = (
+      cajaVariante && cajasActuales.includes(cajaVariante)
+        ? cajasActuales.replace(cajaVariante, "")
+        : cajasActuales
+    ).replace(/\s+/g, " ").trim();
+
+    const { error: errItem } = await supabase
+      .from("etq_items")
+      .update({
+        cajas: nuevasCajasItem,
+        cantidad_contada: sumarCajas(nuevasCajasItem),
+        actualizado_en: new Date().toISOString(),
+      })
+      .eq("id", item.id);
+    if (errItem) {
+      setErrorMsg(errItem.message);
+      setVarianteAEliminar(null);
+      return;
+    }
+
+    await supabase.from("etq_tallas_por_caja").delete().eq("variante_id", v.id);
+
+    await supabase.from("etq_variantes_historial").insert({
+      variante_id: v.id,
+      item_id: item.id,
+      orden_id: id,
+      codigo: item.codigo,
+      accion: "eliminada",
+      valores_antes: {
+        palet: v.palet, color: v.color, composicion: v.composicion, cajas: v.cajas,
+        cantidad: v.cantidad, tallas_detalle: v.tallas_detalle, tiene_codigo: v.tiene_codigo,
+        tiene_talla: v.tiene_talla, codigo_nuevo: v.codigo_nuevo, inen_marquilla: v.inen_marquilla,
+      },
+      valores_despues: null,
+      mesa_id: mesaActivaId || null,
+    });
+
+    await supabase.from("etq_variantes").delete().eq("id", v.id);
+
+    setVarianteAEliminar(null);
+    setToast(`Variante eliminada de ${item.codigo}.`);
+    cargar();
+  }
+
+  // Trae y muestra el historial de auditoría de variantes de un código
+  // (creaciones, ediciones y eliminaciones), con sus valores de antes/después.
+  async function abrirHistorialVariantes(item: Item) {
+    setItemHistorialId(item.id);
+    setShowHistorialVariantes(true);
+    const { data } = await supabase
+      .from("etq_variantes_historial")
+      .select("*")
+      .eq("item_id", item.id)
+      .order("creado_en", { ascending: false });
+    setHistorialVariantesCargado((data as HistorialVarianteEntry[]) ?? []);
+  }
+
   // Vista previa de la suma mientras se escribe
   const previewSuma = sumarCajas(fCajas);
+
+  // Variantes ya registradas de este código (si se está editando uno
+  // existente), para mostrarlas separadas del formulario y no confundir
+  // sus tallas con las del código base al comparar contra las cajas.
+  const variantesDelCodigoEnEdicion = editId ? variantes.filter((v) => v.item_id === editId) : [];
+  const sumaTallasVariantesEnEdicion = variantesDelCodigoEnEdicion.reduce(
+    (acc, v) => acc + sumarTallas(v.tallas_detalle),
+    0
+  );
 
   // Resumen agrupado por descripción, para el Informe Final (lo que factura contabilidad)
   const resumenPorDescripcion = useMemo(() => {
@@ -1821,20 +2124,55 @@ export default function DetalleEtiquetadoPage() {
                         {/* Fila expandida: variantes de color/composición de este código */}
                         {expandido && variantesDelItem.length > 0 && (
                           <div className="px-4 py-2 bg-white/[0.02] border-b border-border last:border-b-0">
-                            <p className="text-[10px] uppercase tracking-wide text-text-faint mb-1.5 pl-1">
-                              Variantes de {it.codigo}
-                            </p>
+                            <div className="flex items-center justify-between mb-1.5 pl-1">
+                              <p className="text-[10px] uppercase tracking-wide text-text-faint">
+                                Variantes de {it.codigo}
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() => abrirHistorialVariantes(it)}
+                                className="flex items-center gap-1 text-[10.5px] text-[#c4b8ff] hover:underline"
+                                title="Ver historial de cambios de las variantes de este código"
+                              >
+                                <History size={11} /> Historial
+                              </button>
+                            </div>
                             <div className="flex flex-col gap-1">
                               {variantesDelItem.map((v) => (
                                 <div
                                   key={v.id}
-                                  className="grid grid-cols-[70px_100px_1fr_1fr_70px] gap-2 px-2 py-1.5 rounded-md bg-white/[0.03] text-[11.5px] items-start"
+                                  className="grid grid-cols-[70px_100px_1fr_1fr_1fr_70px_75px] gap-2 px-2 py-1.5 rounded-md bg-white/[0.03] text-[11.5px] items-start"
                                 >
                                   <span className="text-text-faint" title="Palet de esta variante">{v.palet ?? it.palet ?? "—"}</span>
                                   <span className="font-medium">{v.color ?? "—"}</span>
                                   <span className="text-text-dim">{v.composicion ?? "—"}</span>
                                   <span className="text-text-dim font-mono text-[10.5px]">{v.cajas ?? "—"}</span>
+                                  <span className="text-text-dim font-mono text-[10.5px]">
+                                    {v.tallas_detalle && Object.keys(v.tallas_detalle).length > 0
+                                      ? ordenarClavesDeTallas(Object.keys(v.tallas_detalle))
+                                          .map((t) => `${t}:${(v.tallas_detalle ?? {})[t]}`)
+                                          .join(" ")
+                                      : "—"}
+                                  </span>
                                   <span className="text-right font-medium">{v.cantidad}</span>
+                                  <span className="flex items-center justify-end gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => abrirEditarVariante(it, v)}
+                                      className="text-text-faint hover:text-[#c4b8ff]"
+                                      title="Editar esta variante"
+                                    >
+                                      <Pencil size={13} />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setVarianteAEliminar({ item: it, variante: v })}
+                                      className="text-text-faint hover:text-red-300"
+                                      title="Eliminar esta variante"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  </span>
                                 </div>
                               ))}
                             </div>
@@ -1916,6 +2254,25 @@ export default function DetalleEtiquetadoPage() {
                 <p className="text-[11px] text-[#6ee7b7] mt-1">Suma automática: {previewSuma} unidades</p>
               </div>
 
+              {variantesDelCodigoEnEdicion.length > 0 && (
+                <div className="col-span-2 px-3 py-2 rounded-lg bg-amber/[0.08] border border-amber/20">
+                  <p className="text-[10.5px] uppercase tracking-wide text-[#fbbf24] mb-1">
+                    Este código tiene {variantesDelCodigoEnEdicion.length} variante(s) — sus cajas ya están
+                    incluidas arriba, pero sus tallas se guardan aparte
+                  </p>
+                  <div className="flex flex-col gap-1">
+                    {variantesDelCodigoEnEdicion.map((v) => (
+                      <p key={v.id} className="text-[11.5px] text-text-dim">
+                        Palet {v.palet ?? fPalet ?? "—"} · {v.color ?? "—"} · Caja {v.cajas ?? "—"}
+                        {v.tallas_detalle && Object.keys(v.tallas_detalle).length > 0 && (
+                          <> · {ordenarClavesDeTallas(Object.keys(v.tallas_detalle)).map((t) => `${t}:${(v.tallas_detalle ?? {})[t]}`).join(" ")}</>
+                        )}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Grid de tallas */}
               <div className="col-span-2">
                 <div className="flex items-center justify-between mb-1">
@@ -1961,16 +2318,25 @@ export default function DetalleEtiquetadoPage() {
                       <BotonNuevaTalla onAgregar={agregarTallaNueva} />
                     </div>
                     <MultiplicadorTallas tallas={fTallas} onAplicar={(nuevo) => { registrarHistorialForm(); setFTallas(nuevo); }} />
-                    {/* Aviso visual si tallas no cuadran con cajas */}
+                    {/* Aviso visual si tallas no cuadran con cajas — se compara contra
+                        las tallas del código MÁS las de sus variantes, ya que las cajas
+                        de las variantes vienen incluidas en el total de arriba. */}
                     {(() => {
-                      const sumaTallas = sumarTallas(fTallas);
+                      const sumaTallas = sumarTallas(fTallas) + sumaTallasVariantesEnEdicion;
                       if (sumaTallas === 0) return null;
                       if (sumaTallas === previewSuma) {
-                        return <p className="text-[11px] text-[#6ee7b7] mt-1.5">✓ Tallas cuadran con las cajas ({sumaTallas}).</p>;
+                        return (
+                          <p className="text-[11px] text-[#6ee7b7] mt-1.5">
+                            ✓ Tallas cuadran con las cajas ({sumaTallas}
+                            {sumaTallasVariantesEnEdicion > 0 ? `, incluye ${sumaTallasVariantesEnEdicion} de variante(s)` : ""}).
+                          </p>
+                        );
                       }
                       return (
                         <p className="text-[11px] text-[#fbbf24] mt-1.5">
-                          ⚠ Las tallas suman {sumaTallas} pero las cajas suman {previewSuma}. Revisa (puedes guardar igual).
+                          ⚠ Las tallas suman {sumaTallas}
+                          {sumaTallasVariantesEnEdicion > 0 ? ` (incluye ${sumaTallasVariantesEnEdicion} de variante(s))` : ""} pero las
+                          cajas suman {previewSuma}. Revisa (puedes guardar igual).
                         </p>
                       );
                     })()}
@@ -2146,6 +2512,7 @@ export default function DetalleEtiquetadoPage() {
         const item = items.find((i) => i.id === itemVarianteId);
         const sumaTallasVariante = sumarTallas(vTallas);
         const sumaCajaVariante = sumarCajas(vCajas);
+        const variantesExistentes = variantes.filter((v) => v.item_id === itemVarianteId);
         return (
           <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
             <div className="card w-full max-w-[520px] my-6 p-6">
@@ -2169,6 +2536,24 @@ export default function DetalleEtiquetadoPage() {
                 mismo código viene en otro color o composición. Se suma al total contra factura, pero
                 queda registrado por separado para el informe.
               </p>
+
+              {variantesExistentes.length > 0 && (
+                <div className="mb-3 px-3 py-2 rounded-lg bg-amber/[0.08] border border-amber/20">
+                  <p className="text-[10.5px] uppercase tracking-wide text-[#fbbf24] mb-1">
+                    Este código ya tiene {variantesExistentes.length} variante(s) registrada(s)
+                  </p>
+                  <div className="flex flex-col gap-1">
+                    {variantesExistentes.map((v) => (
+                      <p key={v.id} className="text-[11.5px] text-text-dim">
+                        Palet {v.palet ?? item?.palet ?? "—"} · {v.color ?? "—"} · Caja {v.cajas ?? "—"}
+                        {v.tallas_detalle && Object.keys(v.tallas_detalle).length > 0 && (
+                          <> · {ordenarClavesDeTallas(Object.keys(v.tallas_detalle)).map((t) => `${t}:${(v.tallas_detalle ?? {})[t]}`).join(" ")}</>
+                        )}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {errorMsg && <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">{errorMsg}</div>}
 
@@ -2315,6 +2700,275 @@ export default function DetalleEtiquetadoPage() {
           </div>
         );
       })()}
+
+      {/* Modal: editar una variante ya creada */}
+      {showEditarVariante && itemEditarVarianteId && varianteEditId && (() => {
+        const item = items.find((i) => i.id === itemEditarVarianteId);
+        const otrasVariantes = variantes.filter(
+          (v) => v.item_id === itemEditarVarianteId && v.id !== varianteEditId
+        );
+        const sumaTallasVariante = sumarTallas(edvTallas);
+        const sumaCajaVariante = sumarCajas(edvCajas);
+        return (
+          <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
+            <div className="card w-full max-w-[520px] my-6 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-[16px] font-semibold">Editar variante</h2>
+                <div className="flex items-center gap-3">
+                  {historialEditarVariante.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={deshacerEditarVariante}
+                      className="text-[11.5px] text-[#c4b8ff] hover:underline font-medium"
+                    >
+                      ↩ Deshacer
+                    </button>
+                  )}
+                  <button onClick={() => setShowEditarVariante(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+                </div>
+              </div>
+              <p className="text-[12.5px] text-text-dim mb-3">
+                Código <span className="font-medium text-text">{item?.codigo}</span> — si cambias la caja,
+                el total del código padre se ajusta automáticamente (se reemplaza la caja vieja por la nueva).
+              </p>
+
+              {otrasVariantes.length > 0 && (
+                <div className="mb-3 px-3 py-2 rounded-lg bg-amber/[0.08] border border-amber/20">
+                  <p className="text-[10.5px] uppercase tracking-wide text-[#fbbf24] mb-1">
+                    Este código tiene otra(s) {otrasVariantes.length} variante(s)
+                  </p>
+                  <div className="flex flex-col gap-1">
+                    {otrasVariantes.map((v) => (
+                      <p key={v.id} className="text-[11.5px] text-text-dim">
+                        Palet {v.palet ?? item?.palet ?? "—"} · {v.color ?? "—"} · Caja {v.cajas ?? "—"}
+                      </p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {errorMsg && <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">{errorMsg}</div>}
+
+              <div className="grid grid-cols-2 gap-3 mb-3">
+                <div>
+                  <label className="text-[11.5px] text-text-faint block mb-1">Palet</label>
+                  <input
+                    value={edvPalet}
+                    onChange={(e) => {
+                      registrarHistorialEditarVariante();
+                      setEdvPalet(e.target.value);
+                    }}
+                    placeholder={item?.palet ?? ""}
+                    className="w-full card px-3 py-2 text-[13px] outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11.5px] text-text-faint block mb-1">Color</label>
+                  <input
+                    value={edvColor}
+                    onChange={(e) => {
+                      registrarHistorialEditarVariante();
+                      setEdvColor(e.target.value);
+                    }}
+                    className="w-full card px-3 py-2 text-[13px] outline-none"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
+                  <BuscadorCatalogo
+                    valor={edvComposicion}
+                    onChange={(v) => {
+                      registrarHistorialEditarVariante();
+                      setEdvComposicion(v);
+                    }}
+                    catalogo={catalogoComposiciones}
+                    onAgregarAlCatalogo={agregarComposicionAlCatalogo}
+                    placeholder="Ej. 95% Algodón, 5% Elastano"
+                  />
+                </div>
+              </div>
+
+              <div className="mb-3">
+                <label className="text-[11.5px] text-text-faint block mb-1">Caja(s) de esta variante *</label>
+                <input
+                  value={edvCajas}
+                  onChange={(e) => {
+                    registrarHistorialEditarVariante();
+                    setEdvCajas(e.target.value);
+                  }}
+                  placeholder="245(12)"
+                  className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
+                />
+                <p className="text-[11px] text-[#6ee7b7] mt-1">Suma automática: {sumaCajaVariante} unidades</p>
+              </div>
+
+              <label className="text-[11.5px] text-text-faint block mb-1">Tallas de esta variante (opcional)</label>
+              {tallasOrden.length === 0 ? (
+                <p className="text-[11px] text-amber mb-2">Esta orden no tiene tallas configuradas todavía.</p>
+              ) : (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {tallasOrden.map((t) => (
+                    <div key={t} className="flex flex-col items-center">
+                      <span className="text-[10px] text-text-faint mb-0.5">{t}</span>
+                      <input
+                        value={edvTallas[t] ?? ""}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          registrarHistorialEditarVariante();
+                          setEdvTallas((prev) => {
+                            const nuevo = { ...prev };
+                            if (v === "" || Number(v) === 0) delete nuevo[t];
+                            else nuevo[t] = Number(v);
+                            return nuevo;
+                          });
+                        }}
+                        type="number"
+                        className="w-[52px] card px-1.5 py-1.5 text-[12px] outline-none text-center"
+                      />
+                    </div>
+                  ))}
+                  <BotonNuevaTalla onAgregar={agregarTallaNueva} />
+                </div>
+              )}
+              <MultiplicadorTallas
+                tallas={edvTallas}
+                onAplicar={(t) => {
+                  registrarHistorialEditarVariante();
+                  setEdvTallas(t);
+                }}
+              />
+
+              {sumaTallasVariante > 0 && sumaCajaVariante > 0 && (
+                sumaTallasVariante === sumaCajaVariante ? (
+                  <p className="text-[11px] text-[#6ee7b7] mb-3">✓ Las tallas cuadran con la caja ({sumaTallasVariante}).</p>
+                ) : (
+                  <p className="text-[11px] text-[#fbbf24] mb-3">
+                    ⚠ Las tallas suman {sumaTallasVariante} pero la caja trae {sumaCajaVariante}. Revisa (puedes guardar igual).
+                  </p>
+                )
+              )}
+
+              <label className="text-[11.5px] text-text-faint block mb-1.5">Para impresión de etiqueta</label>
+              <div className="flex gap-2 mb-3">
+                <BotonTresEstados
+                  label="Tiene código"
+                  valor={edvTieneCodigo}
+                  onChange={(v) => {
+                    registrarHistorialEditarVariante();
+                    setEdvTieneCodigo(v);
+                  }}
+                />
+                <BotonTresEstados
+                  label="Tiene talla"
+                  valor={edvTieneTalla}
+                  onChange={(v) => {
+                    registrarHistorialEditarVariante();
+                    setEdvTieneTalla(v);
+                  }}
+                />
+                <CheckDosEstados
+                  label="Código nuevo"
+                  valor={edvCodigoNuevo}
+                  onChange={(v) => {
+                    registrarHistorialEditarVariante();
+                    setEdvCodigoNuevo(v);
+                  }}
+                />
+                <BotonInenMarquilla
+                  valor={edvInenMarquilla}
+                  onChange={(v) => {
+                    registrarHistorialEditarVariante();
+                    setEdvInenMarquilla(v);
+                  }}
+                />
+              </div>
+
+              <div className="flex gap-2 justify-end mt-2">
+                <button onClick={() => setShowEditarVariante(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cancelar</button>
+                <button onClick={guardarEditarVariante} className="btn-primary text-[13px] font-semibold px-4 py-2 rounded-lg">Guardar cambios</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal: historial de auditoría de variantes de un código */}
+      {showHistorialVariantes && itemHistorialId && (() => {
+        const item = items.find((i) => i.id === itemHistorialId);
+        return (
+          <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
+            <div className="card w-full max-w-[560px] my-6 p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-[16px] font-semibold">Historial de variantes</h2>
+                <button onClick={() => setShowHistorialVariantes(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+              </div>
+              <p className="text-[12.5px] text-text-dim mb-3">
+                Código <span className="font-medium text-text">{item?.codigo}</span>
+              </p>
+              {historialVariantesCargado.length === 0 ? (
+                <p className="text-[12px] text-text-faint">Todavía no hay cambios registrados.</p>
+              ) : (
+                <div className="flex flex-col gap-2 max-h-[420px] overflow-y-auto">
+                  {historialVariantesCargado.map((h) => (
+                    <div key={h.id} className="card px-3 py-2.5 text-[12px]">
+                      <div className="flex items-center justify-between mb-1">
+                        <span
+                          className={`text-[10px] px-1.5 py-0.5 rounded-full uppercase tracking-wide ${
+                            h.accion === "creada"
+                              ? "bg-green/[0.15] text-[#6ee7b7]"
+                              : h.accion === "editada"
+                              ? "bg-accent/[0.15] text-[#c4b8ff]"
+                              : "bg-red/[0.15] text-[#fca5a5]"
+                          }`}
+                        >
+                          {h.accion}
+                        </span>
+                        <span className="text-text-faint text-[10.5px]">
+                          {new Date(h.creado_en).toLocaleString("es-EC")}
+                        </span>
+                      </div>
+                      {h.accion === "editada" && h.valores_antes && h.valores_despues && (
+                        <p className="text-text-dim text-[11.5px]">
+                          Caja: <span className="font-mono">{String((h.valores_antes as { cajas?: string }).cajas ?? "—")}</span>
+                          {" → "}
+                          <span className="font-mono">{String((h.valores_despues as { cajas?: string }).cajas ?? "—")}</span>
+                        </p>
+                      )}
+                      {h.accion === "creada" && h.valores_despues && (
+                        <p className="text-text-dim text-[11.5px]">
+                          Palet {String((h.valores_despues as { palet?: string }).palet ?? "—")} · Caja{" "}
+                          <span className="font-mono">{String((h.valores_despues as { cajas?: string }).cajas ?? "—")}</span>
+                        </p>
+                      )}
+                      {h.accion === "eliminada" && h.valores_antes && (
+                        <p className="text-text-dim text-[11.5px]">
+                          Palet {String((h.valores_antes as { palet?: string }).palet ?? "—")} · Caja{" "}
+                          <span className="font-mono">{String((h.valores_antes as { cajas?: string }).cajas ?? "—")}</span>
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex justify-end mt-4">
+                <button onClick={() => setShowHistorialVariantes(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cerrar</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      <ConfirmModal
+        abierto={varianteAEliminar !== null}
+        titulo="¿Eliminar esta variante?"
+        mensaje={
+          varianteAEliminar
+            ? `Se restará del total de ${varianteAEliminar.item.codigo} la caja ${varianteAEliminar.variante.cajas ?? "—"}.`
+            : ""
+        }
+        onConfirmar={confirmarEliminarVariante}
+        onCancelar={() => setVarianteAEliminar(null)}
+      />
 
       {/* Modal: agregar tallas de una caja nueva (suma al total del código) */}
       {showAgregarTallas && itemAgregarTallas && (
