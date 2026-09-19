@@ -919,6 +919,17 @@ export default function ReportesEtiquetadoPage() {
       .join(" ");
   }
 
+  // Menor número de caja de una fila (para poder ordenar las FILAS del
+  // reporte de menor a mayor, no solo los números dentro de una misma
+  // celda). Las filas sin ninguna caja todavía (Infinity) quedan al final,
+  // en el mismo orden relativo en que ya estaban.
+  function menorNumeroCaja(cajasTexto: string | null): number {
+    if (!cajasTexto) return Infinity;
+    const tokens = cajasTexto.match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi);
+    if (!tokens || tokens.length === 0) return Infinity;
+    return Math.min(...tokens.map((t) => Number(t.match(/\d+/)?.[0] ?? Infinity)));
+  }
+
   // Extrae SOLO la caja buscada del texto completo: "164(24) 165(24)" + "165"
   // -> "165(24)". Si no hay filtro de caja activo, muestra el texto completo
   // (ya ordenado de menor a mayor).
@@ -1113,14 +1124,21 @@ export default function ReportesEtiquetadoPage() {
         });
       }
     });
+    // Ordenar las FILAS del reporte por su número de caja más bajo, para
+    // que Isabel las vea en el mismo orden en que va a ir tomando las
+    // cajas físicamente (no en el orden en que los chicos las escribieron
+    // al capturar el inventario). Es un sort estable: las filas con el
+    // mismo número (o sin caja todavía) mantienen su orden relativo.
+    const filasOrdenadas = [...filas].sort((a, b) => menorNumeroCaja(a.cajas) - menorNumeroCaja(b.cajas));
+
     // Filtro final por PALET a nivel de fila: itemsDelPalet ya dejó pasar el
     // código completo si el código o alguna de sus variantes coincidía, pero
     // aquí se decide qué fila exacta se muestra — para que un código en un
     // palet no arrastre a la vista la fila de una variante de OTRO palet
     // (y viceversa: seleccionar el palet de una variante muestra solo esa
     // fila, no la del código base que está en otro palet).
-    if (paletSeleccionado === "todos") return filas;
-    return filas.filter((f) => (f.palet ?? "").trim() === paletSeleccionado);
+    if (paletSeleccionado === "todos") return filasOrdenadas;
+    return filasOrdenadas.filter((f) => (f.palet ?? "").trim() === paletSeleccionado);
   }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
 
   // Marca/desmarca "Ya impreso" en la fila. Actualiza la tabla correcta
