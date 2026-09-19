@@ -80,20 +80,28 @@ type Variante = {
   inen_marquilla: "inen" | "marquilla" | null;
 };
 
-// Deshace (como Ctrl+Z) el último cambio tipeado en un campo de texto,
-// usando el historial de valores anteriores guardado junto al campo.
-// No hace nada si el historial está vacío (nada que deshacer todavía).
-function deshacerTexto(
-  historial: string[],
-  setHistorial: (h: string[]) => void,
-  setValor: (v: string) => void
-) {
-  if (historial.length === 0) return;
-  const nuevo = historial.slice(0, -1);
-  const anterior = historial[historial.length - 1];
-  setHistorial(nuevo);
-  setValor(anterior);
-}
+// Snapshots usados por los "deshacer" (Ctrl+Z) de cada modal: cada uno
+// guarda TODOS los campos de su formulario en un momento dado, para poder
+// restaurarlos completos de un solo golpe, en el orden en que se fueron
+// cambiando durante esa sesión del modal.
+type SnapshotCodigo = {
+  fPalet: string; fCodigo: string; fDescripcion: string; fMarca: string; fColor: string;
+  fComposicion: string; fPais: string; fTienda: string; fCajas: string; fFactura: string;
+  fTipoEtiqueta: string; fNovedad: string; fTallas: Record<string, number>;
+  fTieneCodigo: boolean | null; fTieneTalla: boolean | null; fCodigoNuevo: boolean;
+  fInenMarquilla: "inen" | "marquilla" | null;
+};
+
+type SnapshotVariante = {
+  vPalet: string; vColor: string; vComposicion: string; vCajas: string;
+  vTallas: Record<string, number>; vTieneCodigo: boolean | null; vTieneTalla: boolean | null;
+  vCodigoNuevo: boolean; vInenMarquilla: "inen" | "marquilla" | null;
+};
+
+type SnapshotTallas = {
+  cajaNuevaTallas: string;
+  tallasNuevas: Record<string, number>;
+};
 
 // Suma lo que está dentro de paréntesis: "164(24) 165(24)" -> 48
 // También maneja rangos de calzado "179 A 182(96)" -> 96
@@ -304,8 +312,9 @@ function BuscadorCatalogo({
 // Multiplica los valores YA escritos en las tallas por un factor (×2, ×3,
 // ×4...) — útil cuando se captura la primera caja y las siguientes son
 // iguales en la misma proporción, sin tener que reescribir cada talla a
-// mano. Pide confirmación antes de aplicar, y si te arrepientes justo
-// después, "Deshacer" restaura los valores que había antes de multiplicar.
+// mano. Pide confirmación antes de aplicar; si te arrepientes, el botón
+// "↩ Deshacer" general del formulario (arriba del modal) revierte esto
+// igual que cualquier otro cambio.
 function MultiplicadorTallas({
   tallas,
   onAplicar,
@@ -314,14 +323,12 @@ function MultiplicadorTallas({
   onAplicar: (nuevo: Record<string, number>) => void;
 }) {
   const hayValores = Object.keys(tallas).length > 0;
-  const [anterior, setAnterior] = useState<{ factor: number; valores: Record<string, number> } | null>(null);
 
   function multiplicarPor(factor: number) {
     const nuevo: Record<string, number> = {};
     Object.entries(tallas).forEach(([talla, cant]) => {
       nuevo[talla] = Math.round(Number(cant || 0) * factor);
     });
-    setAnterior({ factor, valores: tallas });
     onAplicar(nuevo);
   }
 
@@ -344,18 +351,6 @@ function MultiplicadorTallas({
           ×{factor}
         </button>
       ))}
-      {anterior && (
-        <button
-          type="button"
-          onClick={() => {
-            onAplicar(anterior.valores);
-            setAnterior(null);
-          }}
-          className="px-2 py-0.5 rounded-md bg-red/[0.12] text-[#fca5a5] text-[11px] font-medium hover:bg-red/[0.22]"
-        >
-          ↩ Deshacer ×{anterior.factor}
-        </button>
-      )}
     </div>
   );
 }
@@ -466,10 +461,6 @@ export default function DetalleEtiquetadoPage() {
   const [fPais, setFPais] = useState("");
   const [fTienda, setFTienda] = useState("");
   const [fCajas, setFCajas] = useState("");
-  // Historial de lo tipeado en "Cajas" durante esta sesión del formulario,
-  // para poder deshacer (como Ctrl+Z) si se cuenta mal una caja. Se
-  // resetea al abrir el formulario (limpiar/abrirEditar) o al guardar.
-  const [historialFCajas, setHistorialFCajas] = useState<string[]>([]);
   const [fFactura, setFFactura] = useState("");
   const [fTipoEtiqueta, setFTipoEtiqueta] = useState("COSIDO");
   const [fNovedad, setFNovedad] = useState("");
@@ -478,14 +469,19 @@ export default function DetalleEtiquetadoPage() {
   const [fTieneTalla, setFTieneTalla] = useState<boolean | null>(null);
   const [fCodigoNuevo, setFCodigoNuevo] = useState(false);
   const [fInenMarquilla, setFInenMarquilla] = useState<"inen" | "marquilla" | null>(null);
+  // Historial de TODOS los campos de este formulario durante la sesión
+  // actual (se resetea al abrir o guardar), para poder deshacer (como
+  // Ctrl+Z) cualquier cambio, no solo el de "Cajas".
+  const [historialForm, setHistorialForm] = useState<SnapshotCodigo[]>([]);
 
   // Modal "Agregar tallas": suma tallas de una caja NUEVA al total existente
   // del código, sin tener que recalcular a mano lo que ya había.
   const [showAgregarTallas, setShowAgregarTallas] = useState(false);
   const [itemAgregarTallas, setItemAgregarTallas] = useState<Item | null>(null);
   const [cajaNuevaTallas, setCajaNuevaTallas] = useState("");
-  const [historialCajaNuevaTallas, setHistorialCajaNuevaTallas] = useState<string[]>([]);
   const [tallasNuevas, setTallasNuevas] = useState<Record<string, number>>({});
+  // Historial de TODOS los campos de este modal, para el "↩ Deshacer" general.
+  const [historialTallas, setHistorialTallas] = useState<SnapshotTallas[]>([]);
 
   // Modal "+ Variante": agrega una variante de color/composición distinta
   // del mismo código, sin descuadrar el total contra factura.
@@ -495,12 +491,13 @@ export default function DetalleEtiquetadoPage() {
   const [vColor, setVColor] = useState("");
   const [vComposicion, setVComposicion] = useState("");
   const [vCajas, setVCajas] = useState("");
-  const [historialVCajas, setHistorialVCajas] = useState<string[]>([]);
   const [vTallas, setVTallas] = useState<Record<string, number>>({});
   const [vTieneCodigo, setVTieneCodigo] = useState<boolean | null>(null);
   const [vTieneTalla, setVTieneTalla] = useState<boolean | null>(null);
   const [vCodigoNuevo, setVCodigoNuevo] = useState(false);
   const [vInenMarquilla, setVInenMarquilla] = useState<"inen" | "marquilla" | null>(null);
+  // Historial de TODOS los campos de este modal, para el "↩ Deshacer" general.
+  const [historialVariante, setHistorialVariante] = useState<SnapshotVariante[]>([]);
 
   // Configuración de tallas de la orden
   const [showTallasConfig, setShowTallasConfig] = useState(false);
@@ -1019,9 +1016,50 @@ export default function DetalleEtiquetadoPage() {
   function limpiar() {
     setEditId(undefined); setFPalet(""); setFCodigo(""); setFDescripcion("");
     setFMarca(""); setFColor(""); setFComposicion(""); setFPais(""); setFTienda("");
-    setFCajas(""); setHistorialFCajas([]); setFFactura("");
+    setFCajas(""); setFFactura("");
     setFTipoEtiqueta("COSIDO"); setFNovedad(""); setFTallas({});
     setFTieneCodigo(null); setFTieneTalla(null); setFCodigoNuevo(false); setFInenMarquilla(null); setErrorMsg(null);
+    setHistorialForm([]);
+  }
+
+  // Guarda el estado ACTUAL de todos los campos del formulario de código
+  // en el historial, antes de aplicar un cambio — así "Deshacer" puede
+  // restaurarlos tal como estaban justo antes de ese cambio.
+  function registrarHistorialForm() {
+    setHistorialForm((h) => [
+      ...h,
+      {
+        fPalet, fCodigo, fDescripcion, fMarca, fColor, fComposicion, fPais, fTienda,
+        fCajas, fFactura, fTipoEtiqueta, fNovedad, fTallas, fTieneCodigo, fTieneTalla,
+        fCodigoNuevo, fInenMarquilla,
+      },
+    ]);
+  }
+
+  function deshacerForm() {
+    setHistorialForm((h) => {
+      if (h.length === 0) return h;
+      const nuevo = h.slice(0, -1);
+      const anterior = h[h.length - 1];
+      setFPalet(anterior.fPalet);
+      setFCodigo(anterior.fCodigo);
+      setFDescripcion(anterior.fDescripcion);
+      setFMarca(anterior.fMarca);
+      setFColor(anterior.fColor);
+      setFComposicion(anterior.fComposicion);
+      setFPais(anterior.fPais);
+      setFTienda(anterior.fTienda);
+      setFCajas(anterior.fCajas);
+      setFFactura(anterior.fFactura);
+      setFTipoEtiqueta(anterior.fTipoEtiqueta);
+      setFNovedad(anterior.fNovedad);
+      setFTallas(anterior.fTallas);
+      setFTieneCodigo(anterior.fTieneCodigo);
+      setFTieneTalla(anterior.fTieneTalla);
+      setFCodigoNuevo(anterior.fCodigoNuevo);
+      setFInenMarquilla(anterior.fInenMarquilla);
+      return nuevo;
+    });
   }
 
   function abrirNuevo() { limpiar(); setShowForm(true); }
@@ -1165,10 +1203,27 @@ export default function DetalleEtiquetadoPage() {
   function abrirAgregarTallas(it: Item) {
     setItemAgregarTallas(it);
     setCajaNuevaTallas("");
-    setHistorialCajaNuevaTallas([]);
     setTallasNuevas({});
+    setHistorialTallas([]);
     setErrorMsg(null);
     setShowAgregarTallas(true);
+  }
+
+  // Guarda el estado ACTUAL de los campos del modal "Agregar tallas" en el
+  // historial, antes de aplicar un cambio — igual que registrarHistorialForm.
+  function registrarHistorialTallas() {
+    setHistorialTallas((h) => [...h, { cajaNuevaTallas, tallasNuevas }]);
+  }
+
+  function deshacerTallas() {
+    setHistorialTallas((h) => {
+      if (h.length === 0) return h;
+      const nuevo = h.slice(0, -1);
+      const anterior = h[h.length - 1];
+      setCajaNuevaTallas(anterior.cajaNuevaTallas);
+      setTallasNuevas(anterior.tallasNuevas);
+      return nuevo;
+    });
   }
 
   async function guardarAgregarTallas() {
@@ -1243,14 +1298,41 @@ export default function DetalleEtiquetadoPage() {
     setVColor("");
     setVComposicion("");
     setVCajas("");
-    setHistorialVCajas([]);
     setVTallas({});
     setVTieneCodigo(null);
     setVTieneTalla(null);
     setVCodigoNuevo(false);
     setVInenMarquilla(null);
+    setHistorialVariante([]);
     setErrorMsg(null);
     setShowAgregarVariante(true);
+  }
+
+  // Guarda el estado ACTUAL de los campos del modal "Agregar variante" en el
+  // historial, antes de aplicar un cambio — igual que registrarHistorialForm.
+  function registrarHistorialVariante() {
+    setHistorialVariante((h) => [
+      ...h,
+      { vPalet, vColor, vComposicion, vCajas, vTallas, vTieneCodigo, vTieneTalla, vCodigoNuevo, vInenMarquilla },
+    ]);
+  }
+
+  function deshacerVariante() {
+    setHistorialVariante((h) => {
+      if (h.length === 0) return h;
+      const nuevo = h.slice(0, -1);
+      const anterior = h[h.length - 1];
+      setVPalet(anterior.vPalet);
+      setVColor(anterior.vColor);
+      setVComposicion(anterior.vComposicion);
+      setVCajas(anterior.vCajas);
+      setVTallas(anterior.vTallas);
+      setVTieneCodigo(anterior.vTieneCodigo);
+      setVTieneTalla(anterior.vTieneTalla);
+      setVCodigoNuevo(anterior.vCodigoNuevo);
+      setVInenMarquilla(anterior.vInenMarquilla);
+      return nuevo;
+    });
   }
 
   async function guardarAgregarVariante() {
@@ -1773,27 +1855,38 @@ export default function DetalleEtiquetadoPage() {
           <div className="card w-full max-w-[600px] my-6 p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-[16px] font-semibold">{editId ? "Editar código" : "Agregar código"}</h2>
-              <button onClick={() => setShowForm(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+              <div className="flex items-center gap-3">
+                {historialForm.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={deshacerForm}
+                    className="text-[11.5px] text-[#c4b8ff] hover:underline font-medium"
+                  >
+                    ↩ Deshacer
+                  </button>
+                )}
+                <button onClick={() => setShowForm(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+              </div>
             </div>
             {errorMsg && <div className="mb-4 px-4 py-2.5 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">{errorMsg}</div>}
             <div className="grid grid-cols-2 gap-3 mb-4">
-              <div><label className="text-[11.5px] text-text-faint block mb-1">Palet</label><input value={fPalet} onChange={(e) => setFPalet(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
-              <div><label className="text-[11.5px] text-text-faint block mb-1">Código</label><input value={fCodigo} onChange={(e) => setFCodigo(e.target.value)} placeholder="EL001" className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
-              <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Descripción</label><input value={fDescripcion} onChange={(e) => setFDescripcion(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div><label className="text-[11.5px] text-text-faint block mb-1">Palet</label><input value={fPalet} onChange={(e) => { registrarHistorialForm(); setFPalet(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div><label className="text-[11.5px] text-text-faint block mb-1">Código</label><input value={fCodigo} onChange={(e) => { registrarHistorialForm(); setFCodigo(e.target.value); }} placeholder="EL001" className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Descripción</label><input value={fDescripcion} onChange={(e) => { registrarHistorialForm(); setFDescripcion(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div>
                 <label className="text-[11.5px] text-text-faint block mb-1">Marca</label>
                 <BuscadorCatalogo
                   valor={fMarca}
-                  onChange={setFMarca}
+                  onChange={(v) => { registrarHistorialForm(); setFMarca(v); }}
                   catalogo={catalogoMarcas}
                   onAgregarAlCatalogo={agregarMarcaAlCatalogo}
                   placeholder="Ej. Nike, Adidas…"
                 />
               </div>
-              <div><label className="text-[11.5px] text-text-faint block mb-1">Color</label><input value={fColor} onChange={(e) => setFColor(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div><label className="text-[11.5px] text-text-faint block mb-1">Color</label><input value={fColor} onChange={(e) => { registrarHistorialForm(); setFColor(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div>
                 <label className="text-[11.5px] text-text-faint block mb-1">País de origen</label>
-                <select value={fPais} onChange={(e) => setFPais(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none">
+                <select value={fPais} onChange={(e) => { registrarHistorialForm(); setFPais(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none">
                   <option value="">Selecciona…</option>
                   {PAISES_IMPORTACION.map((p) => (
                     <option key={p} value={p}>{p}</option>
@@ -1801,12 +1894,12 @@ export default function DetalleEtiquetadoPage() {
                   {fPais && !PAISES_IMPORTACION.includes(fPais) && <option value={fPais}>{fPais}</option>}
                 </select>
               </div>
-              <div><label className="text-[11.5px] text-text-faint block mb-1">Tienda</label><input value={fTienda} onChange={(e) => setFTienda(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div><label className="text-[11.5px] text-text-faint block mb-1">Tienda</label><input value={fTienda} onChange={(e) => { registrarHistorialForm(); setFTienda(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
                 <BuscadorCatalogo
                   valor={fComposicion}
-                  onChange={setFComposicion}
+                  onChange={(v) => { registrarHistorialForm(); setFComposicion(v); }}
                   catalogo={catalogoComposiciones}
                   onAgregarAlCatalogo={agregarComposicionAlCatalogo}
                   placeholder="Ej. 95% Algodón, 5% Elastano"
@@ -1816,25 +1909,11 @@ export default function DetalleEtiquetadoPage() {
                 <label className="text-[11.5px] text-text-faint block mb-1">Cajas (con cantidad en paréntesis)</label>
                 <input
                   value={fCajas}
-                  onChange={(e) => {
-                    setHistorialFCajas((h) => [...h, fCajas]);
-                    setFCajas(e.target.value);
-                  }}
+                  onChange={(e) => { registrarHistorialForm(); setFCajas(e.target.value); }}
                   placeholder="164(24) 165(24) 166(24)"
                   className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
                 />
-                <div className="flex items-center gap-2 mt-1">
-                  <p className="text-[11px] text-[#6ee7b7]">Suma automática: {previewSuma} unidades</p>
-                  {historialFCajas.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => deshacerTexto(historialFCajas, setHistorialFCajas, setFCajas)}
-                      className="text-[10.5px] text-[#c4b8ff] hover:underline"
-                    >
-                      ↩ Deshacer
-                    </button>
-                  )}
-                </div>
+                <p className="text-[11px] text-[#6ee7b7] mt-1">Suma automática: {previewSuma} unidades</p>
               </div>
 
               {/* Grid de tallas */}
@@ -1865,6 +1944,7 @@ export default function DetalleEtiquetadoPage() {
                           <input
                             value={fTallas[t] ?? ""}
                             onChange={(e) => {
+                              registrarHistorialForm();
                               const v = e.target.value;
                               setFTallas((prev) => {
                                 const nuevo = { ...prev };
@@ -1880,7 +1960,7 @@ export default function DetalleEtiquetadoPage() {
                       ))}
                       <BotonNuevaTalla onAgregar={agregarTallaNueva} />
                     </div>
-                    <MultiplicadorTallas tallas={fTallas} onAplicar={setFTallas} />
+                    <MultiplicadorTallas tallas={fTallas} onAplicar={(nuevo) => { registrarHistorialForm(); setFTallas(nuevo); }} />
                     {/* Aviso visual si tallas no cuadran con cajas */}
                     {(() => {
                       const sumaTallas = sumarTallas(fTallas);
@@ -1903,7 +1983,7 @@ export default function DetalleEtiquetadoPage() {
                 </label>
                 <input
                   value={fFactura}
-                  onChange={(e) => setFFactura(e.target.value)}
+                  onChange={(e) => { registrarHistorialForm(); setFFactura(e.target.value); }}
                   type="number"
                   disabled={!!editId}
                   title={editId ? "No se puede editar la factura de un código ya creado" : undefined}
@@ -1911,18 +1991,18 @@ export default function DetalleEtiquetadoPage() {
                 />
               </div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Tipo de etiqueta</label>
-                <select value={fTipoEtiqueta} onChange={(e) => setFTipoEtiqueta(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none">
+                <select value={fTipoEtiqueta} onChange={(e) => { registrarHistorialForm(); setFTipoEtiqueta(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none">
                   <option value="COSIDO">Cosido</option><option value="TERMOFIJADO">Termofijado</option><option value="ADHESIVA">Adhesiva</option>
                 </select>
               </div>
-              <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Novedad (ej. DOBLE, CONJUNTO)</label><input value={fNovedad} onChange={(e) => setFNovedad(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
+              <div className="col-span-2"><label className="text-[11.5px] text-text-faint block mb-1">Novedad (ej. DOBLE, CONJUNTO)</label><input value={fNovedad} onChange={(e) => { registrarHistorialForm(); setFNovedad(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div className="col-span-2">
                 <label className="text-[11.5px] text-text-faint block mb-1.5">Para impresión de etiqueta</label>
                 <div className="flex gap-2">
-                  <BotonTresEstados label="Tiene código" valor={fTieneCodigo} onChange={setFTieneCodigo} />
-                  <BotonTresEstados label="Tiene talla" valor={fTieneTalla} onChange={setFTieneTalla} />
-                  <CheckDosEstados label="Código nuevo" valor={fCodigoNuevo} onChange={setFCodigoNuevo} />
-                  <BotonInenMarquilla valor={fInenMarquilla} onChange={setFInenMarquilla} />
+                  <BotonTresEstados label="Tiene código" valor={fTieneCodigo} onChange={(v) => { registrarHistorialForm(); setFTieneCodigo(v); }} />
+                  <BotonTresEstados label="Tiene talla" valor={fTieneTalla} onChange={(v) => { registrarHistorialForm(); setFTieneTalla(v); }} />
+                  <CheckDosEstados label="Código nuevo" valor={fCodigoNuevo} onChange={(v) => { registrarHistorialForm(); setFCodigoNuevo(v); }} />
+                  <BotonInenMarquilla valor={fInenMarquilla} onChange={(v) => { registrarHistorialForm(); setFInenMarquilla(v); }} />
                 </div>
               </div>
             </div>
@@ -2071,7 +2151,18 @@ export default function DetalleEtiquetadoPage() {
             <div className="card w-full max-w-[520px] my-6 p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-[16px] font-semibold">Agregar variante</h2>
-                <button onClick={() => setShowAgregarVariante(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+                <div className="flex items-center gap-3">
+                  {historialVariante.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={deshacerVariante}
+                      className="text-[11.5px] text-[#c4b8ff] hover:underline font-medium"
+                    >
+                      ↩ Deshacer
+                    </button>
+                  )}
+                  <button onClick={() => setShowAgregarVariante(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+                </div>
               </div>
               <p className="text-[12.5px] text-text-dim mb-3">
                 Código <span className="font-medium text-text">{item?.codigo}</span> — usa esto cuando el
@@ -2086,7 +2177,10 @@ export default function DetalleEtiquetadoPage() {
                   <label className="text-[11.5px] text-text-faint block mb-1">Palet</label>
                   <input
                     value={vPalet}
-                    onChange={(e) => setVPalet(e.target.value)}
+                    onChange={(e) => {
+                      registrarHistorialVariante();
+                      setVPalet(e.target.value);
+                    }}
                     placeholder={item?.palet ?? ""}
                     className="w-full card px-3 py-2 text-[13px] outline-none"
                   />
@@ -2094,13 +2188,23 @@ export default function DetalleEtiquetadoPage() {
                 </div>
                 <div>
                   <label className="text-[11.5px] text-text-faint block mb-1">Color</label>
-                  <input value={vColor} onChange={(e) => setVColor(e.target.value)} className="w-full card px-3 py-2 text-[13px] outline-none" />
+                  <input
+                    value={vColor}
+                    onChange={(e) => {
+                      registrarHistorialVariante();
+                      setVColor(e.target.value);
+                    }}
+                    className="w-full card px-3 py-2 text-[13px] outline-none"
+                  />
                 </div>
                 <div className="col-span-2">
                   <label className="text-[11.5px] text-text-faint block mb-1">Composición</label>
                   <BuscadorCatalogo
                     valor={vComposicion}
-                    onChange={setVComposicion}
+                    onChange={(v) => {
+                      registrarHistorialVariante();
+                      setVComposicion(v);
+                    }}
                     catalogo={catalogoComposiciones}
                     onAgregarAlCatalogo={agregarComposicionAlCatalogo}
                     placeholder="Ej. 95% Algodón, 5% Elastano"
@@ -2113,24 +2217,13 @@ export default function DetalleEtiquetadoPage() {
                 <input
                   value={vCajas}
                   onChange={(e) => {
-                    setHistorialVCajas((h) => [...h, vCajas]);
+                    registrarHistorialVariante();
                     setVCajas(e.target.value);
                   }}
                   placeholder="245(12)"
                   className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
                 />
-                <div className="flex items-center gap-2 mt-1">
-                  <p className="text-[11px] text-[#6ee7b7]">Suma automática: {sumaCajaVariante} unidades</p>
-                  {historialVCajas.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => deshacerTexto(historialVCajas, setHistorialVCajas, setVCajas)}
-                      className="text-[10.5px] text-[#c4b8ff] hover:underline"
-                    >
-                      ↩ Deshacer
-                    </button>
-                  )}
-                </div>
+                <p className="text-[11px] text-[#6ee7b7] mt-1">Suma automática: {sumaCajaVariante} unidades</p>
               </div>
 
               <label className="text-[11.5px] text-text-faint block mb-1">Tallas de esta variante (opcional)</label>
@@ -2145,6 +2238,7 @@ export default function DetalleEtiquetadoPage() {
                         value={vTallas[t] ?? ""}
                         onChange={(e) => {
                           const v = e.target.value;
+                          registrarHistorialVariante();
                           setVTallas((prev) => {
                             const nuevo = { ...prev };
                             if (v === "" || Number(v) === 0) delete nuevo[t];
@@ -2160,7 +2254,13 @@ export default function DetalleEtiquetadoPage() {
                   <BotonNuevaTalla onAgregar={agregarTallaNueva} />
                 </div>
               )}
-              <MultiplicadorTallas tallas={vTallas} onAplicar={setVTallas} />
+              <MultiplicadorTallas
+                tallas={vTallas}
+                onAplicar={(t) => {
+                  registrarHistorialVariante();
+                  setVTallas(t);
+                }}
+              />
 
               {sumaTallasVariante > 0 && sumaCajaVariante > 0 && (
                 sumaTallasVariante === sumaCajaVariante ? (
@@ -2174,10 +2274,37 @@ export default function DetalleEtiquetadoPage() {
 
               <label className="text-[11.5px] text-text-faint block mb-1.5">Para impresión de etiqueta</label>
               <div className="flex gap-2 mb-3">
-                <BotonTresEstados label="Tiene código" valor={vTieneCodigo} onChange={setVTieneCodigo} />
-                <BotonTresEstados label="Tiene talla" valor={vTieneTalla} onChange={setVTieneTalla} />
-                <CheckDosEstados label="Código nuevo" valor={vCodigoNuevo} onChange={setVCodigoNuevo} />
-                <BotonInenMarquilla valor={vInenMarquilla} onChange={setVInenMarquilla} />
+                <BotonTresEstados
+                  label="Tiene código"
+                  valor={vTieneCodigo}
+                  onChange={(v) => {
+                    registrarHistorialVariante();
+                    setVTieneCodigo(v);
+                  }}
+                />
+                <BotonTresEstados
+                  label="Tiene talla"
+                  valor={vTieneTalla}
+                  onChange={(v) => {
+                    registrarHistorialVariante();
+                    setVTieneTalla(v);
+                  }}
+                />
+                <CheckDosEstados
+                  label="Código nuevo"
+                  valor={vCodigoNuevo}
+                  onChange={(v) => {
+                    registrarHistorialVariante();
+                    setVCodigoNuevo(v);
+                  }}
+                />
+                <BotonInenMarquilla
+                  valor={vInenMarquilla}
+                  onChange={(v) => {
+                    registrarHistorialVariante();
+                    setVInenMarquilla(v);
+                  }}
+                />
               </div>
 
               <div className="flex gap-2 justify-end mt-2">
@@ -2195,7 +2322,18 @@ export default function DetalleEtiquetadoPage() {
           <div className="card w-full max-w-[480px] my-6 p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-[16px] font-semibold">Agregar tallas</h2>
-              <button onClick={() => setShowAgregarTallas(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+              <div className="flex items-center gap-3">
+                {historialTallas.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={deshacerTallas}
+                    className="text-[11.5px] text-[#c4b8ff] hover:underline font-medium"
+                  >
+                    ↩ Deshacer
+                  </button>
+                )}
+                <button onClick={() => setShowAgregarTallas(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+              </div>
             </div>
             <p className="text-[12.5px] text-text-dim mb-3">
               Código <span className="font-medium text-text">{itemAgregarTallas.codigo}</span> — escribe
@@ -2218,23 +2356,12 @@ export default function DetalleEtiquetadoPage() {
               <input
                 value={cajaNuevaTallas}
                 onChange={(e) => {
-                  setHistorialCajaNuevaTallas((h) => [...h, cajaNuevaTallas]);
+                  registrarHistorialTallas();
                   setCajaNuevaTallas(e.target.value);
                 }}
                 placeholder="Ej. 245(12)"
                 className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
               />
-              {historialCajaNuevaTallas.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    deshacerTexto(historialCajaNuevaTallas, setHistorialCajaNuevaTallas, setCajaNuevaTallas)
-                  }
-                  className="text-[10.5px] text-[#c4b8ff] hover:underline mt-1"
-                >
-                  ↩ Deshacer
-                </button>
-              )}
             </div>
 
             <label className="text-[11.5px] text-text-faint block mb-1">Tallas de esta caja</label>
@@ -2251,6 +2378,7 @@ export default function DetalleEtiquetadoPage() {
                       value={tallasNuevas[t] ?? ""}
                       onChange={(e) => {
                         const v = e.target.value;
+                        registrarHistorialTallas();
                         setTallasNuevas((prev) => {
                           const nuevo = { ...prev };
                           if (v === "" || Number(v) === 0) delete nuevo[t];
@@ -2266,7 +2394,13 @@ export default function DetalleEtiquetadoPage() {
                 <BotonNuevaTalla onAgregar={agregarTallaNueva} />
               </div>
             )}
-            <MultiplicadorTallas tallas={tallasNuevas} onAplicar={setTallasNuevas} />
+            <MultiplicadorTallas
+              tallas={tallasNuevas}
+              onAplicar={(t) => {
+                registrarHistorialTallas();
+                setTallasNuevas(t);
+              }}
+            />
 
             {/* Aviso de cuadre: tallas de la caja nueva vs cantidad de la caja nueva */}
             {(() => {
