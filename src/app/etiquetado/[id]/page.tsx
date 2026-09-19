@@ -2096,24 +2096,21 @@ export default function DetalleEtiquetadoPage() {
                       <div key={it.id}>
                         <div className={`grid grid-cols-[45px_105px_1fr_120px_75px_75px_105px_260px] gap-2 px-4 py-2.5 items-center border-b border-border last:border-b-0 text-[12px] transition-colors ${flashId === it.id ? "bg-green/[0.12]" : ""}`}>
                           <span className="text-text-dim">{it.palet ?? "—"}</span>
-                          <button
-                            onClick={() => setItemExpandidoId(expandido ? null : it.id)}
-                            className="font-medium text-left flex items-center gap-1 hover:text-[#c4b8ff]"
-                            title={variantesDelItem.length > 0 ? "Ver variantes" : "Sin variantes"}
-                          >
-                            {it.codigo ?? "—"}
-                            {variantesDelItem.length > 0 && (
-                              <span className="text-[9.5px] px-1.5 rounded-full bg-accent/[0.18] text-[#c4b8ff]">
-                                {variantesDelItem.length}
-                              </span>
-                            )}
-                          </button>
+                          <span className="font-medium truncate">{it.codigo ?? "—"}</span>
                           <span className="text-text-dim truncate" title={it.cajas ?? ""}>{it.cajas ?? "—"}</span>
                           <span className="text-text-dim truncate">{it.descripcion ?? "—"}</span>
                           <span className="text-right">{it.cantidad_factura}</span>
                           <span className="text-right font-medium">{it.cantidad_contada}</span>
                           <span className="flex justify-center"><span className={`text-[10px] px-2 py-0.5 rounded-full ${est.clase}`}>{est.texto}</span></span>
                           <span className="flex items-center justify-end gap-1 flex-wrap">
+                            {variantesDelItem.length > 0 && (
+                              <button
+                                onClick={() => setItemExpandidoId(expandido ? null : it.id)}
+                                className="text-[11px] px-2 py-1 rounded-md bg-accent/[0.18] text-[#c4b8ff] hover:bg-accent/[0.28] whitespace-nowrap font-medium"
+                              >
+                                {expandido ? "▾" : "▸"} Ver variantes ({variantesDelItem.length})
+                              </button>
+                            )}
                             <button onClick={() => abrirAgregarVariante(it)} className="text-[11px] px-2 py-1 rounded-md bg-amber/[0.15] text-[#fbbf24] hover:bg-amber/[0.25] whitespace-nowrap">+ Variante</button>
                             <button onClick={() => abrirAgregarTallas(it)} className="text-[11px] px-2 py-1 rounded-md bg-green/[0.15] text-[#6ee7b7] hover:bg-green/[0.25] whitespace-nowrap">+ Tallas</button>
                             <button onClick={() => abrirEditar(it)} className="text-[11px] px-2 py-1 rounded-md bg-accent/[0.15] text-[#c4b8ff] hover:bg-accent/[0.25] whitespace-nowrap">Editar</button>
