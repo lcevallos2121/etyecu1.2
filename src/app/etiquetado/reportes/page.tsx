@@ -2214,17 +2214,15 @@ export default function ReportesEtiquetadoPage() {
                                       "—"
                                     )}
                                   </span>
-                                  <span
-                                    className="text-text-dim text-[11px] font-mono leading-snug"
-                                    title={
-                                      f.sinDesgloseDeCaja
-                                        ? "Total del código completo (aún no hay desglose exacto de esta caja)"
-                                        : undefined
-                                    }
-                                  >
+                                  <span className="text-text-dim text-[11px] font-mono leading-snug">
                                     {f.tallasTexto}
                                     {f.sinDesgloseDeCaja && (
-                                      <span className="text-[9px] text-[#fbbf24] ml-1">(total)</span>
+                                      <span
+                                        className="block text-[9.5px] text-[#fbbf24] font-sans leading-tight mt-0.5"
+                                        title="Este código todavía no tiene guardado el desglose exacto de tallas de esta caja puntual, así que se muestra el total de TODAS sus cajas juntas — no lo compares contra la cantidad de esta caja sola."
+                                      >
+                                        ⚠ total del código, no de esta caja
+                                      </span>
                                     )}
                                   </span>
                                   <span className="text-text-dim leading-snug">{f.composicion ?? "—"}</span>
