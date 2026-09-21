@@ -2107,13 +2107,6 @@ export default function ReportesEtiquetadoPage() {
                             Limpiar filtros
                           </button>
                         )}
-                        {cajaFiltro && (
-                          <span className="text-[11px] text-[#fbbf24] self-end pb-2">
-                            Mostrando la caja {cajaFiltro}. Donde dice <b>(total)</b> junto a las tallas,
-                            ese código aún no tiene desglose exacto de esta caja y se muestra el total
-                            completo del código.
-                          </span>
-                        )}
                         {composicionFiltro !== "todas" && (
                           <span className="text-[11px] text-[#c4b8ff] self-end pb-2">
                             Filtrando además por composición "{composicionFiltro}"
