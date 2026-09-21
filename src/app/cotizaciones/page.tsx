@@ -25,6 +25,15 @@ const BANCO = {
   email: "contabilidad@etyecu.ec",
 };
 
+// Formatea una fecha guardada como texto "YYYY-MM-DD" sin dejar que el
+// navegador la interprete como UTC medianoche — si se le pasa el string
+// directo a `new Date(...)`, al convertir a la hora local (ej. Ecuador,
+// UTC-5) se corre un día hacia atrás. Aquí se arma la fecha en hora local.
+function formatoFecha(fechaStr: string): string {
+  const [anio, mes, dia] = fechaStr.split("-").map(Number);
+  return new Date(anio, mes - 1, dia).toLocaleDateString("es-EC");
+}
+
 // Formatea un valor unitario mostrando solo los decimales que realmente
 // tiene (hasta 4), en vez de siempre redondear a 2 — un precio como 0.007
 // se veía como "$0.01" mientras el VALOR del renglón sí usaba 0.007,
@@ -761,7 +770,7 @@ export default function CotizacionesPage() {
               <div className="text-right">
                 <p className="text-[16px] font-bold">COTIZACIÓN</p>
                 <p className="text-[11px]">N°: {cotImprimir.numero}</p>
-                <p className="text-[11px]">Fecha: {new Date(cotImprimir.fecha).toLocaleDateString("es-EC")}</p>
+                <p className="text-[11px]">Fecha: {formatoFecha(cotImprimir.fecha)}</p>
               </div>
             </div>
 
@@ -942,7 +951,7 @@ function CotizacionFila({
     <div className="grid grid-cols-[110px_1fr_120px_110px_120px] gap-3 px-5 py-3 items-center border-b border-border last:border-b-0 text-[12.5px]">
       <span className="font-medium">{cot.numero}</span>
       <span className="truncate">{cot.cliente_nombre}</span>
-      <span className="text-text-dim">{new Date(cot.fecha).toLocaleDateString("es-EC")}</span>
+      <span className="text-text-dim">{formatoFecha(cot.fecha)}</span>
       <span className="text-right font-semibold">
         {total === null ? "…" : `$${total.toFixed(2)}`}
       </span>
