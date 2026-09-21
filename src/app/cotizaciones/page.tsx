@@ -25,6 +25,18 @@ const BANCO = {
   email: "contabilidad@etyecu.ec",
 };
 
+// Formatea un valor unitario mostrando solo los decimales que realmente
+// tiene (hasta 4), en vez de siempre redondear a 2 — un precio como 0.007
+// se veía como "$0.01" mientras el VALOR del renglón sí usaba 0.007,
+// haciendo que unitario × cantidad no coincidiera con lo impreso.
+function formatoValorUnitario(valor: number): string {
+  const redondeado = Math.round(valor * 10000) / 10000;
+  if (redondeado === Math.round(redondeado * 100) / 100) {
+    return redondeado.toFixed(2);
+  }
+  return redondeado.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+}
+
 const CONDICIONES_DEFAULT = `INFORMACIÓN GENERAL DE LA OFERTA
 · Etyecu S.A. se encargará de almacenar la mercadería del cliente y realizar la recepción y el despacho en nuestro Depósito Aduanero con nuestro personal operativo y equipos de manipuleo. No se permite el ingreso del personal del cliente para manipular la carga.
 · Horario de recepción de la carga es de lunes a viernes de 8:30 – 17:30 PM. Para otros horarios con coordinación previa.
@@ -778,7 +790,7 @@ export default function CotizacionesPage() {
                       {it.nota && <span className="block text-[9px] text-gray-600">{it.nota}</span>}
                     </td>
                     <td className="border border-black/40 p-1.5 text-right">{it.cantidad}</td>
-                    <td className="border border-black/40 p-1.5 text-right">${Number(it.valor).toFixed(2)}</td>
+                    <td className="border border-black/40 p-1.5 text-right">${formatoValorUnitario(Number(it.valor))}</td>
                     <td className="border border-black/40 p-1.5 text-right">
                       ${(Number(it.cantidad) * Number(it.valor)).toFixed(2)}
                     </td>
