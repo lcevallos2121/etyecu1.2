@@ -166,6 +166,7 @@ function categoriaDeDescripcion(descripcion: string): string {
     if (limpio.length === 0) continue;
     if (/^\d+$/.test(limpio)) continue; // solo dígitos (medidas: 7, 5...)
     if (/^W\//i.test(limpio)) continue; // abreviaturas técnicas: W/LINER, W/CUT...
+    if (limpio.length === 1 && p.endsWith(".")) continue; // inicial/abreviatura: "F.", "N."...
     return limpio.toUpperCase();
   }
   return (palabras[0] ?? "SIN CATEGORÍA").toUpperCase();
