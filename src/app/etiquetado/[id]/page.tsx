@@ -1819,9 +1819,19 @@ export default function DetalleEtiquetadoPage() {
   }, [resumenPorDescripcion]);
 
   // Alterna entre ver el detalle completo (por descripción exacta) o el
-  // resumen unificado (por categoría). Por defecto, el resumen unificado,
-  // ya que es lo que se pidió para el informe.
-  const [verInformePorCategoria, setVerInformePorCategoria] = useState(true);
+  // resumen unificado (por categoría). Por defecto, el resumen unificado
+  // para ropa/calzado (es lo que se pidió para esas órdenes), pero para
+  // cualquier otro tipo de producto (ej. vinos, bazar) arranca en detalle
+  // exacto — agrupar por "primera palabra útil" no tiene sentido ahí y
+  // termina mezclando productos distintos bajo una categoría inventada.
+  // `overrideVerCategoria` solo se llena si el usuario le da clic al botón
+  // de alternar; mientras esté en null, se usa el valor por defecto según
+  // el tipo de producto de la orden.
+  const [overrideVerCategoria, setOverrideVerCategoria] = useState<boolean | null>(null);
+  const verInformePorCategoria =
+    overrideVerCategoria ?? (orden?.tipo_producto === "ropa" || orden?.tipo_producto === "calzado");
+  const setVerInformePorCategoria = (actualizar: (v: boolean) => boolean) =>
+    setOverrideVerCategoria(actualizar(verInformePorCategoria));
   const filasInforme = verInformePorCategoria ? resumenPorCategoria : resumenPorDescripcion;
   const totalesInformeFilas = filasInforme.reduce(
     (acc, g) => ({
