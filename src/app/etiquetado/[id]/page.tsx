@@ -557,6 +557,10 @@ export default function DetalleEtiquetadoPage() {
   const [showMesas, setShowMesas] = useState(false);
   const [nuevaMesaNombre, setNuevaMesaNombre] = useState("");
   const [nuevaMesaIntegrantes, setNuevaMesaIntegrantes] = useState("");
+  // Edición de una mesa existente (nombre / integrantes), inline en la lista.
+  const [mesaEditId, setMesaEditId] = useState<string | null>(null);
+  const [editMesaNombre, setEditMesaNombre] = useState("");
+  const [editMesaIntegrantes, setEditMesaIntegrantes] = useState("");
 
   // Fase de trabajo activa (inventario vs etiquetado). Se adjunta a cada
   // movimiento registrado, para que los reportes puedan medir por separado
@@ -738,6 +742,34 @@ export default function DetalleEtiquetadoPage() {
   async function eliminarMesa(mesaId: string) {
     await supabase.from("etq_mesas").delete().eq("id", mesaId);
     setToast("Mesa eliminada.");
+    cargar();
+  }
+
+  function abrirEditarMesa(m: Mesa) {
+    setMesaEditId(m.id);
+    setEditMesaNombre(m.nombre);
+    setEditMesaIntegrantes((m.integrantes ?? []).join(", "));
+  }
+
+  function cancelarEditarMesa() {
+    setMesaEditId(null);
+    setEditMesaNombre("");
+    setEditMesaIntegrantes("");
+  }
+
+  async function guardarEditarMesa() {
+    if (!mesaEditId || !editMesaNombre.trim()) return;
+    const integrantes = editMesaIntegrantes
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const { error } = await supabase
+      .from("etq_mesas")
+      .update({ nombre: editMesaNombre.trim(), integrantes })
+      .eq("id", mesaEditId);
+    if (error) { setErrorMsg(error.message); return; }
+    cancelarEditarMesa();
+    setToast("Mesa actualizada.");
     cargar();
   }
 
@@ -2416,25 +2448,57 @@ export default function DetalleEtiquetadoPage() {
           <div className="card w-full max-w-[560px] my-6 p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-[16px] font-semibold">Mesas del día</h2>
-              <button onClick={() => setShowMesas(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+              <button onClick={() => { setShowMesas(false); cancelarEditarMesa(); }} className="text-text-faint hover:text-text"><X size={18} /></button>
             </div>
 
             {/* Lista de mesas */}
             {mesas.length > 0 && (
               <div className="flex flex-col gap-2 mb-4">
-                {mesas.map((m) => (
-                  <div key={m.id} className="card p-3 flex items-center justify-between bg-white/[0.02]">
-                    <div>
-                      <p className="text-[13px] font-medium">{m.nombre}</p>
-                      <p className="text-[11.5px] text-text-faint">
-                        {m.integrantes && m.integrantes.length > 0 ? m.integrantes.join(", ") : "Sin integrantes"}
-                      </p>
+                {mesas.map((m) =>
+                  mesaEditId === m.id ? (
+                    <div key={m.id} className="card p-3 bg-white/[0.02]">
+                      <div className="grid grid-cols-[110px_1fr] gap-2 mb-2">
+                        <input
+                          value={editMesaNombre}
+                          onChange={(e) => setEditMesaNombre(e.target.value)}
+                          placeholder="Mesa 1"
+                          className="card px-3 py-2 text-[13px] outline-none"
+                        />
+                        <input
+                          value={editMesaIntegrantes}
+                          onChange={(e) => setEditMesaIntegrantes(e.target.value)}
+                          placeholder="Integrantes separados por coma: Juan, Pedro, María"
+                          className="card px-3 py-2 text-[13px] outline-none"
+                        />
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <button onClick={cancelarEditarMesa} className="btn-secondary text-[12px] font-semibold px-3 py-1.5 rounded-lg">
+                          Cancelar
+                        </button>
+                        <button onClick={guardarEditarMesa} className="btn-primary text-[12px] font-semibold px-3 py-1.5 rounded-lg">
+                          Guardar
+                        </button>
+                      </div>
                     </div>
-                    <button onClick={() => eliminarMesa(m.id)} className="text-text-faint hover:text-red-300">
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
-                ))}
+                  ) : (
+                    <div key={m.id} className="card p-3 flex items-center justify-between bg-white/[0.02]">
+                      <div>
+                        <p className="text-[13px] font-medium">{m.nombre}</p>
+                        <p className="text-[11.5px] text-text-faint">
+                          {m.integrantes && m.integrantes.length > 0 ? m.integrantes.join(", ") : "Sin integrantes"}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => abrirEditarMesa(m)} className="text-text-faint hover:text-[#c4b8ff]" title="Editar mesa">
+                          <Pencil size={14} />
+                        </button>
+                        <button onClick={() => eliminarMesa(m.id)} className="text-text-faint hover:text-red-300" title="Eliminar mesa">
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
               </div>
             )}
 
