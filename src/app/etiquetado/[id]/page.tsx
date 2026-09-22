@@ -11,7 +11,7 @@ import {
   Check, HelpCircle, Pencil, History, Layers,
 } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
-import { PAISES_IMPORTACION } from "@/lib/paises";
+import { BuscadorCatalogo } from "@/components/BuscadorCatalogo";
 import * as XLSX from "xlsx";
 
 export const dynamic = "force-dynamic";
@@ -253,76 +253,6 @@ function BotonInenMarquilla({
 // distintas (ej. "100% Poliéster" vs "10O %poliester"), que era lo que hacía
 // inútil el filtro al imprimir. Si el texto escrito no existe en el catálogo,
 // muestra un botón para agregarlo de una vez, sin bloquear la captura.
-function BuscadorCatalogo({
-  valor,
-  onChange,
-  catalogo,
-  onAgregarAlCatalogo,
-  placeholder,
-}: {
-  valor: string;
-  onChange: (v: string) => void;
-  catalogo: string[];
-  onAgregarAlCatalogo: (texto: string) => void;
-  placeholder?: string;
-}) {
-  const [abierto, setAbierto] = useState(false);
-
-  const sugerencias = useMemo(() => {
-    const q = valor.trim().toLowerCase();
-    if (!q) return catalogo.slice(0, 8);
-    return catalogo.filter((c) => c.toLowerCase().includes(q)).slice(0, 8);
-  }, [catalogo, valor]);
-
-  const coincideExacto = catalogo.some((c) => c.toLowerCase() === valor.trim().toLowerCase());
-
-  return (
-    <div className="relative">
-      <input
-        value={valor}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={() => setAbierto(true)}
-        onBlur={() => setTimeout(() => setAbierto(false), 150)}
-        placeholder={placeholder}
-        className="w-full card px-3 py-2 text-[13px] outline-none"
-      />
-      {abierto && (
-        <div className="absolute z-20 top-full mt-1 w-full max-h-[220px] overflow-y-auto card p-1 shadow-lg">
-          {sugerencias.length === 0 && !valor.trim() ? (
-            <p className="text-[11.5px] text-text-faint px-2 py-2">Escribe para buscar…</p>
-          ) : (
-            sugerencias.map((c) => (
-              <button
-                key={c}
-                type="button"
-                onMouseDown={() => {
-                  onChange(c);
-                  setAbierto(false);
-                }}
-                className="w-full text-left px-2.5 py-1.5 rounded-md text-[12px] hover:bg-white/[0.06]"
-              >
-                {c}
-              </button>
-            ))
-          )}
-          {valor.trim() && !coincideExacto && (
-            <button
-              type="button"
-              onMouseDown={() => {
-                onAgregarAlCatalogo(valor.trim());
-                setAbierto(false);
-              }}
-              className="w-full text-left px-2.5 py-1.5 rounded-md text-[12px] text-[#c4b8ff] hover:bg-accent/[0.1] border-t border-border mt-1 pt-2"
-            >
-              + Agregar &quot;{valor.trim()}&quot; al catálogo
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // Multiplica los valores YA escritos en las tallas por un factor (×2, ×3,
 // ×4...) — útil cuando se captura la primera caja y las siguientes son
 // iguales en la misma proporción, sin tener que reescribir cada talla a
@@ -656,6 +586,36 @@ export default function DetalleEtiquetadoPage() {
       setErrorMsg(`No se pudo agregar la marca al catálogo: ${error.message}`);
     }
     cargarCatalogoMarcas();
+  }
+
+  // Catálogo de países — mismo patrón que marcas/composiciones: lista
+  // compartida, y si el país que necesitan no está, se agrega de una vez.
+  const [catalogoPaises, setCatalogoPaises] = useState<string[]>([]);
+
+  const cargarCatalogoPaises = useCallback(async () => {
+    const { data } = await supabase
+      .from("etq_paises_catalogo")
+      .select("pais")
+      .order("pais");
+    setCatalogoPaises((data ?? []).map((d: { pais: string }) => d.pais));
+  }, [supabase]);
+
+  useEffect(() => {
+    cargarCatalogoPaises();
+  }, [cargarCatalogoPaises]);
+
+  async function agregarPaisAlCatalogo(texto: string) {
+    const limpio = texto.trim().toUpperCase();
+    if (!limpio) return;
+    const { error } = await supabase
+      .from("etq_paises_catalogo")
+      .insert({ pais: limpio })
+      .select()
+      .maybeSingle();
+    if (error && !error.message.includes("duplicate")) {
+      setErrorMsg(`No se pudo agregar el país al catálogo: ${error.message}`);
+    }
+    cargarCatalogoPaises();
   }
 
   const cargar = useCallback(async () => {
@@ -2286,13 +2246,13 @@ export default function DetalleEtiquetadoPage() {
               <div><label className="text-[11.5px] text-text-faint block mb-1">Color</label><input value={fColor} onChange={(e) => { registrarHistorialForm(); setFColor(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div>
                 <label className="text-[11.5px] text-text-faint block mb-1">País de origen</label>
-                <select value={fPais} onChange={(e) => { registrarHistorialForm(); setFPais(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none">
-                  <option value="">Selecciona…</option>
-                  {PAISES_IMPORTACION.map((p) => (
-                    <option key={p} value={p}>{p}</option>
-                  ))}
-                  {fPais && !PAISES_IMPORTACION.includes(fPais) && <option value={fPais}>{fPais}</option>}
-                </select>
+                <BuscadorCatalogo
+                  valor={fPais}
+                  onChange={(v) => { registrarHistorialForm(); setFPais(v); }}
+                  catalogo={catalogoPaises}
+                  onAgregarAlCatalogo={agregarPaisAlCatalogo}
+                  placeholder="Ej. CHINA"
+                />
               </div>
               <div><label className="text-[11.5px] text-text-faint block mb-1">Tienda</label><input value={fTienda} onChange={(e) => { registrarHistorialForm(); setFTienda(e.target.value); }} className="w-full card px-3 py-2 text-[13px] outline-none" /></div>
               <div className="col-span-2">

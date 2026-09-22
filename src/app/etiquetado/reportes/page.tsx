@@ -8,7 +8,7 @@ import { createClient } from "@/lib/supabase-browser";
 import * as XLSX from "xlsx";
 import { Printer, X, Check, HelpCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
-import { PAISES_IMPORTACION } from "@/lib/paises";
+import { BuscadorCatalogo } from "@/components/BuscadorCatalogo";
 import {
   BarChart,
   Bar,
@@ -293,6 +293,36 @@ export default function ReportesEtiquetadoPage() {
   const [egTipoEtiqueta, setEgTipoEtiqueta] = useState("COSIDO");
   const [egNovedad, setEgNovedad] = useState("");
   const [guardandoDatosGenerales, setGuardandoDatosGenerales] = useState(false);
+
+  // Catálogo de países (compartido con el módulo de captura): permite
+  // agregar uno que no esté en la lista sin bloquear el trabajo.
+  const [catalogoPaises, setCatalogoPaises] = useState<string[]>([]);
+
+  const cargarCatalogoPaises = useCallback(async () => {
+    const { data } = await supabase
+      .from("etq_paises_catalogo")
+      .select("pais")
+      .order("pais");
+    setCatalogoPaises((data ?? []).map((d: { pais: string }) => d.pais));
+  }, [supabase]);
+
+  useEffect(() => {
+    cargarCatalogoPaises();
+  }, [cargarCatalogoPaises]);
+
+  async function agregarPaisAlCatalogo(texto: string) {
+    const limpio = texto.trim().toUpperCase();
+    if (!limpio) return;
+    const { error } = await supabase
+      .from("etq_paises_catalogo")
+      .insert({ pais: limpio })
+      .select()
+      .maybeSingle();
+    if (error && !error.message.includes("duplicate")) {
+      setErrorMsg(`No se pudo agregar el país al catálogo: ${error.message}`);
+    }
+    cargarCatalogoPaises();
+  }
 
   // Unificar dos códigos que en realidad son el mismo producto (el
   // proveedor a veces manda un código distinto para completar un
@@ -2887,17 +2917,13 @@ export default function ReportesEtiquetadoPage() {
                   </div>
                   <div>
                     <label className="text-[10.5px] text-text-faint block mb-1">País de origen</label>
-                    <select
-                      value={egPais}
-                      onChange={(e) => setEgPais(e.target.value)}
-                      className="w-full card px-2.5 py-1.5 text-[12.5px] outline-none"
-                    >
-                      <option value="">Selecciona…</option>
-                      {PAISES_IMPORTACION.map((p) => (
-                        <option key={p} value={p}>{p}</option>
-                      ))}
-                      {egPais && !PAISES_IMPORTACION.includes(egPais) && <option value={egPais}>{egPais}</option>}
-                    </select>
+                    <BuscadorCatalogo
+                      valor={egPais}
+                      onChange={setEgPais}
+                      catalogo={catalogoPaises}
+                      onAgregarAlCatalogo={agregarPaisAlCatalogo}
+                      placeholder="Ej. CHINA"
+                    />
                   </div>
                   <div>
                     <label className="text-[10.5px] text-text-faint block mb-1">Tienda</label>
