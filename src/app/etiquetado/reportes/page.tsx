@@ -1161,14 +1161,25 @@ export default function ReportesEtiquetadoPage() {
     // mismo número (o sin caja todavía) mantienen su orden relativo.
     const filasOrdenadas = [...filas].sort((a, b) => menorNumeroCaja(a.cajas) - menorNumeroCaja(b.cajas));
 
+    // Filtro final por CAJA a nivel de fila: itemsDeLaCaja ya dejó pasar el
+    // código completo si su campo de cajas combinado contenía el número
+    // (ese campo incluye también las cajas de sus variantes, para cuadrar
+    // el total contra factura) — pero aquí se decide qué fila exacta se
+    // muestra, para que filtrar por la caja de una variante no arrastre
+    // también la fila propia del código con OTRA caja que no coincide.
+    const cajaActivaFinal = cajaFiltro.trim();
+    const filasPorCaja = cajaActivaFinal
+      ? filasOrdenadas.filter((f) => textoContieneCaja(f.cajas, cajaActivaFinal))
+      : filasOrdenadas;
+
     // Filtro final por PALET a nivel de fila: itemsDelPalet ya dejó pasar el
     // código completo si el código o alguna de sus variantes coincidía, pero
     // aquí se decide qué fila exacta se muestra — para que un código en un
     // palet no arrastre a la vista la fila de una variante de OTRO palet
     // (y viceversa: seleccionar el palet de una variante muestra solo esa
     // fila, no la del código base que está en otro palet).
-    if (paletSeleccionado === "todos") return filasOrdenadas;
-    return filasOrdenadas.filter((f) => (f.palet ?? "").trim() === paletSeleccionado);
+    if (paletSeleccionado === "todos") return filasPorCaja;
+    return filasPorCaja.filter((f) => (f.palet ?? "").trim() === paletSeleccionado);
   }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
 
   // Marca/desmarca "Ya impreso" en la fila. Actualiza la tabla correcta
