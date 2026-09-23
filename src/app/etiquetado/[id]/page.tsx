@@ -1174,20 +1174,41 @@ export default function DetalleEtiquetadoPage() {
       });
     }
 
-    // Registrar el desglose de tallas por caja SOLO cuando es un código nuevo
-    // (ahí sí sabemos con certeza que todas sus tallas corresponden a las
-    // cajas que se acaban de escribir). En edición de un código existente no
-    // se registra, porque no se puede saber con certeza qué parte del texto
-    // de cajas es "nueva" — evita guardar un desglose incorrecto.
-    if (!editId && itemId && fCajas.trim() && sumarTallas(fTallas) > 0) {
+    // Registrar el desglose de tallas por caja cuando es un código nuevo (ahí
+    // sabemos con certeza que todas sus tallas son de las cajas recién
+    // escritas), o cuando se edita uno que tiene UNA SOLA caja (ahí también
+    // se sabe con certeza que el total le pertenece solo a esa caja, aunque
+    // se haya llenado después de crear el código). Si tiene varias cajas
+    // mezcladas no se toca nada — no hay forma de saber qué parte es de cada
+    // una, y así se evita guardar un desglose incorrecto.
+    const tokensCajasGuardado = fCajas.trim().match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi);
+    const esUnaSolaCajaGuardado = tokensCajasGuardado?.length === 1;
+    if (itemId && fCajas.trim() && sumarTallas(fTallas) > 0 && (!editId || esUnaSolaCajaGuardado)) {
       const matchNumero = fCajas.trim().match(/^\s*(\d+)/);
-      await supabase.from("etq_tallas_por_caja").insert({
-        item_id: itemId,
-        variante_id: null,
-        caja: fCajas.trim(),
-        numero_caja: matchNumero ? matchNumero[1] : null,
-        tallas_detalle: fTallas,
-      });
+      const numeroCaja = matchNumero ? matchNumero[1] : null;
+      if (numeroCaja) {
+        const { data: filaExistente } = await supabase
+          .from("etq_tallas_por_caja")
+          .select("id")
+          .eq("item_id", itemId)
+          .is("variante_id", null)
+          .eq("numero_caja", numeroCaja)
+          .maybeSingle();
+        if (filaExistente) {
+          await supabase
+            .from("etq_tallas_por_caja")
+            .update({ caja: fCajas.trim(), tallas_detalle: fTallas })
+            .eq("id", filaExistente.id);
+        } else {
+          await supabase.from("etq_tallas_por_caja").insert({
+            item_id: itemId,
+            variante_id: null,
+            caja: fCajas.trim(),
+            numero_caja: numeroCaja,
+            tallas_detalle: fTallas,
+          });
+        }
+      }
     }
 
     setShowForm(false);
