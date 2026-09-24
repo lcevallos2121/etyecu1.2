@@ -85,6 +85,20 @@ type TallasPorCaja = {
   tallas_detalle: Record<string, number> | null;
 };
 
+// Desglose de "ya_impreso" por CAJA FÍSICA: etq_items/etq_variantes solo
+// guardan un booleano por FILA, pero una fila puede agrupar varias cajas
+// (ej. "250(18) 259(6) 260(12)") — marcar impreso viendo una sola caja
+// filtrada marcaba las tres juntas. Esta tabla desglosa el estado real por
+// caja, igual que TallasPorCaja desglosa las tallas.
+type CajaImpresa = {
+  id: string;
+  item_id: string;
+  variante_id: string | null;
+  caja: string;
+  numero_caja: string | null;
+  impreso: boolean;
+};
+
 type Movimiento = {
   id: string;
   orden_id: string;
@@ -239,6 +253,7 @@ export default function ReportesEtiquetadoPage() {
   const [items, setItems] = useState<ItemEtq[]>([]);
   const [variantesTodas, setVariantesTodas] = useState<VarianteEtq[]>([]);
   const [tallasPorCajaTodas, setTallasPorCajaTodas] = useState<TallasPorCaja[]>([]);
+  const [cajasImpresasTodas, setCajasImpresasTodas] = useState<CajaImpresa[]>([]);
   const [movimientos, setMovimientos] = useState<Movimiento[]>([]);
   const [mesas, setMesas] = useState<Mesa[]>([]);
   const [loading, setLoading] = useState(true);
@@ -355,7 +370,7 @@ export default function ReportesEtiquetadoPage() {
     // Cada tabla se trae PAGINADA (traerTodo) para no quedar cortada en las
     // primeras 1000 filas: este panel calcula KPIs y gráficos sobre TODAS las
     // órdenes a la vez, así que necesita el dataset completo.
-    const [ordRes, itemsRes, movRes, mesasRes, varRes, tallasCajaRes] = await Promise.all([
+    const [ordRes, itemsRes, movRes, mesasRes, varRes, tallasCajaRes, cajasImpresasRes] = await Promise.all([
       traerTodo<OrdenEtq>((desde, hasta) =>
         supabase
           .from("etq_ordenes")
@@ -393,6 +408,12 @@ export default function ReportesEtiquetadoPage() {
           .select("id, item_id, variante_id, caja, numero_caja, tallas_detalle")
           .range(desde, hasta)
       ),
+      traerTodo<CajaImpresa>((desde, hasta) =>
+        supabase
+          .from("etq_cajas_impresas")
+          .select("id, item_id, variante_id, caja, numero_caja, impreso")
+          .range(desde, hasta)
+      ),
     ]);
 
     if (ordRes.error) {
@@ -411,6 +432,7 @@ export default function ReportesEtiquetadoPage() {
     setMesas((mesasRes.data as Mesa[]) ?? []);
     setVariantesTodas((varRes.data as VarianteEtq[]) ?? []);
     setTallasPorCajaTodas((tallasCajaRes.data as TallasPorCaja[]) ?? []);
+    setCajasImpresasTodas((cajasImpresasRes.data as CajaImpresa[]) ?? []);
     setLoading(false);
   }, [supabase]);
 
@@ -986,6 +1008,58 @@ export default function ReportesEtiquetadoPage() {
     return encontrado ? encontrado[0] : cajasTexto;
   }
 
+  // Descompone el texto de cajas de una fila en sus cajas físicas
+  // individuales: "250(18) 259(6) 260(12)" -> tres cajas separadas. Un
+  // rango ("179 A 182(96)") cuenta como una sola caja física en este
+  // desglose, igual que en etq_tallas_por_caja. Se usa para saber, caja por
+  // caja, si ya se marcó como impresa.
+  function extraerCajasIndividuales(cajasTexto: string | null | undefined): { caja: string; numeroCaja: string }[] {
+    if (!cajasTexto) return [];
+    const tokens = cajasTexto.match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi) ?? [];
+    return tokens
+      .map((t) => ({ caja: t.trim(), numeroCaja: t.match(/\d+/)?.[0] ?? "" }))
+      .filter((c) => c.numeroCaja);
+  }
+
+  // Busca si una caja física puntual ya fue marcada como impresa en
+  // etq_cajas_impresas. Sin registro todavía -> no impresa (nunca se asume
+  // impreso por defecto, para no repetir el bug que se está corrigiendo).
+  function cajaEstaImpresa(itemId: string, varianteId: string | null, numeroCaja: string): boolean {
+    const registro = cajasImpresasTodas.find(
+      (c) => c.item_id === itemId && c.variante_id === varianteId && c.numero_caja === numeroCaja
+    );
+    return registro?.impreso ?? false;
+  }
+
+  // Estado "impreso" a mostrar para una fila completa: con filtro de caja
+  // activo, el de esa caja puntual. Sin filtro, la fila representa TODAS
+  // las cajas que agrupa su campo "cajas" — se muestra marcada solo si
+  // TODAS están impresas, para no dar un falso "ya impreso" parcial. Si el
+  // texto de cajas no tiene ningún número reconocible, se usa el valor
+  // viejo (fallback) tal como estaba antes de este desglose.
+  function calcularYaImpreso(
+    itemId: string,
+    varianteId: string | null,
+    cajasTexto: string | null,
+    cajaActiva: string,
+    fallback: boolean
+  ): boolean {
+    if (cajaActiva) return cajaEstaImpresa(itemId, varianteId, cajaActiva);
+    const individuales = extraerCajasIndividuales(cajasTexto);
+    if (individuales.length === 0) return fallback;
+    return individuales.every((c) => cajaEstaImpresa(itemId, varianteId, c.numeroCaja));
+  }
+
+  // Para el filtro de "impreso" en Inconsistencias (a nivel de código
+  // completo, no de caja puntual): un código cuenta como impreso si
+  // AL MENOS una de sus cajas ya está marcada. Si todavía no tiene ningún
+  // registro por caja (código sin desglose reconocible), cae al valor
+  // viejo de etq_items.ya_impreso.
+  function itemMarcadoComoImpreso(itemId: string, fallback: boolean): boolean {
+    const registros = cajasImpresasTodas.filter((c) => c.item_id === itemId && c.variante_id === null);
+    if (registros.length === 0) return fallback;
+    return registros.some((c) => c.impreso);
+  }
 
   // tiene variantes). Así Isabel ve por separado cada color/composición con
   // su propio desglose de tallas, listo para saber qué imprimir de cada uno.
@@ -1056,7 +1130,7 @@ export default function ReportesEtiquetadoPage() {
           sinDesgloseDeCaja: sinDesglose,
           tieneCodigo: it.tiene_codigo,
           tieneTalla: it.tiene_talla,
-          yaImpreso: it.ya_impreso ?? false,
+          yaImpreso: calcularYaImpreso(it.id, null, it.cajas, cajaActiva, it.ya_impreso ?? false),
           tipoEtiqueta: it.tipo_etiqueta,
         });
       } else {
@@ -1105,7 +1179,7 @@ export default function ReportesEtiquetadoPage() {
           sinDesgloseDeCaja: sinDesglosePropio,
           tieneCodigo: it.tiene_codigo,
           tieneTalla: it.tiene_talla,
-          yaImpreso: it.ya_impreso ?? false,
+          yaImpreso: calcularYaImpreso(it.id, null, cajasPropias, cajaActiva, it.ya_impreso ?? false),
           tipoEtiqueta: it.tipo_etiqueta,
         });
 
@@ -1148,7 +1222,7 @@ export default function ReportesEtiquetadoPage() {
             sinDesgloseDeCaja: sinDesglose,
             tieneCodigo: v.tiene_codigo,
             tieneTalla: v.tiene_talla,
-            yaImpreso: v.ya_impreso ?? false,
+            yaImpreso: calcularYaImpreso(it.id, v.id, v.cajas, cajaActiva, v.ya_impreso ?? false),
             tipoEtiqueta: it.tipo_etiqueta,
           });
         });
@@ -1180,34 +1254,82 @@ export default function ReportesEtiquetadoPage() {
     // fila, no la del código base que está en otro palet).
     if (paletSeleccionado === "todos") return filasPorCaja;
     return filasPorCaja.filter((f) => (f.palet ?? "").trim() === paletSeleccionado);
-  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
+  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajasImpresasTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
 
-  // Marca/desmarca "Ya impreso" en la fila. Actualiza la tabla correcta
-  // (etq_items o etq_variantes) según si la fila es un código simple o una
-  // variante de color, usando el id REAL de cada una.
+  // Marca/desmarca "Ya impreso" en la fila, caja por caja. Con filtro de
+  // caja activo, marca SOLO esa caja puntual. Sin filtro, marca/desmarca
+  // TODAS las cajas que agrupa la fila a la vez (bloque completo). Si el
+  // texto de cajas no tiene ningún número reconocible (dato viejo sin
+  // desglose), cae al comportamiento anterior sobre etq_items/etq_variantes.
   async function toggleYaImpreso(fila: FilaInventario) {
     const nuevoValor = !fila.yaImpreso;
-    const tabla = fila.esVarianteParaGuardar ? "etq_variantes" : "etq_items";
-    const { error } = await supabase
-      .from(tabla)
-      .update({ ya_impreso: nuevoValor })
-      .eq("id", fila.idReal);
-    if (error) {
-      setToast(`No se pudo actualizar: ${error.message}`);
+    const itemId = fila.esVarianteParaGuardar
+      ? variantesTodas.find((v) => v.id === fila.idReal)?.item_id ?? null
+      : fila.idReal;
+    const varianteId = fila.esVarianteParaGuardar ? fila.idReal : null;
+    const cajaActiva = cajaFiltro.trim();
+    const cajasATocar = cajaActiva
+      ? extraerCajasIndividuales(fila.cajas).filter((c) => c.numeroCaja === cajaActiva)
+      : extraerCajasIndividuales(fila.cajas);
+
+    if (!itemId || cajasATocar.length === 0) {
+      // Sin caja reconocible: mantener el comportamiento anterior, marcando
+      // el registro completo (etq_items/etq_variantes).
+      const tabla = fila.esVarianteParaGuardar ? "etq_variantes" : "etq_items";
+      const { error } = await supabase.from(tabla).update({ ya_impreso: nuevoValor }).eq("id", fila.idReal);
+      if (error) {
+        setToast(`No se pudo actualizar: ${error.message}`);
+        return;
+      }
+      if (fila.esVarianteParaGuardar) {
+        setVariantesTodas((prev) =>
+          prev.map((v) => (v.id === fila.idReal ? { ...v, ya_impreso: nuevoValor } : v))
+        );
+      } else {
+        setItems((prev) =>
+          prev.map((it) => (it.id === fila.idReal ? { ...it, ya_impreso: nuevoValor } : it))
+        );
+      }
       return;
     }
-    // Actualiza solo esa fila en el estado local, SIN recargar toda la
-    // tabla desde el servidor — así no hay parpadeo ni reordenamiento
-    // visual, el resaltado se ve al instante y de forma estable.
-    if (fila.esVarianteParaGuardar) {
-      setVariantesTodas((prev) =>
-        prev.map((v) => (v.id === fila.idReal ? { ...v, ya_impreso: nuevoValor } : v))
+
+    for (const c of cajasATocar) {
+      const existente = cajasImpresasTodas.find(
+        (r) => r.item_id === itemId && r.variante_id === varianteId && r.numero_caja === c.numeroCaja
       );
-    } else {
-      setItems((prev) =>
-        prev.map((it) => (it.id === fila.idReal ? { ...it, ya_impreso: nuevoValor } : it))
-      );
+      if (existente) {
+        const { error } = await supabase
+          .from("etq_cajas_impresas")
+          .update({ impreso: nuevoValor, caja: c.caja, actualizado_en: new Date().toISOString() })
+          .eq("id", existente.id);
+        if (error) {
+          setToast(`No se pudo actualizar: ${error.message}`);
+          return;
+        }
+      } else {
+        const { error } = await supabase.from("etq_cajas_impresas").insert({
+          item_id: itemId,
+          variante_id: varianteId,
+          caja: c.caja,
+          numero_caja: c.numeroCaja,
+          impreso: nuevoValor,
+        });
+        if (error) {
+          setToast(`No se pudo actualizar: ${error.message}`);
+          return;
+        }
+      }
     }
+    // Se recarga solo la tabla de cajas impresas (liviana), no todo el
+    // reporte — para que las inserciones nuevas queden con su id real sin
+    // parpadeo en el resto de la pantalla.
+    const { data } = await traerTodo<CajaImpresa>((desde, hasta) =>
+      supabase
+        .from("etq_cajas_impresas")
+        .select("id, item_id, variante_id, caja, numero_caja, impreso")
+        .range(desde, hasta)
+    );
+    setCajasImpresasTodas(data ?? []);
   }
 
   // Marca/desmarca "Revisado" en Inconsistencias, directamente sobre
@@ -1295,8 +1417,9 @@ export default function ReportesEtiquetadoPage() {
       if (paletInconsistencia !== "todos" && (it.palet ?? "").trim() !== paletInconsistencia) return false;
       if (cajaFiltroInconsistencia.trim() && !textoContieneCaja(it.cajas, cajaFiltroInconsistencia.trim()))
         return false;
-      if (filtroImpreso === "impreso" && !it.ya_impreso) return false;
-      if (filtroImpreso === "sin_imprimir" && it.ya_impreso) return false;
+      const marcadoComoImpreso = itemMarcadoComoImpreso(it.id, it.ya_impreso ?? false);
+      if (filtroImpreso === "impreso" && !marcadoComoImpreso) return false;
+      if (filtroImpreso === "sin_imprimir" && marcadoComoImpreso) return false;
       if (!q) return true;
       const codigo = (it.codigo ?? "").toLowerCase();
       const descripcion = (it.descripcion ?? "").toLowerCase();
@@ -1311,6 +1434,7 @@ export default function ReportesEtiquetadoPage() {
     paletInconsistencia,
     cajaFiltroInconsistencia,
     busquedaInconsistencias,
+    cajasImpresasTodas,
   ]);
 
   const itemEnRevision = items.find((it) => it.id === itemRevisarId) ?? null;
