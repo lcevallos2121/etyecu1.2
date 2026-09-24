@@ -1287,19 +1287,52 @@ export default function DetalleEtiquetadoPage() {
       return;
     }
 
-    // Sumar las tallas nuevas a las que ya tenía el código
+    const cajaTexto = cajaNuevaTallas.trim();
+    const matchNumero = cajaTexto.match(/^\s*(\d+)/);
+    const numeroCaja = matchNumero ? matchNumero[1] : null;
+
+    // ¿Esa caja ya tiene un desglose guardado de antes? Si sí, esto es una
+    // CORRECCIÓN de esa misma caja (no una caja nueva que se suma aparte) —
+    // evita duplicar el registro y descuadrar el total del código.
+    let filaExistente: { id: string; caja: string | null; tallas_detalle: Record<string, number> | null } | null = null;
+    if (cajaTexto && numeroCaja) {
+      const { data } = await supabase
+        .from("etq_tallas_por_caja")
+        .select("id, caja, tallas_detalle")
+        .eq("item_id", itemAgregarTallas.id)
+        .is("variante_id", null)
+        .eq("numero_caja", numeroCaja)
+        .maybeSingle();
+      filaExistente = data;
+    }
+
+    // Sumar las tallas nuevas a las que ya tenía el código — si es una
+    // corrección, primero se le resta lo viejo de esa caja para no contarlo
+    // dos veces, y luego se suma lo nuevo.
     const tallasCombinadas: Record<string, number> = { ...(itemAgregarTallas.tallas_detalle ?? {}) };
+    if (filaExistente?.tallas_detalle) {
+      Object.entries(filaExistente.tallas_detalle).forEach(([talla, cant]) => {
+        const restante = (tallasCombinadas[talla] ?? 0) - Number(cant || 0);
+        if (restante > 0) tallasCombinadas[talla] = restante;
+        else delete tallasCombinadas[talla];
+      });
+    }
     Object.entries(tallasNuevas).forEach(([talla, cant]) => {
       tallasCombinadas[talla] = (tallasCombinadas[talla] ?? 0) + cant;
     });
 
-    // Si además escribió la caja nueva, se suma también a las cajas existentes
-    const nuevasCajas = cajaNuevaTallas.trim()
-      ? ((itemAgregarTallas.cajas ?? "") + " " + cajaNuevaTallas.trim()).trim()
-      : itemAgregarTallas.cajas;
-    const nuevaCantidadContada = cajaNuevaTallas.trim()
-      ? sumarCajas(nuevasCajas)
-      : itemAgregarTallas.cantidad_contada;
+    // Cajas: si es corrección, se reemplaza el texto viejo de esa caja por el
+    // nuevo (no se suma otra vez); si es una caja realmente nueva, se agrega.
+    let nuevasCajas = itemAgregarTallas.cajas ?? "";
+    let nuevaCantidadContada = itemAgregarTallas.cantidad_contada;
+    if (cajaTexto) {
+      const cajaVieja = filaExistente?.caja?.trim();
+      nuevasCajas =
+        cajaVieja && nuevasCajas.includes(cajaVieja)
+          ? nuevasCajas.replace(cajaVieja, cajaTexto).replace(/\s+/g, " ").trim()
+          : (nuevasCajas + " " + cajaTexto).trim();
+      nuevaCantidadContada = sumarCajas(nuevasCajas);
+    }
 
     const { error } = await supabase
       .from("etq_items")
@@ -1316,28 +1349,35 @@ export default function DetalleEtiquetadoPage() {
       return;
     }
 
-    // Registrar el movimiento (mesa + hora) si se agregó una caja nueva
-    if (cajaNuevaTallas.trim()) {
+    // Registrar el movimiento (mesa + hora) si se agregó o corrigió una caja
+    if (cajaTexto) {
       await supabase.from("etq_movimientos").insert({
         orden_id: id,
         item_id: itemAgregarTallas.id,
         mesa_id: mesaActivaId || null,
         fase: faseActiva,
         codigo: itemAgregarTallas.codigo,
-        caja: cajaNuevaTallas.trim(),
-        cantidad: sumarCajas(cajaNuevaTallas),
+        caja: cajaTexto,
+        cantidad: sumarCajas(cajaTexto),
       });
 
       // Registrar SOLO las tallas de esta caja puntual, para poder filtrar
-      // por caja específica más adelante sin perder el desglose.
-      const matchNumero = cajaNuevaTallas.trim().match(/^\s*(\d+)/);
-      await supabase.from("etq_tallas_por_caja").insert({
-        item_id: itemAgregarTallas.id,
-        variante_id: null,
-        caja: cajaNuevaTallas.trim(),
-        numero_caja: matchNumero ? matchNumero[1] : null,
-        tallas_detalle: tallasNuevas,
-      });
+      // por caja específica más adelante sin perder el desglose — si ya
+      // existía un registro de esta caja, se actualiza en vez de duplicarlo.
+      if (filaExistente) {
+        await supabase
+          .from("etq_tallas_por_caja")
+          .update({ caja: cajaTexto, numero_caja: numeroCaja, tallas_detalle: tallasNuevas })
+          .eq("id", filaExistente.id);
+      } else {
+        await supabase.from("etq_tallas_por_caja").insert({
+          item_id: itemAgregarTallas.id,
+          variante_id: null,
+          caja: cajaTexto,
+          numero_caja: numeroCaja,
+          tallas_detalle: tallasNuevas,
+        });
+      }
     }
 
     setShowAgregarTallas(false);
