@@ -1291,6 +1291,24 @@ export default function DetalleEtiquetadoPage() {
     const matchNumero = cajaTexto.match(/^\s*(\d+)/);
     const numeroCaja = matchNumero ? matchNumero[1] : null;
 
+    // Se relee el código DIRECTO de la base de datos (no del estado que el
+    // navegador cargó cuando se abrió este modal): si otra mesa guardó una
+    // caja de este mismo código mientras el modal seguía abierto acá, el
+    // estado local queda desactualizado y sumar/restar sobre ese total
+    // viejo termina borrando silenciosamente el aporte de la otra mesa —
+    // esto fue justo lo que pasó con T04026-UR-10-26 (126 en cajas/factura
+    // pero solo 48 en tallas: una mesa pisó, sin darse cuenta, la caja que
+    // ya había guardado la otra).
+    const { data: itemActual, error: errorItemActual } = await supabase
+      .from("etq_items")
+      .select("tallas_detalle, cajas, cantidad_contada")
+      .eq("id", itemAgregarTallas.id)
+      .single();
+    if (errorItemActual || !itemActual) {
+      setErrorMsg(errorItemActual?.message ?? "No se pudo leer el código actual.");
+      return;
+    }
+
     // ¿Esa caja ya tiene un desglose guardado de antes? Si sí, esto es una
     // CORRECCIÓN de esa misma caja (no una caja nueva que se suma aparte) —
     // evita duplicar el registro y descuadrar el total del código.
@@ -1309,7 +1327,7 @@ export default function DetalleEtiquetadoPage() {
     // Sumar las tallas nuevas a las que ya tenía el código — si es una
     // corrección, primero se le resta lo viejo de esa caja para no contarlo
     // dos veces, y luego se suma lo nuevo.
-    const tallasCombinadas: Record<string, number> = { ...(itemAgregarTallas.tallas_detalle ?? {}) };
+    const tallasCombinadas: Record<string, number> = { ...(itemActual.tallas_detalle ?? {}) };
     if (filaExistente?.tallas_detalle) {
       Object.entries(filaExistente.tallas_detalle).forEach(([talla, cant]) => {
         const restante = (tallasCombinadas[talla] ?? 0) - Number(cant || 0);
@@ -1323,8 +1341,8 @@ export default function DetalleEtiquetadoPage() {
 
     // Cajas: si es corrección, se reemplaza el texto viejo de esa caja por el
     // nuevo (no se suma otra vez); si es una caja realmente nueva, se agrega.
-    let nuevasCajas = itemAgregarTallas.cajas ?? "";
-    let nuevaCantidadContada = itemAgregarTallas.cantidad_contada;
+    let nuevasCajas = itemActual.cajas ?? "";
+    let nuevaCantidadContada = itemActual.cantidad_contada;
     if (cajaTexto) {
       const cajaVieja = filaExistente?.caja?.trim();
       nuevasCajas =
