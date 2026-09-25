@@ -746,14 +746,31 @@ export default function DetalleEtiquetadoPage() {
     setShowTallasConfig(true);
   }
 
+  // Las tallas de la orden son UNA lista compartida por TODAS las mesas que
+  // trabajan esa orden a la vez (cada una en su propio palet, a veces con
+  // tallas distintas). Guardar reemplazando la lista completa hacía que la
+  // mesa que guardaba de último borrara sin darse cuenta las tallas que
+  // OTRA mesa ya había configurado para su propio palet — por eso se
+  // relee la lista actual de la base de datos y se UNE (no se reemplaza)
+  // con lo que esta mesa quiere, igual que ya se corrigió para "+Tallas".
   async function guardarTallasOrden() {
     const arr = tallasInput
       .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
-    const { error } = await supabase.from("etq_ordenes").update({ tallas: arr }).eq("id", id);
+    const { data: ordenActual } = await supabase
+      .from("etq_ordenes")
+      .select("tallas")
+      .eq("id", id)
+      .single();
+    const tallasActuales = (ordenActual?.tallas as string[] | null) ?? [];
+    const unidas = [...tallasActuales];
+    arr.forEach((t) => {
+      if (!unidas.some((u) => u.toLowerCase() === t.toLowerCase())) unidas.push(t);
+    });
+    const { error } = await supabase.from("etq_ordenes").update({ tallas: unidas }).eq("id", id);
     if (error) { setErrorMsg(error.message); return; }
-    setTallasOrden(arr);
+    setTallasOrden(unidas);
     setShowTallasConfig(false);
     setToast("Tallas configuradas.");
   }
@@ -763,14 +780,24 @@ export default function DetalleEtiquetadoPage() {
   // estaba prevista (ej. una numeración de calzado puntual). Esto evita
   // que alguien tenga que "improvisar" escribiendo el valor en un campo
   // equivocado, que fue la causa real de datos corruptos en tallas.
+  // Igual que arriba, se relee la lista actual de la base de datos antes
+  // de agregar, para no pisar lo que otra mesa haya agregado mientras
+  // tanto (el mismo problema de lectura vieja que "+Tallas").
   async function agregarTallaNueva(nombreTalla: string) {
     const limpio = nombreTalla.trim();
     if (!limpio) return;
-    if (tallasOrden.some((t) => t.toLowerCase() === limpio.toLowerCase())) {
+    const { data: ordenActual } = await supabase
+      .from("etq_ordenes")
+      .select("tallas")
+      .eq("id", id)
+      .single();
+    const tallasActuales = (ordenActual?.tallas as string[] | null) ?? [];
+    if (tallasActuales.some((t) => t.toLowerCase() === limpio.toLowerCase())) {
       setToast(`La talla "${limpio}" ya está en la lista.`);
+      setTallasOrden(tallasActuales);
       return;
     }
-    const nuevoArr = [...tallasOrden, limpio];
+    const nuevoArr = [...tallasActuales, limpio];
     const { error } = await supabase.from("etq_ordenes").update({ tallas: nuevoArr }).eq("id", id);
     if (error) { setErrorMsg(error.message); return; }
     setTallasOrden(nuevoArr);
