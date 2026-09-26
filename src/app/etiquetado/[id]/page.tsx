@@ -742,7 +742,11 @@ export default function DetalleEtiquetadoPage() {
   }
 
   function abrirConfigTallas() {
-    setTallasInput((tallasOrden.length ? tallasOrden : tallasSugeridas()).join(", "));
+    // Si ya hay tallas configuradas, el cuadro de texto arranca vacío (es
+    // solo para AGREGAR nuevas — las ya existentes se ven como chips arriba,
+    // con su propia ✕ para quitarlas). Si todavía no hay ninguna, se
+    // pre-llena con una sugerencia para no arrancar de cero.
+    setTallasInput(tallasOrden.length ? "" : tallasSugeridas().join(", "));
     setShowTallasConfig(true);
   }
 
@@ -802,6 +806,23 @@ export default function DetalleEtiquetadoPage() {
     if (error) { setErrorMsg(error.message); return; }
     setTallasOrden(nuevoArr);
     setToast(`Talla "${limpio}" agregada.`);
+  }
+
+  // Quita UNA talla puntual de la lista (ej. se agregó por error), releyendo
+  // primero la lista actual de la base de datos — mismo motivo que agregar:
+  // no pisar tallas que otra mesa haya sumado mientras tanto.
+  async function eliminarTallaOrden(talla: string) {
+    const { data: ordenActual } = await supabase
+      .from("etq_ordenes")
+      .select("tallas")
+      .eq("id", id)
+      .single();
+    const tallasActuales = (ordenActual?.tallas as string[] | null) ?? [];
+    const nuevoArr = tallasActuales.filter((t) => t.toLowerCase() !== talla.toLowerCase());
+    const { error } = await supabase.from("etq_ordenes").update({ tallas: nuevoArr }).eq("id", id);
+    if (error) { setErrorMsg(error.message); return; }
+    setTallasOrden(nuevoArr);
+    setToast(`Talla "${talla}" eliminada.`);
   }
 
   function abrirDatosInforme() {
@@ -3249,8 +3270,29 @@ export default function DetalleEtiquetadoPage() {
               <button onClick={() => setShowTallasConfig(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
             </div>
             <p className="text-[12px] text-text-dim mb-3">
-              Escribe las tallas separadas por coma. Estas serán las columnas para capturar cantidades.
+              Escribe las tallas separadas por coma para AGREGAR nuevas. Para quitar una talla que ya
+              no se necesita (ej. se agregó por error), usa la ✕ junto a ella.
             </p>
+            {tallasOrden.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {tallasOrden.map((t) => (
+                  <span
+                    key={t}
+                    className="flex items-center gap-1 text-[11.5px] font-mono card px-2 py-1 rounded-md"
+                  >
+                    {t}
+                    <button
+                      type="button"
+                      onClick={() => eliminarTallaOrden(t)}
+                      title={`Quitar talla ${t}`}
+                      className="text-text-faint hover:text-red-400"
+                    >
+                      <X size={11} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <input
               value={tallasInput}
               onChange={(e) => setTallasInput(e.target.value)}
