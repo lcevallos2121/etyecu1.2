@@ -1400,10 +1400,52 @@ export default function DetalleEtiquetadoPage() {
       nuevaCantidadContada = sumarCajas(nuevasCajas);
     }
 
+    // Se guarda PRIMERO el desglose de esta caja puntual (antes que el total
+    // del código), para poder usarlo enseguida abajo.
+    if (cajaTexto) {
+      if (filaExistente) {
+        await supabase
+          .from("etq_tallas_por_caja")
+          .update({ caja: cajaTexto, numero_caja: numeroCaja, tallas_detalle: tallasNuevas })
+          .eq("id", filaExistente.id);
+      } else {
+        await supabase.from("etq_tallas_por_caja").insert({
+          item_id: itemAgregarTallas.id,
+          variante_id: null,
+          caja: cajaTexto,
+          numero_caja: numeroCaja,
+          tallas_detalle: tallasNuevas,
+        });
+      }
+    }
+
+    // Si TODAS las cajas del código ya tienen su propio desglose guardado
+    // (una por una suman igual que el total de cajas), se recalcula el total
+    // sumando ese desglose completo, en vez de sumar/restar sobre el total
+    // anterior — así el código se autocorrige solo si un descuadre viejo se
+    // venía arrastrando, en vez de perpetuarlo indefinidamente.
+    const { data: todasLasCajas } = await supabase
+      .from("etq_tallas_por_caja")
+      .select("caja, tallas_detalle")
+      .eq("item_id", itemAgregarTallas.id)
+      .is("variante_id", null);
+    const cajasRastreadas = todasLasCajas ?? [];
+    const cantidadRastreada = cajasRastreadas.reduce((acc, c) => acc + sumarCajas(c.caja), 0);
+    let tallasFinal = tallasCombinadas;
+    if (cajasRastreadas.length > 0 && cantidadRastreada === nuevaCantidadContada) {
+      const suma: Record<string, number> = {};
+      cajasRastreadas.forEach((c) => {
+        Object.entries(c.tallas_detalle ?? {}).forEach(([talla, cant]) => {
+          suma[talla] = (suma[talla] ?? 0) + Number(cant || 0);
+        });
+      });
+      tallasFinal = suma;
+    }
+
     const { error } = await supabase
       .from("etq_items")
       .update({
-        tallas_detalle: tallasCombinadas,
+        tallas_detalle: tallasFinal,
         cajas: nuevasCajas,
         cantidad_contada: nuevaCantidadContada,
         actualizado_en: new Date().toISOString(),
@@ -1426,24 +1468,6 @@ export default function DetalleEtiquetadoPage() {
         caja: cajaTexto,
         cantidad: sumarCajas(cajaTexto),
       });
-
-      // Registrar SOLO las tallas de esta caja puntual, para poder filtrar
-      // por caja específica más adelante sin perder el desglose — si ya
-      // existía un registro de esta caja, se actualiza en vez de duplicarlo.
-      if (filaExistente) {
-        await supabase
-          .from("etq_tallas_por_caja")
-          .update({ caja: cajaTexto, numero_caja: numeroCaja, tallas_detalle: tallasNuevas })
-          .eq("id", filaExistente.id);
-      } else {
-        await supabase.from("etq_tallas_por_caja").insert({
-          item_id: itemAgregarTallas.id,
-          variante_id: null,
-          caja: cajaTexto,
-          numero_caja: numeroCaja,
-          tallas_detalle: tallasNuevas,
-        });
-      }
     }
 
     setShowAgregarTallas(false);
