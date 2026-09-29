@@ -1396,13 +1396,17 @@ export default function ReportesEtiquetadoPage() {
 
   // ---- Módulo de Inconsistencias ----
 
-  // Códigos de la orden seleccionada con diferencia contra factura
+  // Códigos de la orden seleccionada con diferencia contra factura.
   // Todos los códigos con factura de la orden (completos e inconsistentes),
-  // para que el filtro pueda mostrar cualquiera de los tres estados.
+  // MÁS los códigos nuevos (que por definición no vienen en la factura
+  // original, así que su cantidad_factura queda en 0) — si se excluían por
+  // no tener factura, "Solo códigos nuevos" no mostraba nada y ni siquiera
+  // aparecían con el filtro "Todas" (caso reportado: BE12313F4 en la orden
+  // ETQ-2026-01-079).
   const inconsistencias = useMemo(() => {
     return itemsOrdenSeleccionada
       .map((it) => ({ ...it, diferencia: it.cantidad_contada - it.cantidad_factura }))
-      .filter((it) => it.cantidad_factura > 0);
+      .filter((it) => it.cantidad_factura > 0 || it.codigo_nuevo);
   }, [itemsOrdenSeleccionada]);
 
   const inconsistenciasFiltradas = useMemo(() => {
