@@ -1359,6 +1359,20 @@ export default function ReportesEtiquetadoPage() {
       const valorInenMarquilla = f.esVariante
         ? variantesTodas.find((v) => v.id === f.idReal)?.inen_marquilla
         : itemOriginal?.inen_marquilla;
+      // Estado contra factura (Completo/Faltante/Sobrante/Nuevo), a nivel de
+      // CÓDIGO — no de fila — porque la factura no se reparte por variante
+      // (igual que la columna Factura, que también queda vacía en esas
+      // filas). Pedido por Isabel: que el Excel que se le pasa al cliente
+      // ya muestre esto, sin tener que cruzarlo aparte.
+      let estado = "";
+      if (!f.esVariante && itemOriginal) {
+        if (itemOriginal.codigo_nuevo) {
+          estado = "Nuevo";
+        } else if (itemOriginal.cantidad_factura > 0) {
+          const diferencia = itemOriginal.cantidad_contada - itemOriginal.cantidad_factura;
+          estado = diferencia === 0 ? "Completo" : diferencia > 0 ? "Sobrante" : "Faltante";
+        }
+      }
       return {
         Palet: f.palet ?? "",
         Cajas: ordenarCajasTexto(f.cajas),
@@ -1372,6 +1386,7 @@ export default function ReportesEtiquetadoPage() {
         Tienda: itemOriginal?.tienda ?? "",
         País: f.pais ?? "",
         Factura: f.esVariante ? "" : itemOriginal?.cantidad_factura ?? "",
+        Estado: estado,
         Contado: f.cantidad,
         "Total etiquetas": f.totalTallas,
         Inen: valorInenMarquilla === "inen" ? "Sí" : "",
