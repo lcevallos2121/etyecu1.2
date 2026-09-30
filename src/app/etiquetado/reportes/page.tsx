@@ -1346,51 +1346,118 @@ export default function ReportesEtiquetadoPage() {
     setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, revisado: nuevoValor } : it)));
   }
 
-  // Descarga el inventario tal cual se ve en pantalla (mismas columnas y
-  // mismas filas ya filtradas por palet/caja/búsqueda), agregando el campo
-  // Tienda que no se muestra en la tabla pero sí se pide en la exportación.
+  // Descarga el inventario UNIFICADO por código (respetando los filtros de
+  // palet/caja/búsqueda que estén activos en pantalla) — este Excel es para
+  // que el cliente lo cruce contra el Informe Final en PDF, que factura por
+  // código unificado, no por cada variante de color/composición ni por cada
+  // caja ingresada por separado. Antes salía una fila por variante/ingreso
+  // y el mismo código aparecía repetido, lo que confundía al cliente al
+  // compararlo contra el PDF (caso reportado: STONE-04BS-UR-10-26, con una
+  // variante de composición, salía en dos filas en vez de una).
   function descargarInventarioExcel() {
     const ordenActual = ordenes.find((o) => o.id === ordenSeleccionadaId);
-    const filas = filasInventario.map((f) => {
-      const itemOriginal = itemsInventarioFiltrados.find((it) => it.id === f.key);
-      // Inen y Marquilla son mutuamente excluyentes (inen_marquilla solo
-      // puede ser "inen", "marquilla" o null) — se muestran como dos
-      // columnas separadas para que sea fácil filtrar/contar en Excel.
-      const valorInenMarquilla = f.esVariante
-        ? variantesTodas.find((v) => v.id === f.idReal)?.inen_marquilla
-        : itemOriginal?.inen_marquilla;
-      // Estado contra factura (Completo/Faltante/Sobrante/Nuevo), a nivel de
-      // CÓDIGO — no de fila — porque la factura no se reparte por variante
-      // (igual que la columna Factura, que también queda vacía en esas
-      // filas). Pedido por Isabel: que el Excel que se le pasa al cliente
-      // ya muestre esto, sin tener que cruzarlo aparte.
+
+    type GrupoExcel = {
+      palet: string;
+      cajas: string[];
+      codigo: string;
+      marca: string;
+      descripcion: string;
+      colores: Set<string>;
+      composiciones: Set<string>;
+      tallas: Record<string, number>;
+      tipoEtiqueta: string;
+      tienda: string;
+      pais: string;
+      factura: number | "";
+      contado: number;
+      inen: boolean;
+      marquilla: boolean;
+      novedad: string;
+      codigoNuevo: boolean;
+    };
+
+    const grupos = new Map<string, GrupoExcel>();
+
+    filasInventario.forEach((f) => {
+      const itemId = f.esVarianteParaGuardar
+        ? variantesTodas.find((v) => v.id === f.idReal)?.item_id ?? f.idReal
+        : f.idReal;
+      const itemOriginal = itemsInventarioFiltrados.find((it) => it.id === itemId);
+      const varianteOriginal = f.esVariante
+        ? variantesTodas.find((v) => v.id === f.idReal)
+        : null;
+
+      if (!grupos.has(itemId)) {
+        grupos.set(itemId, {
+          palet: itemOriginal?.palet ?? f.palet ?? "",
+          cajas: [],
+          codigo: f.codigo ?? "",
+          marca: itemOriginal?.marca ?? f.marca ?? "",
+          descripcion: itemOriginal?.descripcion ?? f.descripcion ?? "",
+          colores: new Set(),
+          composiciones: new Set(),
+          tallas: {},
+          tipoEtiqueta: itemOriginal?.tipo_etiqueta ?? f.tipoEtiqueta ?? "",
+          tienda: itemOriginal?.tienda ?? "",
+          pais: itemOriginal?.pais ?? f.pais ?? "",
+          factura: itemOriginal?.cantidad_factura ?? "",
+          contado: itemOriginal?.cantidad_contada ?? 0,
+          inen: itemOriginal?.inen_marquilla === "inen",
+          marquilla: itemOriginal?.inen_marquilla === "marquilla",
+          novedad: itemOriginal?.novedad ?? "",
+          codigoNuevo: !!itemOriginal?.codigo_nuevo,
+        });
+      }
+      const grupo = grupos.get(itemId)!;
+      if (f.cajas) grupo.cajas.push(f.cajas);
+      if (f.color) grupo.colores.add(f.color);
+      if (f.composicion) grupo.composiciones.add(f.composicion);
+      const tallasDeLaFila = f.esVariante ? varianteOriginal?.tallas_detalle : itemOriginal?.tallas_detalle;
+      Object.entries(tallasDeLaFila ?? {}).forEach(([talla, cant]) => {
+        grupo.tallas[talla] = (grupo.tallas[talla] ?? 0) + Number(cant || 0);
+      });
+      if (varianteOriginal?.inen_marquilla === "inen") grupo.inen = true;
+      if (varianteOriginal?.inen_marquilla === "marquilla") grupo.marquilla = true;
+    });
+
+    // Los códigos nuevos van al final del Excel (pedido de Isabel), el
+    // resto ordenado por su número de caja más bajo, igual que en pantalla.
+    const gruposOrdenados = Array.from(grupos.values()).sort((a, b) => {
+      if (a.codigoNuevo !== b.codigoNuevo) return a.codigoNuevo ? 1 : -1;
+      return menorNumeroCaja(a.cajas.join(" ")) - menorNumeroCaja(b.cajas.join(" "));
+    });
+
+    const filas = gruposOrdenados.map((g) => {
+      // Estado contra factura (Completo/Faltante/Sobrante/Nuevo) — los
+      // códigos nuevos no tienen factura de referencia, así que se marcan
+      // aparte en vez de calcular una diferencia contra 0.
       let estado = "";
-      if (!f.esVariante && itemOriginal) {
-        if (itemOriginal.codigo_nuevo) {
-          estado = "Nuevo";
-        } else if (itemOriginal.cantidad_factura > 0) {
-          const diferencia = itemOriginal.cantidad_contada - itemOriginal.cantidad_factura;
-          estado = diferencia === 0 ? "Completo" : diferencia > 0 ? "Sobrante" : "Faltante";
-        }
+      if (g.codigoNuevo) {
+        estado = "Nuevo";
+      } else if (typeof g.factura === "number" && g.factura > 0) {
+        const diferencia = g.contado - g.factura;
+        estado = diferencia === 0 ? "Completo" : diferencia > 0 ? "Sobrante" : "Faltante";
       }
       return {
-        Palet: f.palet ?? "",
-        Cajas: ordenarCajasTexto(f.cajas),
-        Código: f.codigo ?? "",
-        Marca: itemOriginal?.marca ?? "",
-        Descripción: f.descripcion ?? "",
-        Color: f.color ?? "",
-        Tallas: f.tallasTexto,
-        Composición: f.composicion ?? "",
-        "Tipo etiqueta": f.tipoEtiqueta ?? "",
-        Tienda: itemOriginal?.tienda ?? "",
-        País: f.pais ?? "",
-        Factura: f.esVariante ? "" : itemOriginal?.cantidad_factura ?? "",
+        Palet: g.palet,
+        Cajas: ordenarCajasTexto(g.cajas.join(" ")),
+        Código: g.codigo,
+        Marca: g.marca,
+        Descripción: g.descripcion,
+        Color: Array.from(g.colores).join(" / "),
+        Tallas: formatoTallas(g.tallas),
+        Composición: Array.from(g.composiciones).join(" / "),
+        "Tipo etiqueta": g.tipoEtiqueta,
+        Tienda: g.tienda,
+        País: g.pais,
+        Factura: g.factura,
         Estado: estado,
-        Contado: f.cantidad,
-        "Total etiquetas": f.totalTallas,
-        Inen: valorInenMarquilla === "inen" ? "Sí" : "",
-        Marquilla: valorInenMarquilla === "marquilla" ? "Sí" : "",
+        Contado: g.contado,
+        "Total etiquetas": sumarTallasDetalle(g.tallas),
+        Inen: g.inen ? "Sí" : "",
+        Marquilla: g.marquilla ? "Sí" : "",
+        Novedad: g.novedad,
       };
     });
 
