@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { Printer, X, Check, HelpCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import { BuscadorCatalogo } from "@/components/BuscadorCatalogo";
@@ -1354,7 +1354,7 @@ export default function ReportesEtiquetadoPage() {
   // y el mismo código aparecía repetido, lo que confundía al cliente al
   // compararlo contra el PDF (caso reportado: STONE-04BS-UR-10-26, con una
   // variante de composición, salía en dos filas en vez de una).
-  function descargarInventarioExcel() {
+  async function descargarInventarioExcel() {
     const ordenActual = ordenes.find((o) => o.id === ordenSeleccionadaId);
 
     type GrupoExcel = {
@@ -1428,44 +1428,101 @@ export default function ReportesEtiquetadoPage() {
       return menorNumeroCaja(a.cajas.join(" ")) - menorNumeroCaja(b.cajas.join(" "));
     });
 
-    const filas = gruposOrdenados.map((g) => {
-      // Estado contra factura (Completo/Faltante/Sobrante/Nuevo) — los
-      // códigos nuevos no tienen factura de referencia, así que se marcan
-      // aparte en vez de calcular una diferencia contra 0.
-      let estado = "";
+    // Formato pedido por la compañera de Isabel: mismo orden de columnas que
+    // su plantilla (Palet, Caja, Código, Tienda, Marca, Descripción, País,
+    // Tallas, Factura, Contado, Diferencia, Total etiquetas, Inconsistencia,
+    // Novedad, Tipo de etiqueta), con encabezado en color, bordes y filtro
+    // — que se vea "formal y moderno" al pasárselo al cliente. Las columnas
+    // que no estaban en esa plantilla (Composición, Color, Inen, Marquilla)
+    // se agregan al final, sin quitar información que ya se venía dando.
+    const workbook = new ExcelJS.Workbook();
+    const ws = workbook.addWorksheet("Inventario");
+    ws.columns = [
+      { header: "Palet", key: "palet", width: 8 },
+      { header: "Caja", key: "caja", width: 24 },
+      { header: "Código", key: "codigo", width: 20 },
+      { header: "Tienda", key: "tienda", width: 18 },
+      { header: "Marca", key: "marca", width: 16 },
+      { header: "Descripción", key: "descripcion", width: 26 },
+      { header: "País", key: "pais", width: 12 },
+      { header: "Tallas", key: "tallas", width: 26 },
+      { header: "Factura", key: "factura", width: 10 },
+      { header: "Contado", key: "contado", width: 10 },
+      { header: "Diferencia", key: "diferencia", width: 11 },
+      { header: "Total etiquetas", key: "totalEtiquetas", width: 14 },
+      { header: "Inconsistencia", key: "inconsistencia", width: 14 },
+      { header: "Novedad", key: "novedad", width: 22 },
+      { header: "Tipo de etiqueta", key: "tipoEtiqueta", width: 14 },
+      { header: "Composición", key: "composicion", width: 28 },
+      { header: "Color", key: "color", width: 12 },
+      { header: "Inen", key: "inen", width: 7 },
+      { header: "Marquilla", key: "marquilla", width: 10 },
+    ];
+
+    gruposOrdenados.forEach((g) => {
+      // Inconsistencia contra factura (Completo/Faltante/Sobrante/Nuevo) —
+      // los códigos nuevos no tienen factura de referencia, así que se
+      // marcan aparte en vez de calcular una diferencia contra 0.
+      let inconsistencia = "";
+      let diferencia: number | "" = "";
       if (g.codigoNuevo) {
-        estado = "Nuevo";
+        inconsistencia = "Nuevo";
       } else if (typeof g.factura === "number" && g.factura > 0) {
-        const diferencia = g.contado - g.factura;
-        estado = diferencia === 0 ? "Completo" : diferencia > 0 ? "Sobrante" : "Faltante";
+        diferencia = g.contado - g.factura;
+        inconsistencia = diferencia === 0 ? "Completo" : diferencia > 0 ? "Sobrante" : "Faltante";
       }
-      return {
-        Palet: g.palet,
-        Cajas: ordenarCajasTexto(g.cajas.join(" ")),
-        Código: g.codigo,
-        Marca: g.marca,
-        Descripción: g.descripcion,
-        Color: Array.from(g.colores).join(" / "),
-        Tallas: formatoTallas(g.tallas),
-        Composición: Array.from(g.composiciones).join(" / "),
-        "Tipo etiqueta": g.tipoEtiqueta,
-        Tienda: g.tienda,
-        País: g.pais,
-        Factura: g.factura,
-        Estado: estado,
-        Contado: g.contado,
-        "Total etiquetas": sumarTallasDetalle(g.tallas),
-        Inen: g.inen ? "Sí" : "",
-        Marquilla: g.marquilla ? "Sí" : "",
-        Novedad: g.novedad,
-      };
+      ws.addRow({
+        palet: g.palet,
+        caja: ordenarCajasTexto(g.cajas.join(" ")),
+        codigo: g.codigo,
+        tienda: g.tienda,
+        marca: g.marca,
+        descripcion: g.descripcion,
+        pais: g.pais,
+        tallas: formatoTallas(g.tallas),
+        factura: g.factura,
+        contado: g.contado,
+        diferencia,
+        totalEtiquetas: sumarTallasDetalle(g.tallas),
+        inconsistencia,
+        novedad: g.novedad,
+        tipoEtiqueta: g.tipoEtiqueta,
+        composicion: Array.from(g.composiciones).join(" / "),
+        color: Array.from(g.colores).join(" / "),
+        inen: g.inen ? "Sí" : "",
+        marquilla: g.marquilla ? "Sí" : "",
+      });
     });
 
-    const ws = XLSX.utils.json_to_sheet(filas);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Inventario");
-    const nombreArchivo = `Inventario_${ordenActual?.numero_etq ?? "orden"}.xlsx`;
-    XLSX.writeFile(wb, nombreArchivo);
+    const BORDE_GRIS = { style: "thin" as const, color: { argb: "FFD1D5DB" } };
+    const encabezado = ws.getRow(1);
+    encabezado.height = 22;
+    encabezado.eachCell((celda) => {
+      celda.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFD966" } };
+      celda.font = { bold: true, color: { argb: "FF1F2937" } };
+      celda.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+      celda.border = { top: BORDE_GRIS, left: BORDE_GRIS, bottom: BORDE_GRIS, right: BORDE_GRIS };
+    });
+    ws.eachRow((fila, numeroFila) => {
+      if (numeroFila === 1) return;
+      fila.eachCell((celda) => {
+        celda.border = { top: BORDE_GRIS, left: BORDE_GRIS, bottom: BORDE_GRIS, right: BORDE_GRIS };
+        celda.alignment = { vertical: "middle" };
+      });
+    });
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+    ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columns.length } };
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = URL.createObjectURL(blob);
+    const enlace = document.createElement("a");
+    enlace.href = url;
+    enlace.download = `Inventario_${ordenActual?.numero_etq ?? "orden"}.xlsx`;
+    enlace.click();
+    URL.revokeObjectURL(url);
   }
 
   const totalesOrdenSeleccionada = itemsOrdenSeleccionada.reduce(
