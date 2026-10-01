@@ -1888,16 +1888,20 @@ export default function DetalleEtiquetadoPage() {
       actual.cantidadFactura += Number(it.cantidad_factura || 0);
       actual.cantidadInventario += Number(it.cantidad_contada || 0);
 
-      // Total de etiquetas = suma de tallas. Si el código tiene variantes de
-      // color, se suman las tallas de cada variante; si no, las del código.
+      // Total de etiquetas = suma de tallas del código MÁS las de cada una
+      // de sus variantes de color/composición (nunca en vez de — el
+      // desglose propio del código, it.tallas_detalle, siempre representa
+      // solo SU porción, ya sin lo que corresponde a las variantes, igual
+      // que en el reporte de Inventario). Antes, si el código tenía alguna
+      // variante, se descartaba por completo su propia porción y el total
+      // de etiquetas salía más bajo que el real — descuadre detectado al
+      // comparar el Informe Final contra el Excel de Inventario (orden
+      // ETQ-2026-01-079: 32790 en el informe vs 36951 en el Excel).
+      actual.totalEtiquetas += sumarTallas(it.tallas_detalle);
       const variantesDelItem = variantes.filter((v) => v.item_id === it.id);
-      if (variantesDelItem.length > 0) {
-        variantesDelItem.forEach((v) => {
-          actual.totalEtiquetas += sumarTallas(v.tallas_detalle);
-        });
-      } else {
-        actual.totalEtiquetas += sumarTallas(it.tallas_detalle);
-      }
+      variantesDelItem.forEach((v) => {
+        actual.totalEtiquetas += sumarTallas(v.tallas_detalle);
+      });
 
       grupos.set(clave, actual);
     });
