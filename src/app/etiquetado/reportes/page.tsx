@@ -1085,6 +1085,7 @@ export default function ReportesEtiquetadoPage() {
     tieneTalla: boolean | null;
     yaImpreso: boolean;
     tipoEtiqueta: string | null; // del código (las variantes heredan el del item)
+    alertaFactura: boolean; // true si la factura del código no cuadra con lo contado
   };
 
   const filasInventario: FilaInventario[] = useMemo(() => {
@@ -1132,6 +1133,7 @@ export default function ReportesEtiquetadoPage() {
           tieneTalla: it.tiene_talla,
           yaImpreso: calcularYaImpreso(it.id, null, it.cajas, cajaActiva, it.ya_impreso ?? false),
           tipoEtiqueta: it.tipo_etiqueta,
+          alertaFactura: it.cantidad_factura > 0 && it.cantidad_contada !== it.cantidad_factura,
         });
       } else {
         // Fila del propio código: su caja base, ANTES de sumarle las cajas
@@ -1181,6 +1183,7 @@ export default function ReportesEtiquetadoPage() {
           tieneTalla: it.tiene_talla,
           yaImpreso: calcularYaImpreso(it.id, null, cajasPropias, cajaActiva, it.ya_impreso ?? false),
           tipoEtiqueta: it.tipo_etiqueta,
+          alertaFactura: it.cantidad_factura > 0 && it.cantidad_contada !== it.cantidad_factura,
         });
 
         variantesDelItem.forEach((v, i) => {
@@ -1224,6 +1227,7 @@ export default function ReportesEtiquetadoPage() {
             tieneTalla: v.tiene_talla,
             yaImpreso: calcularYaImpreso(it.id, v.id, v.cajas, cajaActiva, v.ya_impreso ?? false),
             tipoEtiqueta: it.tipo_etiqueta,
+            alertaFactura: it.cantidad_factura > 0 && it.cantidad_contada !== it.cantidad_factura,
           });
         });
       }
@@ -1444,6 +1448,7 @@ export default function ReportesEtiquetadoPage() {
       { header: "Tienda", key: "tienda", width: 18 },
       { header: "Marca", key: "marca", width: 16 },
       { header: "Descripción", key: "descripcion", width: 26 },
+      { header: "Composición", key: "composicion", width: 28 },
       { header: "País", key: "pais", width: 12 },
       { header: "Tallas", key: "tallas", width: 26 },
       { header: "Factura", key: "factura", width: 10 },
@@ -1453,7 +1458,6 @@ export default function ReportesEtiquetadoPage() {
       { header: "Inconsistencia", key: "inconsistencia", width: 14 },
       { header: "Novedad", key: "novedad", width: 22 },
       { header: "Tipo de etiqueta", key: "tipoEtiqueta", width: 14 },
-      { header: "Composición", key: "composicion", width: 28 },
       { header: "Color", key: "color", width: 12 },
       { header: "Inen", key: "inen", width: 7 },
       { header: "Marquilla", key: "marquilla", width: 10 },
@@ -1471,7 +1475,7 @@ export default function ReportesEtiquetadoPage() {
         diferencia = g.contado - g.factura;
         inconsistencia = diferencia === 0 ? "Completo" : diferencia > 0 ? "Sobrante" : "Faltante";
       }
-      ws.addRow({
+      const fila = ws.addRow({
         palet: g.palet,
         caja: ordenarCajasTexto(g.cajas.join(" ")),
         codigo: g.codigo,
@@ -1492,6 +1496,16 @@ export default function ReportesEtiquetadoPage() {
         inen: g.inen ? "Sí" : "",
         marquilla: g.marquilla ? "Sí" : "",
       });
+
+      // Alerta roja: la cantidad contada no cuadra con la factura (pedido
+      // de Isabel, misma alerta que ya se ve en pantalla en Reportes >
+      // Inventario). "Nuevo" y "Completo" no se resaltan, solo Faltante
+      // y Sobrante.
+      if (inconsistencia === "Faltante" || inconsistencia === "Sobrante") {
+        fila.eachCell((celda) => {
+          celda.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFCA5A5" } };
+        });
+      }
     });
 
     const BORDE_GRIS = { style: "thin" as const, color: { argb: "FFD1D5DB" } };
@@ -2477,8 +2491,11 @@ export default function ReportesEtiquetadoPage() {
                               filasInventario.map((f) => (
                                 <div
                                   key={f.key}
+                                  title={f.alertaFactura ? "La cantidad contada de este código no cuadra con la factura" : undefined}
                                   className={`grid grid-cols-[50px_70px_100px_110px_90px_150px_90px_150px_170px_90px_90px_90px_120px_90px_80px_80px] gap-3 px-5 py-2.5 items-start border-b border-border last:border-b-0 text-[12.5px] transition-colors duration-300 ${
-                                    f.yaImpreso
+                                    f.alertaFactura
+                                      ? "bg-red-500/[0.14] border-l-2 border-l-red-500"
+                                      : f.yaImpreso
                                       ? "bg-teal-500/[0.1]"
                                       : f.esVariante
                                       ? "bg-amber/[0.03]"
