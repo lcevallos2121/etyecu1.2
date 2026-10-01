@@ -1133,7 +1133,7 @@ export default function ReportesEtiquetadoPage() {
           tieneTalla: it.tiene_talla,
           yaImpreso: calcularYaImpreso(it.id, null, it.cajas, cajaActiva, it.ya_impreso ?? false),
           tipoEtiqueta: it.tipo_etiqueta,
-          alertaFactura: it.cantidad_factura > 0 && it.cantidad_contada !== it.cantidad_factura,
+          alertaFactura: it.cantidad_factura > 0 && Number(it.cantidad_contada) - Number(it.cantidad_factura) !== 0,
         });
       } else {
         // Fila del propio código: su caja base, ANTES de sumarle las cajas
@@ -1183,7 +1183,7 @@ export default function ReportesEtiquetadoPage() {
           tieneTalla: it.tiene_talla,
           yaImpreso: calcularYaImpreso(it.id, null, cajasPropias, cajaActiva, it.ya_impreso ?? false),
           tipoEtiqueta: it.tipo_etiqueta,
-          alertaFactura: it.cantidad_factura > 0 && it.cantidad_contada !== it.cantidad_factura,
+          alertaFactura: it.cantidad_factura > 0 && Number(it.cantidad_contada) - Number(it.cantidad_factura) !== 0,
         });
 
         variantesDelItem.forEach((v, i) => {
@@ -1227,7 +1227,7 @@ export default function ReportesEtiquetadoPage() {
             tieneTalla: v.tiene_talla,
             yaImpreso: calcularYaImpreso(it.id, v.id, v.cajas, cajaActiva, v.ya_impreso ?? false),
             tipoEtiqueta: it.tipo_etiqueta,
-            alertaFactura: it.cantidad_factura > 0 && it.cantidad_contada !== it.cantidad_factura,
+            alertaFactura: it.cantidad_factura > 0 && Number(it.cantidad_contada) - Number(it.cantidad_factura) !== 0,
           });
         });
       }
