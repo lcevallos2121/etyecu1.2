@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { Fragment, useEffect, useState, useCallback, useMemo } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
@@ -372,23 +372,35 @@ export default function ClasificacionCargaPage() {
                 </tr>
               </thead>
               <tbody>
-                {filasAgrupadas.map((grupo) =>
-                  grupo.filas.map((f, i) => (
-                    <tr key={f.id}>
-                      {i === 0 && (
-                        <td
-                          className="border border-black/40 p-1.5 font-semibold align-top"
-                          rowSpan={grupo.filas.length}
-                        >
-                          {grupo.valor}
-                        </td>
-                      )}
-                      <td className="border border-black/40 p-1.5">Palet {f.palet}</td>
-                      <td className="border border-black/40 p-1.5 font-mono">{f.rango_cajas}</td>
-                      <td className="border border-black/40 p-1.5 text-right">{f.total_cajas}</td>
+                {filasAgrupadas.map((grupo) => (
+                  <Fragment key={`${grupo.tipo}:${grupo.valor}`}>
+                    {grupo.filas.map((f, i) => (
+                      <tr key={f.id}>
+                        {i === 0 && (
+                          <td
+                            className="border border-black/40 p-1.5 font-semibold align-top"
+                            rowSpan={grupo.filas.length}
+                          >
+                            {grupo.valor}
+                          </td>
+                        )}
+                        <td className="border border-black/40 p-1.5">Palet {f.palet}</td>
+                        <td className="border border-black/40 p-1.5 font-mono">{f.rango_cajas}</td>
+                        <td className="border border-black/40 p-1.5 text-right">{f.total_cajas}</td>
+                      </tr>
+                    ))}
+                    {/* Suma de cajas de esta tienda/código, pedida por un usuario
+                        de Etiquetado para no tener que sumarlas a mano del PDF. */}
+                    <tr className="font-semibold">
+                      <td colSpan={3} className="border border-black/40 p-1.5 text-right bg-gray-50">
+                        Total {grupo.valor}
+                      </td>
+                      <td className="border border-black/40 p-1.5 text-right bg-gray-50">
+                        {grupo.totalCajas}
+                      </td>
                     </tr>
-                  ))
-                )}
+                  </Fragment>
+                ))}
                 <tr className="font-bold">
                   <td colSpan={3} className="border border-black/40 p-1.5 bg-gray-100">
                     TOTAL GENERAL
