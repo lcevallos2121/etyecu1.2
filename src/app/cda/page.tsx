@@ -23,6 +23,13 @@ const MONEDAS = [
   "REAL BRASILEÑO",
 ];
 
+// Formato de moneda con separador de miles (.) y decimales (,), como se usa
+// en Ecuador — pedido de Mayra: los montos salían con el formato en inglés
+// (1234.56) y debían verse como 1.234,56.
+function formatoMoneda(valor: number): string {
+  return valor.toLocaleString("es-EC", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function normalizarEncabezado(texto: string): string {
   return texto
     .toString()
@@ -990,14 +997,14 @@ export default function CdaPage() {
               <div className="flex gap-5">
                 <span className="text-text-faint">
                   Subtotal ítems:{" "}
-                  <b className="text-text">${subtotalItems.toFixed(2)}</b>
+                  <b className="text-text">${formatoMoneda(subtotalItems)}</b>
                 </span>
                 <span className="text-text-faint">
-                  FOB: <b className="text-[#6ee7b7]">${totalFobForm.toFixed(2)}</b>
+                  FOB: <b className="text-[#6ee7b7]">${formatoMoneda(totalFobForm)}</b>
                 </span>
               </div>
               <span className="text-text-faint">
-                CIF: <b className="text-[#c4b8ff]">${totalCifForm.toFixed(2)}</b>
+                CIF: <b className="text-[#c4b8ff]">${formatoMoneda(totalCifForm)}</b>
               </span>
             </div>
 
@@ -1078,7 +1085,7 @@ export default function CdaPage() {
                   <td className="border border-black/40 p-1 text-right">{it.cantidad}</td>
                   <td className="border border-black/40 p-1 text-right">{it.precio_unitario_exw}</td>
                   <td className="border border-black/40 p-1 text-right">
-                    {(Number(it.cantidad) * Number(it.precio_unitario_exw)).toFixed(2)}
+                    {formatoMoneda(Number(it.cantidad) * Number(it.precio_unitario_exw))}
                   </td>
                 </tr>
               ))}
@@ -1091,36 +1098,36 @@ export default function CdaPage() {
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">GASTOS DE ORIGEN</td>
                   <td className="border border-black/40 p-1 text-right w-[110px]">
-                    ${(cdaImprimir.gastos_origen ?? 0).toFixed(2)}
+                    ${formatoMoneda(cdaImprimir.gastos_origen ?? 0)}
                   </td>
                 </tr>
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">TOTAL F.O.B.</td>
                   <td className="border border-black/40 p-1 text-right">
-                    ${((totalFob ?? 0) + (cdaImprimir.gastos_origen ?? 0)).toFixed(2)}
+                    ${formatoMoneda((totalFob ?? 0) + (cdaImprimir.gastos_origen ?? 0))}
                   </td>
                 </tr>
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">FLETE</td>
                   <td className="border border-black/40 p-1 text-right">
-                    ${(cdaImprimir.flete ?? 0).toFixed(2)}
+                    ${formatoMoneda(cdaImprimir.flete ?? 0)}
                   </td>
                 </tr>
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">SEGURO</td>
                   <td className="border border-black/40 p-1 text-right">
-                    ${(cdaImprimir.seguro ?? 0).toFixed(2)}
+                    ${formatoMoneda(cdaImprimir.seguro ?? 0)}
                   </td>
                 </tr>
                 <tr>
                   <td className="border border-black/40 p-1 font-bold bg-gray-100">TOTAL C.I.F.</td>
                   <td className="border border-black/40 p-1 text-right font-bold">
-                    ${(
+                    ${formatoMoneda(
                       (totalFob ?? 0) +
                       (cdaImprimir.gastos_origen ?? 0) +
                       (cdaImprimir.flete ?? 0) +
                       (cdaImprimir.seguro ?? 0)
-                    ).toFixed(2)}
+                    )}
                   </td>
                 </tr>
               </tbody>
