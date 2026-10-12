@@ -1787,14 +1787,17 @@ export default function ReportesEtiquetadoPage() {
       }
 
       // 6. Actualizar el código principal con los totales combinados. La
-      // cantidad de FACTURA no se suma — se mantiene la del código elegido
-      // como principal, porque es un dato declarado por el proveedor/
-      // cliente, no algo que deba cambiar por cómo se agrupen los códigos.
+      // factura también se suma: confirmado por Isabel — cuando dos
+      // códigos se unifican es porque en realidad son el mismo producto
+      // capturado por separado, así que cada uno traía solo una parte de
+      // la factura total (antes se dejaba solo la del principal y el
+      // resto quedaba "de más", marcando el código como falso sobrante).
       const { error: errUpdate } = await supabase
         .from("etq_items")
         .update({
           cajas: cajasCombinadas || null,
           cantidad_contada: (principal.cantidad_contada || 0) + (secundario.cantidad_contada || 0),
+          cantidad_factura: (principal.cantidad_factura || 0) + (secundario.cantidad_factura || 0),
           tallas_detalle: tallasCombinadas,
           actualizado_en: new Date().toISOString(),
         })
@@ -1811,12 +1814,10 @@ export default function ReportesEtiquetadoPage() {
         return;
       }
 
+      const facturaTotal = (principal.cantidad_factura || 0) + (secundario.cantidad_factura || 0);
       setShowUnificar(false);
       setItemRevisarId(null);
-      setToast(
-        `Códigos unificados en ${principal.codigo} (factura ${principal.cantidad_factura}). ` +
-          `La factura de ${secundario.codigo} (${secundario.cantidad_factura}) no se sumó.`
-      );
+      setToast(`Códigos unificados en ${principal.codigo} (factura total: ${facturaTotal}).`);
       cargar();
     } finally {
       setUnificando(false);
