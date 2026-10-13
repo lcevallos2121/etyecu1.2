@@ -114,6 +114,7 @@ type SnapshotVariante = {
 type SnapshotTallas = {
   cajaNuevaTallas: string;
   tallasNuevas: Record<string, number>;
+  paletCajaNueva: string;
 };
 
 // Suma lo que está dentro de paréntesis: "164(24) 165(24)" -> 48
@@ -424,6 +425,11 @@ export default function DetalleEtiquetadoPage() {
   const [itemAgregarTallas, setItemAgregarTallas] = useState<Item | null>(null);
   const [cajaNuevaTallas, setCajaNuevaTallas] = useState("");
   const [tallasNuevas, setTallasNuevas] = useState<Record<string, number>>({});
+  // Palet de la caja puntual que se está agregando/corrigiendo — solo hace
+  // falta llenarlo cuando ese código tiene cajas repartidas en MÁS de un
+  // palet (ej. tras unificar dos códigos que venían de palets distintos);
+  // si se deja vacío, esa caja queda con el palet general del código.
+  const [paletCajaNueva, setPaletCajaNueva] = useState("");
   // Historial de TODOS los campos de este modal, para el "↩ Deshacer" general.
   const [historialTallas, setHistorialTallas] = useState<SnapshotTallas[]>([]);
 
@@ -1305,6 +1311,7 @@ export default function DetalleEtiquetadoPage() {
     setItemAgregarTallas(it);
     setCajaNuevaTallas("");
     setTallasNuevas({});
+    setPaletCajaNueva("");
     setHistorialTallas([]);
     setErrorMsg(null);
     setShowAgregarTallas(true);
@@ -1313,7 +1320,7 @@ export default function DetalleEtiquetadoPage() {
   // Guarda el estado ACTUAL de los campos del modal "Agregar tallas" en el
   // historial, antes de aplicar un cambio — igual que registrarHistorialForm.
   function registrarHistorialTallas() {
-    setHistorialTallas((h) => [...h, { cajaNuevaTallas, tallasNuevas }]);
+    setHistorialTallas((h) => [...h, { cajaNuevaTallas, tallasNuevas, paletCajaNueva }]);
   }
 
   function deshacerTallas() {
@@ -1323,6 +1330,7 @@ export default function DetalleEtiquetadoPage() {
       const anterior = h[h.length - 1];
       setCajaNuevaTallas(anterior.cajaNuevaTallas);
       setTallasNuevas(anterior.tallasNuevas);
+      setPaletCajaNueva(anterior.paletCajaNueva);
       return nuevo;
     });
   }
@@ -1415,6 +1423,33 @@ export default function DetalleEtiquetadoPage() {
           caja: cajaTexto,
           numero_caja: numeroCaja,
           tallas_detalle: tallasNuevas,
+        });
+      }
+
+      // Palet real de esta caja puntual: si Isabel lo dejó vacío, se asume
+      // el palet general del código (caso normal, todas las cajas del mismo
+      // palet). Solo hace falta llenarlo cuando el código quedó repartido
+      // en más de un palet (ej. tras unificar dos códigos duplicados).
+      const paletDeEstaCaja = paletCajaNueva.trim() || itemAgregarTallas.palet || null;
+      const { data: paletExistente } = await supabase
+        .from("etq_cajas_palet")
+        .select("id")
+        .eq("item_id", itemAgregarTallas.id)
+        .is("variante_id", null)
+        .eq("numero_caja", numeroCaja)
+        .maybeSingle();
+      if (paletExistente) {
+        await supabase
+          .from("etq_cajas_palet")
+          .update({ caja: cajaTexto, palet: paletDeEstaCaja })
+          .eq("id", paletExistente.id);
+      } else {
+        await supabase.from("etq_cajas_palet").insert({
+          item_id: itemAgregarTallas.id,
+          variante_id: null,
+          caja: cajaTexto,
+          numero_caja: numeroCaja,
+          palet: paletDeEstaCaja,
         });
       }
     }
@@ -3212,20 +3247,40 @@ export default function DetalleEtiquetadoPage() {
               </p>
             )}
 
-            <div className="mb-3">
-              <label className="text-[11.5px] text-text-faint block mb-1">
-                Caja nueva (opcional, se suma a las cajas del código)
-              </label>
-              <input
-                value={cajaNuevaTallas}
-                onChange={(e) => {
-                  registrarHistorialTallas();
-                  setCajaNuevaTallas(e.target.value);
-                }}
-                placeholder="Ej. 245(12)"
-                className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
-              />
+            <div className="mb-3 flex gap-2">
+              <div className="flex-1">
+                <label className="text-[11.5px] text-text-faint block mb-1">
+                  Caja nueva (opcional, se suma a las cajas del código)
+                </label>
+                <input
+                  value={cajaNuevaTallas}
+                  onChange={(e) => {
+                    registrarHistorialTallas();
+                    setCajaNuevaTallas(e.target.value);
+                  }}
+                  placeholder="Ej. 245(12)"
+                  className="w-full card px-3 py-2 text-[13px] outline-none font-mono"
+                />
+              </div>
+              <div className="w-[110px]">
+                <label className="text-[11.5px] text-text-faint block mb-1" title="Solo si esta caja viene de un palet distinto al del código">
+                  Palet de esta caja
+                </label>
+                <input
+                  value={paletCajaNueva}
+                  onChange={(e) => {
+                    registrarHistorialTallas();
+                    setPaletCajaNueva(e.target.value);
+                  }}
+                  placeholder={itemAgregarTallas.palet ?? "—"}
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
             </div>
+            <p className="text-[10.5px] text-text-faint mb-3 -mt-1.5">
+              Déjalo vacío si esta caja viene del mismo palet de siempre ({itemAgregarTallas.palet ?? "sin palet"}).
+              Llénalo solo si este código está repartido en varios palets y esta caja puntual es de otro.
+            </p>
 
             <label className="text-[11.5px] text-text-faint block mb-1">Tallas de esta caja</label>
             {tallasOrden.length === 0 ? (

@@ -99,6 +99,23 @@ type CajaImpresa = {
   impreso: boolean;
 };
 
+// Desglose del PALET real por CAJA FÍSICA: etq_items.palet/etq_variantes.palet
+// son un único valor por FILA, pero cuando dos códigos se unifican porque en
+// realidad son el mismo producto (función "Unificar códigos"), sus cajas
+// pueden venir de palets distintos — al fusionarse en una sola fila solo
+// queda el palet de uno de los dos, y las demás cajas quedan mostrando un
+// palet que no es el real (caso detectado en FD10589: caja 19 era del
+// palet 2, quedó mostrando palet 4). Esta tabla guarda el palet real de
+// cada caja, igual que TallasPorCaja desglosa las tallas.
+type CajaPalet = {
+  id: string;
+  item_id: string;
+  variante_id: string | null;
+  caja: string;
+  numero_caja: string | null;
+  palet: string | null;
+};
+
 type Movimiento = {
   id: string;
   orden_id: string;
@@ -254,6 +271,7 @@ export default function ReportesEtiquetadoPage() {
   const [variantesTodas, setVariantesTodas] = useState<VarianteEtq[]>([]);
   const [tallasPorCajaTodas, setTallasPorCajaTodas] = useState<TallasPorCaja[]>([]);
   const [cajasImpresasTodas, setCajasImpresasTodas] = useState<CajaImpresa[]>([]);
+  const [cajasPaletTodas, setCajasPaletTodas] = useState<CajaPalet[]>([]);
   const [movimientos, setMovimientos] = useState<Movimiento[]>([]);
   const [mesas, setMesas] = useState<Mesa[]>([]);
   const [loading, setLoading] = useState(true);
@@ -370,7 +388,7 @@ export default function ReportesEtiquetadoPage() {
     // Cada tabla se trae PAGINADA (traerTodo) para no quedar cortada en las
     // primeras 1000 filas: este panel calcula KPIs y gráficos sobre TODAS las
     // órdenes a la vez, así que necesita el dataset completo.
-    const [ordRes, itemsRes, movRes, mesasRes, varRes, tallasCajaRes, cajasImpresasRes] = await Promise.all([
+    const [ordRes, itemsRes, movRes, mesasRes, varRes, tallasCajaRes, cajasImpresasRes, cajasPaletRes] = await Promise.all([
       traerTodo<OrdenEtq>((desde, hasta) =>
         supabase
           .from("etq_ordenes")
@@ -414,6 +432,12 @@ export default function ReportesEtiquetadoPage() {
           .select("id, item_id, variante_id, caja, numero_caja, impreso")
           .range(desde, hasta)
       ),
+      traerTodo<CajaPalet>((desde, hasta) =>
+        supabase
+          .from("etq_cajas_palet")
+          .select("id, item_id, variante_id, caja, numero_caja, palet")
+          .range(desde, hasta)
+      ),
     ]);
 
     if (ordRes.error) {
@@ -433,6 +457,7 @@ export default function ReportesEtiquetadoPage() {
     setVariantesTodas((varRes.data as VarianteEtq[]) ?? []);
     setTallasPorCajaTodas((tallasCajaRes.data as TallasPorCaja[]) ?? []);
     setCajasImpresasTodas((cajasImpresasRes.data as CajaImpresa[]) ?? []);
+    setCajasPaletTodas((cajasPaletRes.data as CajaPalet[]) ?? []);
     setLoading(false);
   }, [supabase]);
 
@@ -1031,6 +1056,47 @@ export default function ReportesEtiquetadoPage() {
     return registro?.impreso ?? false;
   }
 
+  // Palet real de una caja física puntual, según etq_cajas_palet. Si esa
+  // caja no tiene registro propio todavía (código nunca unificado, o caja
+  // capturada antes de este desglose), se usa el palet general del código
+  // como respaldo — sigue siendo el comportamiento de siempre para el caso
+  // normal donde todas las cajas vienen del mismo palet.
+  function paletDeCaja(
+    itemId: string,
+    varianteId: string | null,
+    numeroCaja: string,
+    fallback: string | null
+  ): string | null {
+    const registro = cajasPaletTodas.find(
+      (c) => c.item_id === itemId && c.variante_id === varianteId && c.numero_caja === numeroCaja
+    );
+    return registro?.palet ?? fallback;
+  }
+
+  // Palet a mostrar para una fila completa (sin filtro de caja activo): si
+  // sus cajas físicas están repartidas en MÁS de un palet (por ejemplo tras
+  // unificar dos códigos que venían de palets distintos), se muestran todos
+  // separados por coma en vez de uno solo que escondería el resto — así
+  // Isabel sabe que ese código está repartido y necesita filtrar por caja
+  // para imprimir cada una en su palet correcto.
+  function paletResumenFila(
+    itemId: string,
+    varianteId: string | null,
+    cajasTexto: string | null,
+    fallback: string | null
+  ): string | null {
+    const cajas = extraerCajasIndividuales(cajasTexto);
+    if (cajas.length === 0) return fallback;
+    const palets = new Set(
+      cajas
+        .map((c) => paletDeCaja(itemId, varianteId, c.numeroCaja, fallback) ?? "")
+        .filter(Boolean)
+    );
+    if (palets.size === 0) return fallback;
+    if (palets.size === 1) return [...palets][0];
+    return [...palets].sort().join(", ");
+  }
+
   // Estado "impreso" a mostrar para una fila completa: con filtro de caja
   // activo, el de esa caja puntual. Sin filtro, la fila representa TODAS
   // las cajas que agrupa su campo "cajas" — se muestra marcada solo si
@@ -1115,7 +1181,9 @@ export default function ReportesEtiquetadoPage() {
           key: it.id,
           idReal: it.id,
           esVarianteParaGuardar: false,
-          palet: it.palet,
+          palet: cajaActiva
+            ? paletDeCaja(it.id, null, cajaActiva, it.palet)
+            : paletResumenFila(it.id, null, it.cajas, it.palet),
           codigo: it.codigo,
           marca: it.marca,
           tienda: it.tienda,
@@ -1165,7 +1233,9 @@ export default function ReportesEtiquetadoPage() {
           key: it.id,
           idReal: it.id,
           esVarianteParaGuardar: false,
-          palet: it.palet,
+          palet: cajaActiva
+            ? paletDeCaja(it.id, null, cajaActiva, it.palet)
+            : paletResumenFila(it.id, null, cajasPropias, it.palet),
           codigo: it.codigo,
           marca: it.marca,
           tienda: it.tienda,
@@ -1209,7 +1279,9 @@ export default function ReportesEtiquetadoPage() {
             key: `${it.id}-${i}`,
             idReal: v.id,
             esVarianteParaGuardar: true,
-            palet: v.palet ?? it.palet,
+            palet: cajaActiva
+              ? paletDeCaja(it.id, v.id, cajaActiva, v.palet ?? it.palet)
+              : paletResumenFila(it.id, v.id, v.cajas, v.palet ?? it.palet),
             codigo: it.codigo,
             marca: it.marca,
             tienda: it.tienda,
@@ -1256,9 +1328,17 @@ export default function ReportesEtiquetadoPage() {
     // palet no arrastre a la vista la fila de una variante de OTRO palet
     // (y viceversa: seleccionar el palet de una variante muestra solo esa
     // fila, no la del código base que está en otro palet).
+    // f.palet puede venir como "2, 4" cuando la fila agrupa cajas de varios
+    // palets (sin filtro de caja activo) — se compara contra cada uno por
+    // separado, no como texto exacto.
     if (paletSeleccionado === "todos") return filasPorCaja;
-    return filasPorCaja.filter((f) => (f.palet ?? "").trim() === paletSeleccionado);
-  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajasImpresasTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
+    return filasPorCaja.filter((f) =>
+      (f.palet ?? "")
+        .split(",")
+        .map((p) => p.trim())
+        .includes(paletSeleccionado)
+    );
+  }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajasImpresasTodas, cajasPaletTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
 
   // Marca/desmarca "Ya impreso" en la fila, caja por caja. Con filtro de
   // caja activo, marca SOLO esa caja puntual. Sin filtro, marca/desmarca
@@ -1756,7 +1836,63 @@ export default function ReportesEtiquetadoPage() {
         tallasCombinadas[talla] = (tallasCombinadas[talla] ?? 0) + Number(cant || 0);
       });
 
-      // 3. Reasignar el historial de tallas por caja del secundario al principal
+      // 3. Antes de fusionar, registrar en etq_cajas_palet el palet REAL de
+      // cada caja de ambos códigos (si todavía no estaba registrado) — así,
+      // si alguno venía de un palet distinto, ese dato no se pierde al
+      // quedar todo en una sola fila (caso detectado en FD10589: caja 19
+      // era del palet 2, el código principal era del palet 4 y esa caja
+      // terminó mostrando el palet equivocado).
+      const cajasPrincipal = extraerCajasIndividuales(principal.cajas);
+      const cajasSecundario = extraerCajasIndividuales(secundario.cajas);
+      const { data: paletExistente } = await supabase
+        .from("etq_cajas_palet")
+        .select("item_id, numero_caja")
+        .in("item_id", [principalId, secundarioId]);
+      const trackeadoPrincipal = new Set(
+        (paletExistente ?? []).filter((r) => r.item_id === principalId).map((r) => r.numero_caja)
+      );
+      const trackeadoSecundario = new Set(
+        (paletExistente ?? []).filter((r) => r.item_id === secundarioId).map((r) => r.numero_caja)
+      );
+      const nuevosRegistrosPalet = [
+        ...cajasPrincipal
+          .filter((c) => !trackeadoPrincipal.has(c.numeroCaja))
+          .map((c) => ({
+            item_id: principalId,
+            variante_id: null,
+            caja: c.caja,
+            numero_caja: c.numeroCaja,
+            palet: principal.palet,
+          })),
+        ...cajasSecundario
+          .filter((c) => !trackeadoSecundario.has(c.numeroCaja))
+          .map((c) => ({
+            item_id: secundarioId,
+            variante_id: null,
+            caja: c.caja,
+            numero_caja: c.numeroCaja,
+            palet: secundario.palet,
+          })),
+      ];
+      if (nuevosRegistrosPalet.length > 0) {
+        const { error: errPaletSeed } = await supabase.from("etq_cajas_palet").insert(nuevosRegistrosPalet);
+        if (errPaletSeed) {
+          setErrorMsg(`No se pudo guardar el palet por caja: ${errPaletSeed.message}`);
+          return;
+        }
+      }
+
+      // 3b. Reasignar el historial de palet por caja del secundario al principal
+      const { error: errCajasPaletReasignar } = await supabase
+        .from("etq_cajas_palet")
+        .update({ item_id: principalId })
+        .eq("item_id", secundarioId);
+      if (errCajasPaletReasignar) {
+        setErrorMsg(`No se pudo reasignar el palet por caja: ${errCajasPaletReasignar.message}`);
+        return;
+      }
+
+      // 4. Reasignar el historial de tallas por caja del secundario al principal
       const { error: errCajas } = await supabase
         .from("etq_tallas_por_caja")
         .update({ item_id: principalId })
@@ -1766,7 +1902,7 @@ export default function ReportesEtiquetadoPage() {
         return;
       }
 
-      // 4. Reasignar las variantes de color del secundario al principal
+      // 5. Reasignar las variantes de color del secundario al principal
       const { error: errVariantes } = await supabase
         .from("etq_variantes")
         .update({ item_id: principalId })
@@ -1776,7 +1912,7 @@ export default function ReportesEtiquetadoPage() {
         return;
       }
 
-      // 5. Reasignar los movimientos (historial de producción por mesa)
+      // 6. Reasignar los movimientos (historial de producción por mesa)
       const { error: errMovs } = await supabase
         .from("etq_movimientos")
         .update({ item_id: principalId })
@@ -1786,7 +1922,7 @@ export default function ReportesEtiquetadoPage() {
         return;
       }
 
-      // 6. Actualizar el código principal con los totales combinados. La
+      // 7. Actualizar el código principal con los totales combinados. La
       // factura también se suma: confirmado por Isabel — cuando dos
       // códigos se unifican es porque en realidad son el mismo producto
       // capturado por separado, así que cada uno traía solo una parte de
@@ -1807,7 +1943,7 @@ export default function ReportesEtiquetadoPage() {
         return;
       }
 
-      // 7. Borrar el código secundario, que ya quedó vacío (todo se movió)
+      // 8. Borrar el código secundario, que ya quedó vacío (todo se movió)
       const { error: errDelete } = await supabase.from("etq_items").delete().eq("id", secundarioId);
       if (errDelete) {
         setErrorMsg(`Se combinaron los datos pero no se pudo borrar el código sobrante: ${errDelete.message}`);
