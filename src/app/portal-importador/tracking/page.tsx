@@ -10,8 +10,19 @@ type OrdenTracking = {
   tipo: "dap" | "etq";
   numero: string;
   fases: string[];
-  fase_actual: number;
+  porcentajes: number[];
 };
+
+// Color según el % de avance de cada fase: amarillo (recién empezando),
+// azul (a medio camino), naranja (ya casi terminando) y verde al llegar
+// al 100%. Cada fase es independiente, así que cada una tiene su propio
+// color según su propio avance.
+function colorPorPorcentaje(pct: number): string {
+  if (pct >= 100) return "#34d399";
+  if (pct >= 70) return "#fb923c";
+  if (pct >= 40) return "#60a5fa";
+  return "#fbbf24";
+}
 
 type Mensaje = {
   id: string;
@@ -121,7 +132,8 @@ function TarjetaOrden({
   orden: OrdenTracking;
   onAbrirChat: () => void;
 }) {
-  const completa = orden.fase_actual >= orden.fases.length - 1;
+  const completa =
+    orden.fases.length > 0 && orden.fases.every((_, i) => (orden.porcentajes[i] ?? 0) >= 100);
   return (
     <div className="bg-[#17151f] border border-[#2a2836] rounded-2xl p-5">
       <div className="flex items-center gap-2.5 mb-5">
@@ -152,38 +164,24 @@ function TarjetaOrden({
           El seguimiento de esta orden se habilitará en breve.
         </p>
       ) : (
-        <div className="flex items-start">
+        <div className="flex flex-col gap-4">
           {orden.fases.map((fase, i) => {
-            const hecha = i < orden.fase_actual;
-            const actual = i === orden.fase_actual;
+            const pct = orden.porcentajes[i] ?? 0;
+            const color = colorPorPorcentaje(pct);
             return (
-              <div key={i} className="flex-1 flex flex-col items-center relative">
-                {i > 0 && (
-                  <div
-                    className={`absolute top-[11px] right-1/2 w-full h-[2px] -z-0 ${
-                      i <= orden.fase_actual ? "bg-[#7c6cf0]" : "bg-[#2a2836]"
-                    }`}
-                  />
-                )}
-                <div
-                  className={`w-[22px] h-[22px] rounded-full flex items-center justify-center z-10 shrink-0 ${
-                    hecha
-                      ? "bg-[#7c6cf0]"
-                      : actual
-                      ? "bg-[#7c6cf0] ring-4 ring-[#7c6cf0]/20"
-                      : "bg-[#2a2836]"
-                  }`}
-                >
-                  {hecha && <CheckCircle2 size={13} className="text-white" />}
-                  {actual && <span className="w-[7px] h-[7px] rounded-full bg-white" />}
+              <div key={i}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <p className="text-[12.5px] text-[#e5e4ea]">{fase}</p>
+                  <p className="text-[11.5px] font-semibold" style={{ color }}>
+                    {pct}%
+                  </p>
                 </div>
-                <p
-                  className={`text-[10.5px] text-center mt-2 px-1 leading-tight ${
-                    actual ? "text-white font-semibold" : hecha ? "text-[#c4b8ff]" : "text-[#5c5a6b]"
-                  }`}
-                >
-                  {fase}
-                </p>
+                <div className="h-[8px] rounded-full bg-[#232130] overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{ width: `${pct}%`, backgroundColor: color }}
+                  />
+                </div>
               </div>
             );
           })}

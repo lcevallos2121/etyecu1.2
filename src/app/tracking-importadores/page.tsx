@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { Sidebar } from "@/components/Sidebar";
 import { Topbar } from "@/components/Topbar";
 import { createClient } from "@/lib/supabase-browser";
-import { Copy, X, Power, ChevronRight, RotateCw, MessageCircle, Send, Image as ImageIcon } from "lucide-react";
+import { Copy, X, Power, RotateCw, MessageCircle, Send, Image as ImageIcon } from "lucide-react";
 import { Toast, ConfirmModal } from "@/components/Feedback";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +38,7 @@ type FaseOrden = {
   orden_dap_id: string | null;
   etq_orden_id: string | null;
   fases: string[];
-  fase_actual: number;
+  porcentajes: number[];
   visible: boolean;
 };
 
@@ -188,7 +188,10 @@ export default function TrackingImportadoresPage() {
               .eq("etq_cliente_id", clienteInfo.etqClienteId)
               .order("creado_en", { ascending: false })
           : Promise.resolve({ data: [] as EtqOrdenRef[] }),
-        supabase.from("portal_ordenes_fases").select("*").eq("cliente_nombre", nombre),
+        supabase
+          .from("portal_ordenes_fases")
+          .select("id, cliente_nombre, orden_dap_id, etq_orden_id, fases, porcentajes, visible")
+          .eq("cliente_nombre", nombre),
       ]);
       setAcceso((accRes.data as Acceso) ?? null);
       setOrdenesDap((dapRes.data as OrdenDapRef[]) ?? []);
@@ -305,11 +308,19 @@ export default function TrackingImportadoresPage() {
     const existente = fasesConfig.find((f) =>
       tipo === "dap" ? f.orden_dap_id === ordenId : f.etq_orden_id === ordenId
     );
+    // Cada fase es independiente: al cambiar la lista de nombres, se
+    // conserva el % de las que ya existían (por posición) y las nuevas
+    // arrancan en 0%.
+    const porcentajesArr = fasesArr.map((_, i) => existente?.porcentajes?.[i] ?? 0);
 
     if (existente) {
       await supabase
         .from("portal_ordenes_fases")
-        .update({ fases: fasesArr, actualizado_en: new Date().toISOString() })
+        .update({
+          fases: fasesArr,
+          porcentajes: porcentajesArr,
+          actualizado_en: new Date().toISOString(),
+        })
         .eq("id", existente.id);
     } else {
       await supabase.from("portal_ordenes_fases").insert({
@@ -317,7 +328,7 @@ export default function TrackingImportadoresPage() {
         orden_dap_id: tipo === "dap" ? ordenId : null,
         etq_orden_id: tipo === "etq" ? ordenId : null,
         fases: fasesArr,
-        fase_actual: 0,
+        porcentajes: porcentajesArr,
       });
     }
     setEditandoFasesId(null);
@@ -325,13 +336,20 @@ export default function TrackingImportadoresPage() {
     cargarDatosCliente(clienteNombre);
   }
 
-  async function avanzarFase(fase: FaseOrden, delta: number) {
-    const nueva = Math.max(0, Math.min(fase.fases.length - 1, fase.fase_actual + delta));
+  // Cambia el % de UNA fase puntual, sin afectar a las demás — las fases
+  // son independientes entre sí. Se redondea a múltiplos de 10.
+  async function cambiarPorcentaje(fase: FaseOrden, index: number, valor: number) {
+    const nuevoValor = Math.max(0, Math.min(100, Math.round(valor / 10) * 10));
+    const nuevosPorcentajes = fase.porcentajes.map((p, i) => (i === index ? nuevoValor : p));
+
+    setFasesConfig((prev) =>
+      prev.map((f) => (f.id === fase.id ? { ...f, porcentajes: nuevosPorcentajes } : f))
+    );
+
     await supabase
       .from("portal_ordenes_fases")
-      .update({ fase_actual: nueva, actualizado_en: new Date().toISOString() })
+      .update({ porcentajes: nuevosPorcentajes, actualizado_en: new Date().toISOString() })
       .eq("id", fase.id);
-    cargarDatosCliente(clienteNombre);
   }
 
   function copiarLink() {
@@ -563,7 +581,7 @@ export default function TrackingImportadoresPage() {
                           fase={fase}
                           noLeidos={fase ? noLeidosPorFase[fase.id] ?? 0 : 0}
                           onConfigurar={() => abrirEditarFases("dap", o.id)}
-                          onAvanzar={(d) => fase && avanzarFase(fase, d)}
+                          onCambiarPorcentaje={(i, v) => fase && cambiarPorcentaje(fase, i, v)}
                           onAbrirChat={() => fase && setChatFaseId(fase.id)}
                         />
                       );
@@ -585,7 +603,7 @@ export default function TrackingImportadoresPage() {
                           fase={fase}
                           noLeidos={fase ? noLeidosPorFase[fase.id] ?? 0 : 0}
                           onConfigurar={() => abrirEditarFases("etq", o.id)}
-                          onAvanzar={(d) => fase && avanzarFase(fase, d)}
+                          onCambiarPorcentaje={(i, v) => fase && cambiarPorcentaje(fase, i, v)}
                           onAbrirChat={() => fase && setChatFaseId(fase.id)}
                         />
                       );
@@ -854,43 +872,60 @@ function ModalChatInterno({
   );
 }
 
+// Color según el % de avance de cada fase: amarillo (recién empezando),
+// azul (a medio camino), naranja (ya casi terminando) y verde al llegar
+// al 100%. Las fases son independientes, cada una tiene su propio color.
+function colorPorPorcentaje(pct: number): { barra: string; texto: string } {
+  if (pct >= 100) return { barra: "bg-green", texto: "text-[#6ee7b7]" };
+  if (pct >= 70) return { barra: "bg-orange-500", texto: "text-orange-400" };
+  if (pct >= 40) return { barra: "bg-accent-2", texto: "text-[#c4b8ff]" };
+  return { barra: "bg-amber", texto: "text-amber" };
+}
+
 function FilaOrden({
   numero,
   fase,
   noLeidos,
   onConfigurar,
-  onAvanzar,
+  onCambiarPorcentaje,
   onAbrirChat,
 }: {
   numero: string;
   fase?: FaseOrden;
   noLeidos: number;
   onConfigurar: () => void;
-  onAvanzar: (delta: number) => void;
+  onCambiarPorcentaje: (index: number, valor: number) => void;
   onAbrirChat: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between px-4 py-3 border-b border-border last:border-b-0">
-      <div className="flex-1">
-        <p className="text-[13px] font-medium">{numero}</p>
+    <div className="flex items-start justify-between px-4 py-3 border-b border-border last:border-b-0 gap-4">
+      <div className="flex-1 min-w-0">
+        <p className="text-[13px] font-medium mb-2">{numero}</p>
         {fase && fase.fases.length > 0 ? (
-          <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-            {fase.fases.map((f, i) => (
-              <span key={i} className="flex items-center gap-1.5">
-                <span
-                  className={`text-[10.5px] px-2 py-0.5 rounded-full ${
-                    i < fase.fase_actual
-                      ? "bg-green/[0.15] text-[#6ee7b7]"
-                      : i === fase.fase_actual
-                      ? "bg-accent/[0.2] text-[#c4b8ff] font-semibold"
-                      : "bg-white/[0.05] text-text-faint"
-                  }`}
-                >
-                  {f}
-                </span>
-                {i < fase.fases.length - 1 && <ChevronRight size={11} className="text-text-faint" />}
-              </span>
-            ))}
+          <div className="flex flex-col gap-2.5">
+            {fase.fases.map((f, i) => {
+              const pct = fase.porcentajes[i] ?? 0;
+              const color = colorPorPorcentaje(pct);
+              return (
+                <div key={i} className="flex items-center gap-2.5">
+                  <span className="text-[11px] text-text-dim w-[150px] shrink-0 truncate" title={f}>
+                    {f}
+                  </span>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={10}
+                    value={pct}
+                    onChange={(e) => onCambiarPorcentaje(i, Number(e.target.value))}
+                    className="flex-1 max-w-[180px] accent-accent-2"
+                  />
+                  <span className={`text-[11.5px] font-semibold w-[36px] text-right ${color.texto}`}>
+                    {pct}%
+                  </span>
+                </div>
+              );
+            })}
           </div>
         ) : (
           <p className="text-[11px] text-amber mt-1">Sin fases configuradas todavía.</p>
@@ -909,24 +944,6 @@ function FilaOrden({
               </span>
             )}
           </button>
-        )}
-        {fase && fase.fases.length > 0 && (
-          <>
-            <button
-              onClick={() => onAvanzar(-1)}
-              disabled={fase.fase_actual === 0}
-              className="text-[11px] px-2 py-1 rounded-md card text-text-dim disabled:opacity-30"
-            >
-              ← Retroceder
-            </button>
-            <button
-              onClick={() => onAvanzar(1)}
-              disabled={fase.fase_actual >= fase.fases.length - 1}
-              className="text-[11px] px-2 py-1 rounded-md bg-accent/[0.15] text-[#c4b8ff] disabled:opacity-30"
-            >
-              Avanzar fase →
-            </button>
-          </>
         )}
         <button
           onClick={onConfigurar}

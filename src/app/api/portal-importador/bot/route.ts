@@ -37,7 +37,7 @@ export async function POST(req: NextRequest) {
 
   const { data: fase } = await getSupabaseAdmin()
     .from("portal_ordenes_fases")
-    .select("id, cliente_nombre, orden_dap_id, etq_orden_id, fases, fase_actual")
+    .select("id, cliente_nombre, orden_dap_id, etq_orden_id, fases, porcentajes")
     .eq("id", orden_fase_id)
     .maybeSingle();
 
@@ -67,21 +67,37 @@ export async function POST(req: NextRequest) {
   // 2. Calcular la respuesta automática del bot
   let respuesta = "";
 
+  // Cada fase tiene su propio % independiente (no dependen unas de otras).
+  // La "fase actual" para estas respuestas es la última que tiene algún
+  // avance (>0%); si ninguna tiene avance, no se ha iniciado nada todavía.
+  const nombresFases: string[] = fase.fases ?? [];
+  const porcentajes: number[] = fase.porcentajes ?? [];
+  let indiceActual = -1;
+  for (let i = nombresFases.length - 1; i >= 0; i--) {
+    if ((porcentajes[i] ?? 0) > 0) {
+      indiceActual = i;
+      break;
+    }
+  }
+  const faseActualTexto = indiceActual >= 0 ? nombresFases[indiceActual] : null;
+  const porcentajeActual = indiceActual >= 0 ? porcentajes[indiceActual] ?? 0 : 0;
+
   if (pregunta === "asesor") {
     respuesta =
       "Un asesor de ETYECU revisará tu mensaje y te responderá aquí mismo lo antes posible. Gracias por tu paciencia.";
   } else if (pregunta === "etiquetada" || pregunta === "llega") {
-    const faseActualTexto = fase.fases?.[fase.fase_actual] ?? null;
     if (!faseActualTexto) {
       respuesta =
-        "Todavía no se ha configurado el seguimiento de esta orden. Un asesor te dará el detalle en breve.";
+        "Todavía no se ha iniciado ninguna fase de esta orden. Un asesor te dará el detalle en breve.";
     } else if (pregunta === "etiquetada") {
-      const yaEtiquetada = /etiquetad|entregad|listo/i.test(faseActualTexto);
+      const yaEtiquetada = nombresFases.some(
+        (nombre, i) => /etiquetad|entregad|listo/i.test(nombre) && (porcentajes[i] ?? 0) >= 100
+      );
       respuesta = yaEtiquetada
-        ? `Sí, tu carga ya pasó por la fase de etiquetado. Estado actual: "${faseActualTexto}".`
-        : `Tu carga aún no llega a la fase de etiquetado. Estado actual: "${faseActualTexto}".`;
+        ? "Sí, tu carga ya pasó por la fase de etiquetado."
+        : `Tu carga aún no termina la fase de etiquetado. Estado actual: "${faseActualTexto}" (${porcentajeActual}%).`;
     } else {
-      respuesta = `Tu carga se encuentra actualmente en la fase: "${faseActualTexto}". Puedes ver el detalle completo de fases arriba en tu seguimiento.`;
+      respuesta = `Tu carga se encuentra actualmente en la fase: "${faseActualTexto}" (${porcentajeActual}% completado). Puedes ver el detalle completo de fases arriba en tu seguimiento.`;
     }
   } else if (pregunta === "inconsistencias") {
     if (!fase.etq_orden_id) {
@@ -94,7 +110,7 @@ export async function POST(req: NextRequest) {
         .gt("cantidad_factura", 0);
 
       const hayInconsistencias = (items ?? []).some(
-        (it) => it.cantidad_contada !== it.cantidad_factura
+        (it) => Number(it.cantidad_contada) - Number(it.cantidad_factura) !== 0
       );
       respuesta = hayInconsistencias
         ? "Sí, tu carga se encuentra actualmente en revisión por inconsistencias. Nuestro equipo la está verificando."

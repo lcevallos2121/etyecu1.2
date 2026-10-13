@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
 
   const { data: fasesConfig } = await getSupabaseAdmin()
     .from("portal_ordenes_fases")
-    .select("id, orden_dap_id, etq_orden_id, fases, fase_actual, visible")
+    .select("id, orden_dap_id, etq_orden_id, fases, porcentajes, visible")
     .eq("cliente_nombre", acceso.cliente_nombre)
     .eq("visible", true);
 
@@ -48,7 +48,7 @@ export async function GET(req: NextRequest) {
     tipo: f.orden_dap_id ? "dap" : "etq",
     numero: f.orden_dap_id ? dapMap.get(f.orden_dap_id) ?? "—" : etqMap.get(f.etq_orden_id!) ?? "—",
     fases: f.fases,
-    fase_actual: f.fase_actual,
+    porcentajes: f.porcentajes,
   }));
 
   return NextResponse.json({ ordenes });
