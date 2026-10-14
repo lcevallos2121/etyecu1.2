@@ -26,6 +26,7 @@ type EtqOrden = {
   bodega_proceso: string | null;
   reglamento_tecnico: string | null;
   supervisora: string | null;
+  producto_informe: string | null;
   // Datos de contacto del cliente (para la cabecera del informe): pueden venir
   // del cliente de etiquetado externo, o del cliente de la orden DAP (ETYECU)
   ruc_cliente: string | null;
@@ -484,7 +485,16 @@ export default function DetalleEtiquetadoPage() {
   const [fBodegaProceso, setFBodegaProceso] = useState("");
   const [fReglamento, setFReglamento] = useState("");
   const [fSupervisora, setFSupervisora] = useState("");
+  const [fProductoInforme, setFProductoInforme] = useState("");
   const [showInforme, setShowInforme] = useState(false);
+  // Tres formatos de Informe Final: General (el de siempre), Básico (igual
+  // pero solo Descripción + Total de etiquetas) y Licores (formato propio
+  // para vinos/licores, con fotos de "novedades encontradas").
+  const [formatoInforme, setFormatoInforme] = useState<"general" | "basico" | "licores">("general");
+  const [showMenuInforme, setShowMenuInforme] = useState(false);
+  const [showGestionFotosLicores, setShowGestionFotosLicores] = useState(false);
+  const [fotosLicores, setFotosLicores] = useState<{ id: string; foto_url: string }[]>([]);
+  const [subiendoFotoLicores, setSubiendoFotoLicores] = useState(false);
   const [tallasOrden, setTallasOrden] = useState<string[]>([]);
   const [tallasInput, setTallasInput] = useState("");
 
@@ -836,6 +846,7 @@ export default function DetalleEtiquetadoPage() {
     setFBodegaProceso(orden?.bodega_proceso ?? "");
     setFReglamento(orden?.reglamento_tecnico ?? "");
     setFSupervisora(orden?.supervisora ?? "Isabel Garcia");
+    setFProductoInforme(orden?.producto_informe ?? "");
     setShowDatosInforme(true);
   }
 
@@ -847,12 +858,60 @@ export default function DetalleEtiquetadoPage() {
         bodega_proceso: fBodegaProceso.trim() || null,
         reglamento_tecnico: fReglamento.trim() || null,
         supervisora: fSupervisora.trim() || null,
+        producto_informe: fProductoInforme.trim() || null,
       })
       .eq("id", id);
     if (error) { setErrorMsg(error.message); return; }
     setShowDatosInforme(false);
     setToast("Datos del informe actualizados.");
     cargar();
+  }
+
+  // Carga las fotos guardadas del Informe Licores para esta orden.
+  const cargarFotosLicores = useCallback(async () => {
+    const { data } = await supabase
+      .from("etq_informe_fotos")
+      .select("id, foto_url")
+      .eq("orden_id", id)
+      .order("orden", { ascending: true });
+    setFotosLicores((data as { id: string; foto_url: string }[]) ?? []);
+  }, [supabase, id]);
+
+  async function subirFotosLicores(e: React.ChangeEvent<HTMLInputElement>) {
+    const archivos = Array.from(e.target.files ?? []);
+    if (archivos.length === 0) return;
+    setSubiendoFotoLicores(true);
+    setErrorMsg(null);
+    try {
+      let siguienteOrden = fotosLicores.length;
+      for (const archivo of archivos) {
+        if (!archivo.type.startsWith("image/")) continue;
+        const nombreArchivo = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}_${archivo.name.replace(/\s+/g, "_")}`;
+        const { error: uploadError } = await supabase.storage
+          .from("informe-licores-fotos")
+          .upload(nombreArchivo, archivo);
+        if (uploadError) {
+          setErrorMsg(uploadError.message);
+          continue;
+        }
+        const { data: urlData } = supabase.storage.from("informe-licores-fotos").getPublicUrl(nombreArchivo);
+        await supabase.from("etq_informe_fotos").insert({
+          orden_id: id,
+          foto_url: urlData.publicUrl,
+          orden: siguienteOrden,
+        });
+        siguienteOrden += 1;
+      }
+      cargarFotosLicores();
+    } finally {
+      setSubiendoFotoLicores(false);
+      e.target.value = "";
+    }
+  }
+
+  async function eliminarFotoLicores(fotoId: string) {
+    await supabase.from("etq_informe_fotos").delete().eq("id", fotoId);
+    cargarFotosLicores();
   }
 
   useEffect(() => { cargar(); }, [cargar]);
@@ -2087,12 +2146,55 @@ export default function DetalleEtiquetadoPage() {
                   >
                     Datos del informe
                   </button>
-                  <button
-                    onClick={() => setShowInforme(true)}
-                    className="btn-primary flex items-center gap-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
-                  >
-                    <FileText size={13} /> Generar informe final
-                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => setShowMenuInforme((v) => !v)}
+                      className="btn-primary flex items-center gap-1 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
+                    >
+                      <FileText size={13} /> Generar informe final
+                    </button>
+                    {showMenuInforme && (
+                      <>
+                        <div className="fixed inset-0 z-10" onClick={() => setShowMenuInforme(false)} />
+                        <div className="absolute right-0 top-[calc(100%+4px)] z-20 w-[220px] card p-1.5">
+                          <button
+                            onClick={() => {
+                              setShowMenuInforme(false);
+                              setFormatoInforme("general");
+                              setShowInforme(true);
+                            }}
+                            className="w-full text-left px-3 py-2 rounded-md text-[12.5px] hover:bg-white/[0.06]"
+                          >
+                            Informe General
+                            <span className="block text-[10.5px] text-text-faint">Detalle completo (factura, inventario, etiquetas)</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowMenuInforme(false);
+                              setFormatoInforme("basico");
+                              setShowInforme(true);
+                            }}
+                            className="w-full text-left px-3 py-2 rounded-md text-[12.5px] hover:bg-white/[0.06]"
+                          >
+                            Informe Básico
+                            <span className="block text-[10.5px] text-text-faint">Solo descripción y total de etiquetas</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setShowMenuInforme(false);
+                              setFormatoInforme("licores");
+                              cargarFotosLicores();
+                              setShowGestionFotosLicores(true);
+                            }}
+                            className="w-full text-left px-3 py-2 rounded-md text-[12.5px] hover:bg-white/[0.06]"
+                          >
+                            Informe Licores
+                            <span className="block text-[10.5px] text-text-faint">Formato de novedades con fotografías</span>
+                          </button>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
 
@@ -3453,10 +3555,83 @@ export default function DetalleEtiquetadoPage() {
                   className="w-full card px-3 py-2 text-[13px] outline-none"
                 />
               </div>
+              <div>
+                <label className="text-[11.5px] text-text-faint block mb-1">
+                  Producto (solo para el Informe Licores)
+                </label>
+                <input
+                  value={fProductoInforme}
+                  onChange={(e) => setFProductoInforme(e.target.value)}
+                  placeholder="Ej. VINOS"
+                  className="w-full card px-3 py-2 text-[13px] outline-none"
+                />
+              </div>
             </div>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setShowDatosInforme(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cancelar</button>
               <button onClick={guardarDatosInforme} className="btn-primary text-[13px] font-semibold px-4 py-2 rounded-lg">Guardar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Gestionar fotos del Informe Licores antes de generarlo */}
+      {showGestionFotosLicores && (
+        <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[60] p-4 overflow-y-auto">
+          <div className="card w-full max-w-[560px] my-6 p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-[16px] font-semibold">Fotos del Informe Licores</h2>
+              <button onClick={() => setShowGestionFotosLicores(false)} className="text-text-faint hover:text-text"><X size={18} /></button>
+            </div>
+            <p className="text-[12px] text-text-dim mb-3">
+              Las fotos aparecen en el informe en el mismo orden en que las agregas, como
+              &quot;CARGA ETIQUETADA&quot;. Quedan guardadas para esta orden, puedes agregar más o
+              quitarlas cuando quieras.
+            </p>
+
+            {errorMsg && <div className="mb-3 px-3 py-2 rounded-lg bg-red/10 border border-red/20 text-[12px] text-[#fca5a5]">{errorMsg}</div>}
+
+            {fotosLicores.length > 0 && (
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                {fotosLicores.map((f) => (
+                  <div key={f.id} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={f.foto_url} alt="Carga etiquetada" className="w-full h-[90px] object-cover rounded-lg" />
+                    <button
+                      onClick={() => eliminarFotoLicores(f.id)}
+                      className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red text-white flex items-center justify-center text-[11px]"
+                      title="Quitar foto"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <label className="btn-secondary inline-flex items-center gap-1.5 text-[12.5px] font-semibold px-3 py-2 rounded-lg cursor-pointer">
+              <Upload size={14} /> {subiendoFotoLicores ? "Subiendo…" : "Agregar fotos"}
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={subirFotosLicores}
+                disabled={subiendoFotoLicores}
+                className="hidden"
+              />
+            </label>
+
+            <div className="flex gap-2 justify-end mt-5">
+              <button onClick={() => setShowGestionFotosLicores(false)} className="btn-secondary text-[13px] font-semibold px-4 py-2 rounded-lg">Cerrar</button>
+              <button
+                onClick={() => {
+                  setShowGestionFotosLicores(false);
+                  setShowInforme(true);
+                }}
+                className="btn-primary text-[13px] font-semibold px-4 py-2 rounded-lg"
+              >
+                Generar informe
+              </button>
             </div>
           </div>
         </div>
@@ -3473,111 +3648,210 @@ export default function DetalleEtiquetadoPage() {
               Cerrar
             </button>
           </div>
-          <div className="print-area hidden print:block text-black bg-white p-10">
-            <div className="max-w-[720px] mx-auto">
-              <div className="flex items-center justify-center gap-3 mb-1">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/logo-etyecu.png" alt="ETYECU" className="h-14" />
-              </div>
-              <p className="text-[14px] font-bold text-center mb-0.5">ETIQUETADO EN ECUADOR</p>
-              <p className="text-[11px] text-center mb-5">Según Res. 16049</p>
-
-              <table className="w-full text-[10.5px] border border-black/50 border-collapse mb-4">
-                <tbody>
-                  <tr>
-                    <td className="border border-black/40 p-1.5 font-bold w-[170px]">Número de Orden:</td>
-                    <td className="border border-black/40 p-1.5 w-[200px]">{orden.numero_etq}</td>
-                    <td className="border border-black/40 p-1.5 font-bold w-[170px]">Fecha de Emisión:</td>
-                    <td className="border border-black/40 p-1.5">
-                      {new Date().toISOString().slice(0, 10)}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="border border-black/40 p-1.5 font-bold">Importador:</td>
-                    <td className="border border-black/40 p-1.5" colSpan={3}>{orden.cliente_nombre ?? "—"}</td>
-                  </tr>
-                  <tr>
-                    <td className="border border-black/40 p-1.5 font-bold">RUC:</td>
-                    <td className="border border-black/40 p-1.5">{orden.ruc_cliente ?? "—"}</td>
-                    <td className="border border-black/40 p-1.5 font-bold">Dirección:</td>
-                    <td className="border border-black/40 p-1.5">{orden.direccion_cliente ?? "—"}</td>
-                  </tr>
-                  <tr>
-                    <td className="border border-black/40 p-1.5 font-bold">Proveedor y Factura N°:</td>
-                    <td className="border border-black/40 p-1.5" colSpan={3}>
-                      {orden.proveedor_factura ?? "—"}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td className="border border-black/40 p-1.5 font-bold">Bodega del Proceso:</td>
-                    <td className="border border-black/40 p-1.5" colSpan={3}>
-                      {orden.bodega_proceso ?? "—"}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <p className="text-[11px] font-bold mb-1">REGLAMENTOS ETIQUETADOS DURANTE EL PROCESO</p>
-              <p className="text-[10.5px] border border-black/40 p-2 mb-4">
-                {orden.reglamento_tecnico ?? "—"}
-              </p>
-
-              <p className="text-[10.5px] mb-3">
-                Hemos procedido a realizar el etiquetado de su mercadería, correspondiente a los
-                reglamentos señalados en el párrafo anterior. A continuación detallamos el total de
-                prendas etiquetadas:
-              </p>
-
-              <button
-                type="button"
-                onClick={() => setVerInformePorCategoria((v) => !v)}
-                className="print:hidden text-[11px] text-[#c4b8ff] hover:underline mb-2"
-              >
-                {verInformePorCategoria
-                  ? "Ver detalle completo por descripción exacta"
-                  : "Ver resumen unificado por categoría"}
-              </button>
-
-              <table className="w-full text-[10px] border border-black/50 border-collapse mb-2">
-                <thead>
-                  <tr className="bg-gray-100">
-                    <th className="border border-black/40 p-1.5 text-left">DESCRIPCIÓN</th>
-                    <th className="border border-black/40 p-1.5 text-right w-[110px]">CANTIDAD DE FACTURA</th>
-                    <th className="border border-black/40 p-1.5 text-right w-[120px]">CANTIDAD DE INVENTARIO</th>
-                    <th className="border border-black/40 p-1.5 text-right w-[110px]">TOTAL DE ETIQUETAS</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filasInforme.map((g) => (
-                    <tr key={g.descripcion}>
-                      <td className="border border-black/40 p-1.5">{g.descripcion}</td>
-                      <td className="border border-black/40 p-1.5 text-right">{g.cantidadFactura}</td>
-                      <td className="border border-black/40 p-1.5 text-right">{g.cantidadInventario}</td>
-                      <td className="border border-black/40 p-1.5 text-right">{g.totalEtiquetas}</td>
-                    </tr>
-                  ))}
-                  <tr className="font-bold">
-                    <td className="border border-black/40 p-1.5 bg-gray-100">TOTALES</td>
-                    <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.factura}</td>
-                    <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.inventario}</td>
-                    <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.etiquetas}</td>
-                  </tr>
-                </tbody>
-              </table>
-
-              <div className="mt-16 grid grid-cols-2 gap-10 text-center text-[10.5px] break-inside-avoid">
-                <div>
-                  <div className="border-t border-black pt-1">Realizado por</div>
-                  <p className="mt-0.5">{orden.supervisora ?? "—"}</p>
-                  <p>Etiquetado@etyecu.ec</p>
+          {formatoInforme !== "licores" ? (
+            <div className="print-area hidden print:block text-black bg-white p-10">
+              <div className="max-w-[720px] mx-auto">
+                <div className="flex items-center justify-center gap-3 mb-1">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src="/logo-etyecu.png" alt="ETYECU" className="h-14" />
                 </div>
-                <div>
-                  <div className="border-t border-black pt-1">Supervisado por</div>
-                  <p className="mt-0.5">Isabel Garcia</p>
+                <p className="text-[14px] font-bold text-center mb-0.5">ETIQUETADO EN ECUADOR</p>
+                <p className="text-[11px] text-center mb-5">Según Res. 16049</p>
+
+                <table className="w-full text-[10.5px] border border-black/50 border-collapse mb-4">
+                  <tbody>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold w-[170px]">Número de Orden:</td>
+                      <td className="border border-black/40 p-1.5 w-[200px]">{orden.numero_etq}</td>
+                      <td className="border border-black/40 p-1.5 font-bold w-[170px]">Fecha de Emisión:</td>
+                      <td className="border border-black/40 p-1.5">
+                        {new Date().toISOString().slice(0, 10)}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Importador:</td>
+                      <td className="border border-black/40 p-1.5" colSpan={3}>{orden.cliente_nombre ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">RUC:</td>
+                      <td className="border border-black/40 p-1.5">{orden.ruc_cliente ?? "—"}</td>
+                      <td className="border border-black/40 p-1.5 font-bold">Dirección:</td>
+                      <td className="border border-black/40 p-1.5">{orden.direccion_cliente ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Proveedor y Factura N°:</td>
+                      <td className="border border-black/40 p-1.5" colSpan={3}>
+                        {orden.proveedor_factura ?? "—"}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">Bodega del Proceso:</td>
+                      <td className="border border-black/40 p-1.5" colSpan={3}>
+                        {orden.bodega_proceso ?? "—"}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <p className="text-[11px] font-bold mb-1">REGLAMENTOS ETIQUETADOS DURANTE EL PROCESO</p>
+                <p className="text-[10.5px] border border-black/40 p-2 mb-4">
+                  {orden.reglamento_tecnico ?? "—"}
+                </p>
+
+                <p className="text-[10.5px] mb-3">
+                  Hemos procedido a realizar el etiquetado de su mercadería, correspondiente a los
+                  reglamentos señalados en el párrafo anterior. A continuación detallamos el total de
+                  prendas etiquetadas:
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() => setVerInformePorCategoria((v) => !v)}
+                  className="print:hidden text-[11px] text-[#c4b8ff] hover:underline mb-2"
+                >
+                  {verInformePorCategoria
+                    ? "Ver detalle completo por descripción exacta"
+                    : "Ver resumen unificado por categoría"}
+                </button>
+
+                <table className="w-full text-[10px] border border-black/50 border-collapse mb-2">
+                  <thead>
+                    <tr className="bg-gray-100">
+                      <th className="border border-black/40 p-1.5 text-left">DESCRIPCIÓN</th>
+                      {formatoInforme === "general" && (
+                        <>
+                          <th className="border border-black/40 p-1.5 text-right w-[110px]">CANTIDAD DE FACTURA</th>
+                          <th className="border border-black/40 p-1.5 text-right w-[120px]">CANTIDAD DE INVENTARIO</th>
+                        </>
+                      )}
+                      <th className="border border-black/40 p-1.5 text-right w-[110px]">TOTAL DE ETIQUETAS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filasInforme.map((g) => (
+                      <tr key={g.descripcion}>
+                        <td className="border border-black/40 p-1.5">{g.descripcion}</td>
+                        {formatoInforme === "general" && (
+                          <>
+                            <td className="border border-black/40 p-1.5 text-right">{g.cantidadFactura}</td>
+                            <td className="border border-black/40 p-1.5 text-right">{g.cantidadInventario}</td>
+                          </>
+                        )}
+                        <td className="border border-black/40 p-1.5 text-right">{g.totalEtiquetas}</td>
+                      </tr>
+                    ))}
+                    <tr className="font-bold">
+                      <td className="border border-black/40 p-1.5 bg-gray-100">TOTALES</td>
+                      {formatoInforme === "general" && (
+                        <>
+                          <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.factura}</td>
+                          <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.inventario}</td>
+                        </>
+                      )}
+                      <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.etiquetas}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <div className="mt-16 grid grid-cols-2 gap-10 text-center text-[10.5px] break-inside-avoid">
+                  <div>
+                    <div className="border-t border-black pt-1">Realizado por</div>
+                    <p className="mt-0.5">{orden.supervisora ?? "—"}</p>
+                    <p>Etiquetado@etyecu.ec</p>
+                  </div>
+                  <div>
+                    <div className="border-t border-black pt-1">Supervisado por</div>
+                    <p className="mt-0.5">Isabel Garcia</p>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="print-area hidden print:block text-black bg-white p-10">
+              <div className="max-w-[720px] mx-auto">
+                <div className="flex items-start justify-between mb-3">
+                  <div className="text-[10.5px] font-bold leading-snug">
+                    <p>FECHA: {new Date().toLocaleDateString("es-EC")}</p>
+                    <p>ORDEN: {orden.numero_etq}</p>
+                  </div>
+                  <p className="text-[14px] font-bold text-center flex-1">
+                    INFORME DE NOVEDADES
+                    <br />
+                    DE PROCESO DE ETIQUETADO
+                  </p>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src="/logo-etyecu.png" alt="ETYECU" className="h-12" />
+                </div>
+
+                <table className="w-full text-[10.5px] border border-black/50 border-collapse mb-4">
+                  <tbody>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold w-[170px]">CLIENTE:</td>
+                      <td className="border border-black/40 p-1.5">{orden.cliente_nombre ?? "—"}</td>
+                      <td className="border border-black/40 p-1.5 font-bold w-[110px]">RUC:</td>
+                      <td className="border border-black/40 p-1.5 w-[160px]">{orden.ruc_cliente ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">PRODUCTO:</td>
+                      <td className="border border-black/40 p-1.5">{orden.producto_informe ?? "—"}</td>
+                      <td className="border border-black/40 p-1.5 font-bold">FACTURA:</td>
+                      <td className="border border-black/40 p-1.5">{orden.proveedor_factura ?? "—"}</td>
+                    </tr>
+                    <tr>
+                      <td className="border border-black/40 p-1.5 font-bold">CANTIDAD:</td>
+                      <td className="border border-black/40 p-1.5" colSpan={3}>
+                        {totalesInformeFilas.etiquetas} UNIDADES
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                <table className="w-full text-[10px] border border-black/50 border-collapse mb-5">
+                  <thead>
+                    <tr className="bg-yellow-300">
+                      <th className="border border-black/40 p-1.5 text-left">DESCRIPCION</th>
+                      <th className="border border-black/40 p-1.5 text-right w-[160px]">CANTIDAD ETIQUETADA</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filasInforme.map((g) => (
+                      <tr key={g.descripcion}>
+                        <td className="border border-black/40 p-1.5">{g.descripcion}</td>
+                        <td className="border border-black/40 p-1.5 text-right">{g.totalEtiquetas}</td>
+                      </tr>
+                    ))}
+                    <tr className="font-bold">
+                      <td className="border border-black/40 p-1.5">TOTAL</td>
+                      <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.etiquetas}</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                {fotosLicores.length > 0 && (
+                  <>
+                    <p className="text-[11px] font-bold text-center mb-2">DETALLE DE NOVEDADES ENCONTRADAS</p>
+                    <div className="grid grid-cols-2 gap-3 mb-6">
+                      {fotosLicores.map((f) => (
+                        <div key={f.id} className="border border-black/40 break-inside-avoid">
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={f.foto_url} alt="Carga etiquetada" className="w-full h-[220px] object-cover" />
+                          <p className="text-[10px] font-bold text-center py-1 border-t border-black/40">
+                            CARGA ETIQUETADA
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                <div className="mt-10 text-[10.5px] break-inside-avoid">
+                  <p className="font-bold">Isabel Garcia</p>
+                  <p className="font-bold">Supervisora ETYECU S.A.</p>
+                  <p>Etiquetado@etyecu.ec</p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
