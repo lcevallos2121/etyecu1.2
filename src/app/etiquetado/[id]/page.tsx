@@ -133,6 +133,52 @@ function sumarTallas(detalle: Record<string, number> | null | undefined): number
   return Object.values(detalle).reduce((a, n) => a + Number(n || 0), 0);
 }
 
+// Descompone el texto de cajas en sus cajas físicas individuales, con la
+// cantidad de cada una: "160(6) 162(42)" -> [{caja:"160(6)", numeroCaja:"160",
+// cantidad:6}, {caja:"162(42)", numeroCaja:"162", cantidad:42}].
+function extraerCajasIndividuales(
+  cajasTexto: string | null | undefined
+): { caja: string; numeroCaja: string; cantidad: number }[] {
+  if (!cajasTexto) return [];
+  const tokens = cajasTexto.match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi) ?? [];
+  return tokens
+    .map((t) => ({
+      caja: t.trim(),
+      numeroCaja: t.match(/\d+/)?.[0] ?? "",
+      cantidad: sumarCajas(t),
+    }))
+    .filter((c) => c.numeroCaja);
+}
+
+// Reparte un desglose de tallas entre varias cajas físicas, proporcional a
+// la cantidad de cada una — es el mismo criterio que se usa para corregir a
+// mano un código cuyas tallas se cargaron todas juntas en vez de caja por
+// caja (ej. 78 unidades en S/M/L repartidas entre una caja de 60 y una de
+// 18: a la de 60 le toca 60/78 de cada talla, a la de 18 el resto). La
+// última caja se lleva el residuo de cada talla para que la suma por talla
+// siempre cuadre exacto, aunque el reparto no sea perfectamente divisible.
+function repartirTallasPorCaja(
+  tallas: Record<string, number>,
+  cajas: { caja: string; numeroCaja: string; cantidad: number }[]
+): { caja: string; numeroCaja: string; tallas: Record<string, number> }[] {
+  const totalCajas = cajas.reduce((acc, c) => acc + c.cantidad, 0);
+  if (totalCajas === 0 || cajas.length === 0) return [];
+  const resultado = cajas.map((c) => ({ caja: c.caja, numeroCaja: c.numeroCaja, tallas: {} as Record<string, number> }));
+  Object.entries(tallas).forEach(([talla, cantidadTotal]) => {
+    let acumulado = 0;
+    cajas.forEach((c, i) => {
+      if (i === cajas.length - 1) {
+        resultado[i].tallas[talla] = Number(cantidadTotal || 0) - acumulado;
+      } else {
+        const parte = Math.round((Number(cantidadTotal || 0) * c.cantidad) / totalCajas);
+        resultado[i].tallas[talla] = parte;
+        acumulado += parte;
+      }
+    });
+  });
+  return resultado;
+}
+
 // Orden lógico conocido de tallas de ropa. JSONB de Postgres NO garantiza
 // conservar el orden en que se ingresaron las claves de un objeto — por
 // eso las tallas podían verse mezcladas (ej. "L M S" en vez de "S M L",
@@ -1287,39 +1333,57 @@ export default function DetalleEtiquetadoPage() {
       });
     }
 
-    // Registrar el desglose de tallas por caja cuando es un código nuevo (ahí
-    // sabemos con certeza que todas sus tallas son de las cajas recién
-    // escritas), o cuando se edita uno que tiene UNA SOLA caja (ahí también
-    // se sabe con certeza que el total le pertenece solo a esa caja, aunque
-    // se haya llenado después de crear el código). Si tiene varias cajas
-    // mezcladas no se toca nada — no hay forma de saber qué parte es de cada
-    // una, y así se evita guardar un desglose incorrecto.
-    const tokensCajasGuardado = fCajas.trim().match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi);
-    const esUnaSolaCajaGuardado = tokensCajasGuardado?.length === 1;
-    if (itemId && fCajas.trim() && sumarTallas(fTallas) > 0 && (!editId || esUnaSolaCajaGuardado)) {
-      const matchNumero = fCajas.trim().match(/^\s*(\d+)/);
-      const numeroCaja = matchNumero ? matchNumero[1] : null;
-      if (numeroCaja) {
+    // Registrar el desglose de tallas por caja. Si el código tiene una sola
+    // caja, se sabe con certeza que todo el total es de esa caja. Si tiene
+    // varias cajas y todavía no existe NINGÚN desglose guardado para este
+    // código (nadie lo cargó caja por caja todavía), se reparte el total
+    // proporcional al tamaño de cada caja — mismo criterio que se usa para
+    // corregir a mano estos casos cuando se reportan — así el filtro por
+    // caja nunca se queda sin desglose. Si YA existe algún desglose real
+    // (alguien lo cargó caja por caja con "+Tallas"), no se toca nada para
+    // no pisar ese dato real con un reparto adivinado.
+    if (itemId && fCajas.trim() && sumarTallas(fTallas) > 0) {
+      const cajasIndividuales = extraerCajasIndividuales(fCajas);
+      if (cajasIndividuales.length === 1) {
+        const [unica] = cajasIndividuales;
         const { data: filaExistente } = await supabase
           .from("etq_tallas_por_caja")
           .select("id")
           .eq("item_id", itemId)
           .is("variante_id", null)
-          .eq("numero_caja", numeroCaja)
+          .eq("numero_caja", unica.numeroCaja)
           .maybeSingle();
         if (filaExistente) {
           await supabase
             .from("etq_tallas_por_caja")
-            .update({ caja: fCajas.trim(), tallas_detalle: fTallas })
+            .update({ caja: unica.caja, tallas_detalle: fTallas })
             .eq("id", filaExistente.id);
         } else {
           await supabase.from("etq_tallas_por_caja").insert({
             item_id: itemId,
             variante_id: null,
-            caja: fCajas.trim(),
-            numero_caja: numeroCaja,
+            caja: unica.caja,
+            numero_caja: unica.numeroCaja,
             tallas_detalle: fTallas,
           });
+        }
+      } else if (cajasIndividuales.length > 1) {
+        const { data: existentes } = await supabase
+          .from("etq_tallas_por_caja")
+          .select("id")
+          .eq("item_id", itemId)
+          .is("variante_id", null);
+        if (!existentes || existentes.length === 0) {
+          const reparto = repartirTallasPorCaja(fTallas, cajasIndividuales);
+          await supabase.from("etq_tallas_por_caja").insert(
+            reparto.map((r) => ({
+              item_id: itemId,
+              variante_id: null,
+              caja: r.caja,
+              numero_caja: r.numeroCaja,
+              tallas_detalle: r.tallas,
+            }))
+          );
         }
       }
     }
@@ -1672,15 +1736,32 @@ export default function DetalleEtiquetadoPage() {
       cantidad: cantidadVariante,
     });
 
-    // Registrar el desglose de tallas de esta caja puntual de la variante
-    const matchNumeroVariante = vCajas.trim().match(/^\s*(\d+)/);
-    await supabase.from("etq_tallas_por_caja").insert({
-      item_id: itemVarianteId,
-      variante_id: varianteCreada?.id ?? null,
-      caja: vCajas.trim(),
-      numero_caja: matchNumeroVariante ? matchNumeroVariante[1] : null,
-      tallas_detalle: vTallas,
-    });
+    // Registrar el desglose de tallas por caja de la variante. Si trae una
+    // sola caja, el total es de esa caja. Si trae varias (ej. "245(12)
+    // 250(6)"), se reparte proporcional al tamaño de cada una — antes se
+    // guardaba TODO el total bajo la primera caja nada más, dejando las
+    // demás sin desglose.
+    const cajasVariante = extraerCajasIndividuales(vCajas);
+    if (cajasVariante.length === 1) {
+      await supabase.from("etq_tallas_por_caja").insert({
+        item_id: itemVarianteId,
+        variante_id: varianteCreada?.id ?? null,
+        caja: cajasVariante[0].caja,
+        numero_caja: cajasVariante[0].numeroCaja,
+        tallas_detalle: vTallas,
+      });
+    } else if (cajasVariante.length > 1) {
+      const repartoVariante = repartirTallasPorCaja(vTallas, cajasVariante);
+      await supabase.from("etq_tallas_por_caja").insert(
+        repartoVariante.map((r) => ({
+          item_id: itemVarianteId,
+          variante_id: varianteCreada?.id ?? null,
+          caja: r.caja,
+          numero_caja: r.numeroCaja,
+          tallas_detalle: r.tallas,
+        }))
+      );
+    }
 
     // Dejar registro en el historial, para poder auditar más adelante
     // cuándo se creó esta variante y con qué valores.
@@ -1834,31 +1915,31 @@ export default function DetalleEtiquetadoPage() {
       }
     }
 
-    // Actualizar (o crear si no existía) el desglose de tallas-por-caja de
-    // esta variante, para que el reporte de Isabel siga sacando bien el total.
-    const matchNumero = cajaNueva.match(/^\s*(\d+)/);
-    const { data: filaExistente } = await supabase
-      .from("etq_tallas_por_caja")
-      .select("id")
-      .eq("variante_id", varianteEditId)
-      .maybeSingle();
-    if (filaExistente) {
-      await supabase
-        .from("etq_tallas_por_caja")
-        .update({
-          caja: cajaNueva,
-          numero_caja: matchNumero ? matchNumero[1] : null,
-          tallas_detalle: edvTallas,
-        })
-        .eq("id", filaExistente.id);
-    } else {
+    // Recalcular el desglose de tallas-por-caja de esta variante desde cero
+    // (se borra lo que tenía y se vuelve a armar con los valores nuevos) —
+    // así cubre tanto una sola caja como varias ("245(12) 250(6)"), que
+    // antes quedaban todas bajo la primera caja nada más.
+    await supabase.from("etq_tallas_por_caja").delete().eq("variante_id", varianteEditId);
+    const cajasEdvVariante = extraerCajasIndividuales(cajaNueva);
+    if (cajasEdvVariante.length === 1) {
       await supabase.from("etq_tallas_por_caja").insert({
         item_id: item.id,
         variante_id: varianteEditId,
-        caja: cajaNueva,
-        numero_caja: matchNumero ? matchNumero[1] : null,
+        caja: cajasEdvVariante[0].caja,
+        numero_caja: cajasEdvVariante[0].numeroCaja,
         tallas_detalle: edvTallas,
       });
+    } else if (cajasEdvVariante.length > 1) {
+      const repartoEdvVariante = repartirTallasPorCaja(edvTallas, cajasEdvVariante);
+      await supabase.from("etq_tallas_por_caja").insert(
+        repartoEdvVariante.map((r) => ({
+          item_id: item.id,
+          variante_id: varianteEditId,
+          caja: r.caja,
+          numero_caja: r.numeroCaja,
+          tallas_detalle: r.tallas,
+        }))
+      );
     }
 
     await supabase.from("etq_variantes_historial").insert({
