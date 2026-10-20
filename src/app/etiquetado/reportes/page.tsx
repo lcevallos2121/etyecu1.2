@@ -284,6 +284,7 @@ export default function ReportesEtiquetadoPage() {
   const [filtroCliente, setFiltroCliente] = useState<string>("todos");
   const [ordenSeleccionadaId, setOrdenSeleccionadaId] = useState<string>("");
   const [paletSeleccionado, setPaletSeleccionado] = useState<string>("todos");
+  const [showImpresionRapida, setShowImpresionRapida] = useState(false);
   const [cajaFiltro, setCajaFiltro] = useState("");
   const [composicionFiltro, setComposicionFiltro] = useState<string>("todas");
   const [busquedaComposicion, setBusquedaComposicion] = useState("");
@@ -1038,12 +1039,50 @@ export default function ReportesEtiquetadoPage() {
   // rango ("179 A 182(96)") cuenta como una sola caja física en este
   // desglose, igual que en etq_tallas_por_caja. Se usa para saber, caja por
   // caja, si ya se marcó como impresa.
-  function extraerCajasIndividuales(cajasTexto: string | null | undefined): { caja: string; numeroCaja: string }[] {
+  function extraerCajasIndividuales(
+    cajasTexto: string | null | undefined
+  ): { caja: string; numeroCaja: string; cantidad: number }[] {
     if (!cajasTexto) return [];
     const tokens = cajasTexto.match(/\d+\s*A\s*\d+\s*\(\d+\)|\d+\s*\(\d+\)/gi) ?? [];
     return tokens
-      .map((t) => ({ caja: t.trim(), numeroCaja: t.match(/\d+/)?.[0] ?? "" }))
+      .map((t) => ({ caja: t.trim(), numeroCaja: t.match(/\d+/)?.[0] ?? "", cantidad: sumarCajasTexto(t) }))
       .filter((c) => c.numeroCaja);
+  }
+
+  // Reparte un desglose de tallas entre varias cajas físicas, proporcional a
+  // la cantidad de cada una — mismo criterio usado en la pantalla de la
+  // orden para autocompletar el desglose por caja cuando falta. Se usa acá
+  // solo para MOSTRAR un estimado en Impresión rápida cuando el código no
+  // tiene todavía su desglose real guardado (no escribe nada en la base).
+  function repartirTallasPorCaja(
+    tallas: Record<string, number>,
+    cajas: { caja: string; numeroCaja: string; cantidad: number }[]
+  ): { numeroCaja: string; tallas: Record<string, number> }[] {
+    const totalCajas = cajas.reduce((acc, c) => acc + c.cantidad, 0);
+    if (totalCajas === 0 || cajas.length === 0) return [];
+    const resultado = cajas.map((c) => ({ numeroCaja: c.numeroCaja, tallas: {} as Record<string, number> }));
+    Object.entries(tallas).forEach(([talla, cantidadTotal]) => {
+      let acumulado = 0;
+      cajas.forEach((c, i) => {
+        if (i === cajas.length - 1) {
+          resultado[i].tallas[talla] = Number(cantidadTotal || 0) - acumulado;
+        } else {
+          const parte = Math.round((Number(cantidadTotal || 0) * c.cantidad) / totalCajas);
+          resultado[i].tallas[talla] = parte;
+          acumulado += parte;
+        }
+      });
+    });
+    return resultado;
+  }
+
+  // Texto compacto de tallas para Impresión rápida: "S 18 · M 18 · L 18"
+  function formatoTallasCompacto(detalle: Record<string, number> | null | undefined): string {
+    if (!detalle || Object.keys(detalle).length === 0) return "—";
+    return ordenarClavesDeTallas(Object.keys(detalle))
+      .filter((t) => Number(detalle[t]) > 0)
+      .map((t) => `${t} ${detalle[t]}`)
+      .join(" · ");
   }
 
   // Busca si una caja física puntual ya fue marcada como impresa en
@@ -1152,6 +1191,27 @@ export default function ReportesEtiquetadoPage() {
     yaImpreso: boolean;
     tipoEtiqueta: string | null; // del código (las variantes heredan el del item)
     alertaFactura: boolean; // true si la factura del código no cuadra con lo contado
+  };
+
+  // Un renglón de "Impresión rápida" = un código/variante dentro de UNA
+  // caja física puntual del palet elegido (no el total del código).
+  type FilaImpresionRapida = {
+    key: string;
+    itemId: string;
+    varianteId: string | null;
+    numeroCaja: string;
+    caja: string;
+    codigo: string | null;
+    descripcion: string | null;
+    marca: string | null;
+    pais: string | null;
+    composicion: string | null;
+    tallasTexto: string;
+    cantidad: number; // lo que le toca a ESTA caja de este código
+    alertaFactura: boolean;
+    notaDividido: string | null; // código repartido en varias cajas
+    notaVariante: boolean; // mismo código 2 veces en la misma caja (otro color)
+    yaImpreso: boolean;
   };
 
   const filasInventario: FilaInventario[] = useMemo(() => {
@@ -1339,6 +1399,235 @@ export default function ReportesEtiquetadoPage() {
         .includes(paletSeleccionado)
     );
   }, [itemsInventarioFiltrados, variantesTodas, tallasPorCajaTodas, cajasImpresasTodas, cajasPaletTodas, cajaFiltro, tallaFiltro, paletSeleccionado]);
+
+  // Agrupa las filas de Impresión rápida: una por CADA caja física del
+  // palet elegido, con el código/variante que le toca y cuánto de ese
+  // código va en esa caja puntual (no el total del código).
+  const gruposImpresionRapida = useMemo(() => {
+    if (paletSeleccionado === "todos") return [];
+    const filas: FilaImpresionRapida[] = [];
+
+    function procesarFila(params: {
+      itemId: string;
+      varianteId: string | null;
+      codigo: string | null;
+      descripcion: string | null;
+      marca: string | null;
+      pais: string | null;
+      composicion: string | null;
+      cajasTexto: string | null;
+      tallasTotal: Record<string, number> | null;
+      palet: string | null;
+      alertaFactura: boolean;
+    }) {
+      const cajasDeLaFila = extraerCajasIndividuales(params.cajasTexto);
+      if (cajasDeLaFila.length === 0) return;
+      const cajasEnEstePalet = cajasDeLaFila.filter(
+        (c) =>
+          (paletDeCaja(params.itemId, params.varianteId, c.numeroCaja, params.palet) ?? "").trim() ===
+          paletSeleccionado
+      );
+      if (cajasEnEstePalet.length === 0) return;
+
+      const reparto =
+        cajasDeLaFila.length > 1 ? repartirTallasPorCaja(params.tallasTotal ?? {}, cajasDeLaFila) : null;
+      const totalFila = cajasDeLaFila.reduce((acc, c) => acc + c.cantidad, 0);
+
+      cajasEnEstePalet.forEach((c) => {
+        const registro = tallasPorCajaTodas.find(
+          (t) => t.item_id === params.itemId && t.variante_id === params.varianteId && t.numero_caja === c.numeroCaja
+        );
+        const tallasCaja =
+          registro?.tallas_detalle ??
+          reparto?.find((r) => r.numeroCaja === c.numeroCaja)?.tallas ??
+          params.tallasTotal ??
+          {};
+        filas.push({
+          key: `${params.itemId}-${params.varianteId ?? "base"}-${c.numeroCaja}`,
+          itemId: params.itemId,
+          varianteId: params.varianteId,
+          numeroCaja: c.numeroCaja,
+          caja: c.caja,
+          codigo: params.codigo,
+          descripcion: params.descripcion,
+          marca: params.marca,
+          pais: params.pais,
+          composicion: params.composicion,
+          tallasTexto: formatoTallasCompacto(tallasCaja),
+          cantidad: c.cantidad,
+          alertaFactura: params.alertaFactura,
+          notaDividido:
+            cajasDeLaFila.length > 1
+              ? `Parte de ${params.codigo} (${totalFila}, repartido en cajas ${cajasDeLaFila
+                  .map((x) => x.numeroCaja)
+                  .join(" · ")})`
+              : null,
+          notaVariante: false,
+          yaImpreso: cajaEstaImpresa(params.itemId, params.varianteId, c.numeroCaja),
+        });
+      });
+    }
+
+    itemsOrdenSeleccionada.forEach((it) => {
+      const variantesDelItem = variantesTodas.filter((v) => v.item_id === it.id);
+      let cajasPropias = (it.cajas ?? "").trim();
+      variantesDelItem.forEach((v) => {
+        const cajaVariante = (v.cajas ?? "").trim();
+        if (cajaVariante) {
+          cajasPropias = cajasPropias.replace(cajaVariante, "").replace(/\s+/g, " ").trim();
+        }
+      });
+      const alerta = it.cantidad_factura > 0 && Number(it.cantidad_contada) - Number(it.cantidad_factura) !== 0;
+
+      procesarFila({
+        itemId: it.id,
+        varianteId: null,
+        codigo: it.codigo,
+        descripcion: it.descripcion,
+        marca: it.marca,
+        pais: it.pais,
+        composicion: it.composicion,
+        cajasTexto: cajasPropias,
+        tallasTotal: it.tallas_detalle,
+        palet: it.palet,
+        alertaFactura: alerta,
+      });
+
+      variantesDelItem.forEach((v) => {
+        procesarFila({
+          itemId: it.id,
+          varianteId: v.id,
+          codigo: it.codigo,
+          descripcion: it.descripcion,
+          marca: it.marca,
+          pais: it.pais,
+          composicion: v.composicion ?? it.composicion,
+          cajasTexto: v.cajas,
+          tallasTotal: v.tallas_detalle,
+          palet: v.palet ?? it.palet,
+          alertaFactura: alerta,
+        });
+      });
+    });
+
+    // Dos renglones del mismo código en la MISMA caja = variantes de color
+    // que viajan juntas en esa caja — avisar para que carguen la otra.
+    const conteoPorCajaCodigo = new Map<string, number>();
+    filas.forEach((f) => {
+      const k = `${f.numeroCaja}|${f.codigo}`;
+      conteoPorCajaCodigo.set(k, (conteoPorCajaCodigo.get(k) ?? 0) + 1);
+    });
+    filas.forEach((f) => {
+      const k = `${f.numeroCaja}|${f.codigo}`;
+      if ((conteoPorCajaCodigo.get(k) ?? 0) > 1) f.notaVariante = true;
+    });
+
+    const grupos = new Map<string, FilaImpresionRapida[]>();
+    filas.forEach((f) => {
+      const arr = grupos.get(f.numeroCaja) ?? [];
+      arr.push(f);
+      grupos.set(f.numeroCaja, arr);
+    });
+    return Array.from(grupos.entries())
+      .sort((a, b) => Number(a[0]) - Number(b[0]))
+      .map(([numeroCaja, items]) => ({ numeroCaja, items }));
+  }, [itemsOrdenSeleccionada, variantesTodas, tallasPorCajaTodas, cajasImpresasTodas, cajasPaletTodas, paletSeleccionado]);
+
+  // Resumen de Impresión rápida: progreso, rango de cajas, marca/país más
+  // comunes del palet (para el subtítulo del modal).
+  const resumenImpresionRapida = useMemo(() => {
+    const filas = gruposImpresionRapida.flatMap((g) => g.items);
+    const totalFilas = filas.length;
+    const hechos = filas.filter((f) => f.yaImpreso).length;
+    const etiquetasHechas = filas.filter((f) => f.yaImpreso).reduce((a, f) => a + f.cantidad, 0);
+    const totalEtiquetas = filas.reduce((a, f) => a + f.cantidad, 0);
+    const numerosCaja = gruposImpresionRapida.map((g) => Number(g.numeroCaja)).filter((n) => !Number.isNaN(n));
+    const rangoCajas =
+      numerosCaja.length > 0
+        ? numerosCaja.length === 1
+          ? `Caja ${numerosCaja[0]}`
+          : `Cajas ${Math.min(...numerosCaja)}–${Math.max(...numerosCaja)}`
+        : "";
+    const masComun = (valores: (string | null)[]) => {
+      const conteo = new Map<string, number>();
+      valores.forEach((v) => {
+        if (v) conteo.set(v, (conteo.get(v) ?? 0) + 1);
+      });
+      return [...conteo.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    };
+    return {
+      totalFilas,
+      hechos,
+      etiquetasHechas,
+      totalEtiquetas,
+      rangoCajas,
+      marca: masComun(filas.map((f) => f.marca)),
+      pais: masComun(filas.map((f) => f.pais)),
+      pct: totalFilas > 0 ? (hechos / totalFilas) * 100 : 0,
+    };
+  }, [gruposImpresionRapida]);
+
+  // Marca/desmarca impreso una caja puntual dentro de Impresión rápida.
+  async function toggleImpresoRapida(fila: FilaImpresionRapida) {
+    const nuevoValor = !fila.yaImpreso;
+    const existente = cajasImpresasTodas.find(
+      (r) => r.item_id === fila.itemId && r.variante_id === fila.varianteId && r.numero_caja === fila.numeroCaja
+    );
+    if (existente) {
+      const { error } = await supabase
+        .from("etq_cajas_impresas")
+        .update({ impreso: nuevoValor, caja: fila.caja, actualizado_en: new Date().toISOString() })
+        .eq("id", existente.id);
+      if (error) {
+        setToast(`No se pudo actualizar: ${error.message}`);
+        return;
+      }
+    } else {
+      const { error } = await supabase.from("etq_cajas_impresas").insert({
+        item_id: fila.itemId,
+        variante_id: fila.varianteId,
+        caja: fila.caja,
+        numero_caja: fila.numeroCaja,
+        impreso: nuevoValor,
+      });
+      if (error) {
+        setToast(`No se pudo actualizar: ${error.message}`);
+        return;
+      }
+    }
+    const { data } = await traerTodo<CajaImpresa>((desde, hasta) =>
+      supabase
+        .from("etq_cajas_impresas")
+        .select("id, item_id, variante_id, caja, numero_caja, impreso")
+        .range(desde, hasta)
+    );
+    setCajasImpresasTodas(data ?? []);
+  }
+
+  // Desmarca todo lo que esté marcado como impreso dentro del palet actual
+  // de Impresión rápida (botón "Reiniciar").
+  async function reiniciarImpresionRapida() {
+    const marcadas = gruposImpresionRapida.flatMap((g) => g.items).filter((f) => f.yaImpreso);
+    if (marcadas.length === 0) return;
+    for (const f of marcadas) {
+      const existente = cajasImpresasTodas.find(
+        (r) => r.item_id === f.itemId && r.variante_id === f.varianteId && r.numero_caja === f.numeroCaja
+      );
+      if (existente) {
+        await supabase
+          .from("etq_cajas_impresas")
+          .update({ impreso: false, actualizado_en: new Date().toISOString() })
+          .eq("id", existente.id);
+      }
+    }
+    const { data } = await traerTodo<CajaImpresa>((desde, hasta) =>
+      supabase
+        .from("etq_cajas_impresas")
+        .select("id, item_id, variante_id, caja, numero_caja, impreso")
+        .range(desde, hasta)
+    );
+    setCajasImpresasTodas(data ?? []);
+  }
 
   // Marca/desmarca "Ya impreso" en la fila, caja por caja. Con filtro de
   // caja activo, marca SOLO esa caja puntual. Sin filtro, marca/desmarca
@@ -2359,8 +2648,20 @@ export default function ReportesEtiquetadoPage() {
                     {ordenSeleccionadaId && (
                       <>
                         <button
+                          onClick={() => {
+                            if (paletSeleccionado === "todos") {
+                              setToast("Elige un palet puntual arriba (en el filtro Palet) para usar Impresión rápida.");
+                              return;
+                            }
+                            setShowImpresionRapida(true);
+                          }}
+                          className="btn-primary flex items-center gap-1.5 text-[11.5px] font-semibold px-3 py-1.5 rounded-lg ml-auto"
+                        >
+                          <Printer size={13} /> Impresión rápida
+                        </button>
+                        <button
                           onClick={descargarInventarioExcel}
-                          className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg ml-auto"
+                          className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg"
                         >
                           Descargar inventario en Excel
                         </button>
@@ -3651,6 +3952,127 @@ export default function ReportesEtiquetadoPage() {
         onConfirmar={confirmarEliminarCaja}
         onCancelar={() => setCajaAEliminarId(null)}
       />
+
+      {/* Impresión rápida: etiquetas del palet elegido, caja por caja, para
+          que el operario las imprima en orden sin perderse. */}
+      {showImpresionRapida && (
+        <div className="fixed inset-0 bg-black/60 flex items-start justify-center z-[70] p-4 overflow-y-auto">
+          <div className="card w-full max-w-[480px] my-6 p-0 flex flex-col max-h-[calc(100vh-48px)] overflow-hidden">
+            <div className="shrink-0 px-5 pt-5 pb-4 border-b border-border">
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="text-[17px] font-semibold">Palet {paletSeleccionado} — Etiquetas</h2>
+                <button onClick={() => setShowImpresionRapida(false)} className="text-text-faint hover:text-text">
+                  <X size={18} />
+                </button>
+              </div>
+              <p className="text-[11.5px] text-text-faint mb-3">
+                {[resumenImpresionRapida.marca, resumenImpresionRapida.rangoCajas, resumenImpresionRapida.pais]
+                  .filter(Boolean)
+                  .join(" · ") || "—"}
+              </p>
+              <div className="h-[7px] rounded-full bg-white/[0.06] overflow-hidden mb-2">
+                <div
+                  className="h-full rounded-full bg-[#7c6cf0] transition-all"
+                  style={{ width: `${resumenImpresionRapida.pct}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[11.5px] text-text-dim">
+                  <b>{resumenImpresionRapida.hechos}</b> / <b>{resumenImpresionRapida.totalFilas}</b> renglones ·{" "}
+                  <b>{resumenImpresionRapida.etiquetasHechas.toLocaleString("es-EC")}</b> etiquetas hechas
+                </p>
+                <button
+                  onClick={reiniciarImpresionRapida}
+                  className="shrink-0 text-[11px] px-2.5 py-1 rounded-full card text-text-faint hover:text-text"
+                >
+                  Reiniciar
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-y-auto px-5 py-4 flex-1">
+              {gruposImpresionRapida.length === 0 ? (
+                <p className="text-[12.5px] text-text-faint text-center py-10">
+                  Este palet todavía no tiene cajas con información cargada.
+                </p>
+              ) : (
+                gruposImpresionRapida.map((grupo) => {
+                  const totalCaja = grupo.items.reduce((a, f) => a + f.cantidad, 0);
+                  return (
+                    <div key={grupo.numeroCaja} className="mb-5">
+                      <div className="flex items-baseline gap-2 mb-2 px-0.5">
+                        <span className="text-[13.5px] font-bold">Caja {grupo.numeroCaja}</span>
+                        <span className="text-[11px] text-text-faint">
+                          {totalCaja.toLocaleString("es-EC")} etiquetas · {grupo.items.length}{" "}
+                          {grupo.items.length > 1 ? "códigos" : "código"}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-2">
+                        {grupo.items.map((f) => (
+                          <button
+                            key={f.key}
+                            type="button"
+                            onClick={() => toggleImpresoRapida(f)}
+                            className={`w-full text-left flex items-start gap-3 rounded-xl border p-3 transition-colors ${
+                              f.yaImpreso ? "bg-green/[0.1] border-green/30" : "card hover:bg-white/[0.04]"
+                            }`}
+                          >
+                            <span
+                              className={`shrink-0 w-[22px] h-[22px] rounded-[7px] border-2 flex items-center justify-center mt-0.5 ${
+                                f.yaImpreso ? "bg-[#22c55e] border-[#22c55e] text-white" : "border-white/20 text-transparent"
+                              }`}
+                            >
+                              <Check size={14} />
+                            </span>
+                            <span className="flex-1 min-w-0">
+                              <span className="flex items-baseline gap-2 flex-wrap">
+                                <span className={`font-bold text-[14px] ${f.yaImpreso ? "line-through text-text-faint" : ""}`}>
+                                  {f.codigo}
+                                </span>
+                                <span className="text-[11.5px] text-text-faint">{f.descripcion}</span>
+                              </span>
+                              <span className="block text-[12px] mt-0.5 text-text-dim">{f.composicion ?? "—"}</span>
+                              <span className="inline-block mt-1.5 text-[11px] text-text-faint bg-white/[0.05] px-2 py-0.5 rounded-md">
+                                {f.tallasTexto}
+                              </span>
+                              {f.notaDividido && (
+                                <span className="block mt-1.5 text-[10.5px] text-amber bg-amber/[0.12] px-2 py-1 rounded-md">
+                                  ⚠ {f.notaDividido}
+                                </span>
+                              )}
+                              {f.notaVariante && (
+                                <span className="block mt-1.5 text-[10.5px] text-amber bg-amber/[0.12] px-2 py-1 rounded-md">
+                                  ⚠ Otro color del mismo código en esta caja — carga el que falte
+                                </span>
+                              )}
+                              {f.alertaFactura && (
+                                <span className="block mt-1.5 text-[10.5px] font-semibold text-[#fca5a5] bg-red/[0.12] px-2 py-1 rounded-md">
+                                  ⚠ La factura de este código no cuadra con lo contado — revisa antes de imprimir
+                                </span>
+                              )}
+                            </span>
+                            <span className="shrink-0 text-right">
+                              <span className="block text-[20px] font-extrabold leading-none">{f.cantidad}</span>
+                              <span className="block text-[9px] text-text-faint uppercase mt-0.5 tracking-wide">etiq.</span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="shrink-0 px-5 py-3 border-t border-border text-[10.5px] text-text-faint text-center">
+              Toca cada renglón al terminarlo (imprimir → armar juego → amarrar) · Total del palet:{" "}
+              <b>{resumenImpresionRapida.totalEtiquetas.toLocaleString("es-EC")} etiquetas</b> en{" "}
+              {gruposImpresionRapida.length} {gruposImpresionRapida.length === 1 ? "caja" : "cajas"}.
+            </div>
+          </div>
+        </div>
+      )}
+
       <Toast mensaje={toast} onCerrar={() => setToast(null)} />
     </div>
   );
