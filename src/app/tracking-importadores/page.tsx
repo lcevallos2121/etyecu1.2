@@ -172,7 +172,7 @@ export default function TrackingImportadoresPage() {
       if (!nombre) return;
       const clienteInfo = clientes.find((c) => c.nombre === nombre);
 
-      const [accRes, dapRes, etqRes, fasesRes] = await Promise.all([
+      const [accRes, dapRes, fasesRes] = await Promise.all([
         supabase.from("portal_accesos").select("*").eq("cliente_nombre", nombre).maybeSingle(),
         clienteInfo?.clienteDapId
           ? supabase
@@ -181,13 +181,6 @@ export default function TrackingImportadoresPage() {
               .eq("cliente_id", clienteInfo.clienteDapId)
               .order("creado_en", { ascending: false })
           : Promise.resolve({ data: [] as OrdenDapRef[] }),
-        clienteInfo?.etqClienteId
-          ? supabase
-              .from("etq_ordenes")
-              .select("id, numero_etq, estado")
-              .eq("etq_cliente_id", clienteInfo.etqClienteId)
-              .order("creado_en", { ascending: false })
-          : Promise.resolve({ data: [] as EtqOrdenRef[] }),
         supabase
           .from("portal_ordenes_fases")
           .select("id, cliente_nombre, orden_dap_id, etq_orden_id, fases, porcentajes, visible")
@@ -195,8 +188,36 @@ export default function TrackingImportadoresPage() {
       ]);
       setAcceso((accRes.data as Acceso) ?? null);
       setOrdenesDap((dapRes.data as OrdenDapRef[]) ?? []);
-      setOrdenesEtq((etqRes.data as EtqOrdenRef[]) ?? []);
       setFasesConfig((fasesRes.data as FaseOrden[]) ?? []);
+
+      // Órdenes de etiquetado del cliente: unas se crean directo con un
+      // etq_cliente_id (cliente externo que solo etiqueta), otras nacen
+      // desde una carga que YA tenía orden de DAP (origen "etyecu") y
+      // por eso quedan vinculadas por orden_dap_id en vez de etq_cliente_id.
+      // Para que ninguna se "pierda" del tracking, se buscan por las dos vías
+      // y se combinan sin duplicar.
+      const dapIds = ((dapRes.data as OrdenDapRef[]) ?? []).map((o) => o.id);
+      const [porClienteRes, porOrdenDapRes] = await Promise.all([
+        clienteInfo?.etqClienteId
+          ? supabase
+              .from("etq_ordenes")
+              .select("id, numero_etq, estado")
+              .eq("etq_cliente_id", clienteInfo.etqClienteId)
+              .order("creado_en", { ascending: false })
+          : Promise.resolve({ data: [] as EtqOrdenRef[] }),
+        dapIds.length > 0
+          ? supabase
+              .from("etq_ordenes")
+              .select("id, numero_etq, estado")
+              .in("orden_dap_id", dapIds)
+              .order("creado_en", { ascending: false })
+          : Promise.resolve({ data: [] as EtqOrdenRef[] }),
+      ]);
+      const etqPorId = new Map<string, EtqOrdenRef>();
+      [...(porClienteRes.data ?? []), ...(porOrdenDapRes.data ?? [])].forEach((o: EtqOrdenRef) =>
+        etqPorId.set(o.id, o)
+      );
+      setOrdenesEtq(Array.from(etqPorId.values()));
 
       // Conteo de mensajes del cliente que el equipo aún no ha leído, por orden
       const idsFases = (fasesRes.data as FaseOrden[] | null)?.map((f) => f.id) ?? [];
