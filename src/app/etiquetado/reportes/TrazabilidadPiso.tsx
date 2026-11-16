@@ -14,9 +14,11 @@ type Fase = { id: string; nombre: string; color_slot: number };
 type Rol = { id: string; fase_id: string; nombre: string };
 type Persona = { id: string; nombre: string };
 type OrdenRef = { id: string; numero_etq: string; cliente_nombre: string | null };
+type Equipo = { id: string; nombre: string; persona_ids: string[] };
 
 type FilaDetalle = {
   id: string;
+  rondaId: string;
   fecha: string;
   hora: string;
   ordenId: string;
@@ -32,7 +34,12 @@ type FilaDetalle = {
   interrumpido: boolean;
   motivo: string | null;
   avance: number;
+  equipoId: string | null;
+  equipoNombre: string | null;
+  equipoMiembros: string[];
 };
+
+type FilaAgrupada = FilaDetalle & { esEquipo: boolean; miembrosLabel: string };
 
 const COLOR_SLOTS: Record<number, string> = {
   1: "#5b9bf0",
@@ -79,9 +86,10 @@ export default function TrazabilidadPiso() {
     let cancelado = false;
     async function cargar() {
       setLoading(true);
-      const [fasesRes, rolesRes, personasRes] = await Promise.all([
+      const [fasesRes, rolesRes, equiposRes, personasRes] = await Promise.all([
         supabase.from("rondas_fases").select("id, nombre, color_slot"),
         supabase.from("rondas_roles").select("id, fase_id, nombre"),
+        supabase.from("rondas_equipos").select("id, nombre, persona_ids"),
         supabase.from("rondas_personas").select("id, nombre"),
       ]);
 
@@ -100,6 +108,7 @@ export default function TrazabilidadPiso() {
         orden_id: string;
         fase_id: string | null;
         rol_id: string | null;
+        equipo_id: string | null;
         interrumpido: boolean;
         motivo: string | null;
         avance: number;
@@ -107,7 +116,7 @@ export default function TrazabilidadPiso() {
       if (rondaIds.length) {
         const { data } = await supabase
           .from("rondas_observaciones")
-          .select("id, ronda_id, persona_id, orden_id, fase_id, rol_id, interrumpido, motivo, avance")
+          .select("id, ronda_id, persona_id, orden_id, fase_id, rol_id, equipo_id, interrumpido, motivo, avance")
           .in("ronda_id", rondaIds);
         obsData = data ?? [];
       }
@@ -121,6 +130,7 @@ export default function TrazabilidadPiso() {
 
       const fasesPorId = new Map(((fasesRes.data as Fase[]) ?? []).map((f) => [f.id, f]));
       const rolesPorId = new Map(((rolesRes.data as Rol[]) ?? []).map((r) => [r.id, r]));
+      const equiposPorId = new Map(((equiposRes.data as Equipo[]) ?? []).map((e) => [e.id, e]));
       const personasPorId = new Map(((personasRes.data as Persona[]) ?? []).map((p) => [p.id, p]));
       const ordenesPorId = new Map(((ordenesData as OrdenRef[]) ?? []).map((o) => [o.id, o]));
 
@@ -130,8 +140,10 @@ export default function TrazabilidadPiso() {
         const rol = o.rol_id ? rolesPorId.get(o.rol_id) : undefined;
         const persona = personasPorId.get(o.persona_id);
         const orden = ordenesPorId.get(o.orden_id);
+        const equipo = o.equipo_id ? equiposPorId.get(o.equipo_id) : undefined;
         return {
           id: o.id,
+          rondaId: o.ronda_id,
           fecha: ronda?.fecha ?? "",
           hora: ronda?.hora ? new Date(ronda.hora).toLocaleTimeString("es-EC", { hour: "2-digit", minute: "2-digit" }) : "",
           ordenId: o.orden_id,
@@ -147,6 +159,9 @@ export default function TrazabilidadPiso() {
           interrumpido: o.interrumpido,
           motivo: o.motivo,
           avance: o.avance,
+          equipoId: o.equipo_id,
+          equipoNombre: equipo?.nombre ?? null,
+          equipoMiembros: equipo ? equipo.persona_ids.map((pid) => personasPorId.get(pid)?.nombre ?? "?") : [],
         };
       });
       filasArmadas.sort((a, b) => (a.fecha + a.hora < b.fecha + b.hora ? 1 : -1));
@@ -181,6 +196,26 @@ export default function TrazabilidadPiso() {
     });
   }, [filas, fPersona, fOrden, fFase, fRol, fEstado]);
 
+  // Varias personas que se marcaron juntas como equipo (misma ronda +
+  // mismo equipo_id) se muestran como UNA sola fila en el detalle, con los
+  // nombres de todo el equipo, en vez de una fila repetida por persona.
+  const filasAgrupadas = useMemo(() => {
+    const grupos = new Map<string, FilaAgrupada>();
+    const orden: string[] = [];
+    filtradas.forEach((f) => {
+      const clave = f.equipoId ? `${f.rondaId}|${f.equipoId}` : `solo|${f.id}`;
+      if (!grupos.has(clave)) {
+        grupos.set(clave, {
+          ...f,
+          esEquipo: !!f.equipoId,
+          miembrosLabel: f.equipoId ? (f.equipoMiembros.length ? f.equipoMiembros.join(", ") : f.personaNombre) : f.personaNombre,
+        });
+        orden.push(clave);
+      }
+    });
+    return orden.map((k) => grupos.get(k)!);
+  }, [filtradas]);
+
   const rolesDeFaseFiltro = fFase ? roles.filter((r) => r.fase_id === fFase) : roles;
 
   const resumenPorPersona = useMemo(() => {
@@ -207,8 +242,8 @@ export default function TrazabilidadPiso() {
     pctInterrumpido: filtradas.length > 0 ? Math.round((filtradas.filter((f) => f.interrumpido).length / filtradas.length) * 100) : 0,
   };
 
-  const totalPaginas = Math.max(1, Math.ceil(filtradas.length / PAGINA));
-  const visibles = filtradas.slice((pagina - 1) * PAGINA, pagina * PAGINA);
+  const totalPaginas = Math.max(1, Math.ceil(filasAgrupadas.length / PAGINA));
+  const visibles = filasAgrupadas.slice((pagina - 1) * PAGINA, pagina * PAGINA);
 
   return (
     <div className="flex flex-col gap-4">
@@ -370,7 +405,10 @@ export default function TrazabilidadPiso() {
                 <span className="font-medium truncate" title={f.ordenCliente}>
                   {f.ordenNumero}
                 </span>
-                <span className="truncate">{f.personaNombre}</span>
+                <span className="truncate" title={f.esEquipo ? f.miembrosLabel : undefined}>
+                  {f.esEquipo ? `👥 ${f.equipoNombre}` : f.personaNombre}
+                  {f.esEquipo && <span className="text-text-faint"> ({f.equipoMiembros.length})</span>}
+                </span>
                 <span className="truncate" style={{ color: f.interrumpido ? "var(--text-dim)" : colorSlot(f.faseColorSlot) }}>
                   {f.interrumpido ? "—" : f.faseNombre}
                 </span>

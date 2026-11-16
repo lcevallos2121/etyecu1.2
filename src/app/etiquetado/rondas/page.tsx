@@ -40,7 +40,13 @@ type Draft = {
   motivo: string | null;
   avance: number;
   ordenId: string;
+  equipoId?: string | null;
 };
+type Equipo = { id: string; nombre: string; persona_ids: string[] };
+
+function arraysIguales(a: string[], b: string[]) {
+  return a.length === b.length && a.every((v, i) => v === b[i]);
+}
 
 const MOTIVOS = ["Lo llamaron a otra tarea", "Pasando cajas a costura", "Falta de material", "Descanso", "Otro"];
 const COLOR_SLOTS: Record<number, string> = {
@@ -102,6 +108,7 @@ export default function RondasDePisoPage() {
 
   const [fases, setFases] = useState<Fase[]>([]);
   const [roles, setRoles] = useState<Rol[]>([]);
+  const [equipos, setEquipos] = useState<Equipo[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [habituales, setHabituales] = useState<PersonaHabitual[]>([]);
   const [ordenes, setOrdenes] = useState<OrdenRef[]>([]);
@@ -119,9 +126,10 @@ export default function RondasDePisoPage() {
 
   const cargarTodo = useCallback(async () => {
     const hoy = hoyStr();
-    const [fasesRes, rolesRes, personasRes, habitualesRes, ordenesRes] = await Promise.all([
+    const [fasesRes, rolesRes, equiposRes, personasRes, habitualesRes, ordenesRes] = await Promise.all([
       supabase.from("rondas_fases").select("id, nombre, color_slot").order("creado_en"),
       supabase.from("rondas_roles").select("id, fase_id, nombre").order("creado_en"),
+      supabase.from("rondas_equipos").select("id, nombre, persona_ids").order("creado_en"),
       supabase.from("rondas_personas").select("id, nombre, activo").eq("activo", true).order("nombre"),
       supabase.from("rondas_persona_fases_habituales").select("persona_id, fase_id"),
       supabase
@@ -153,6 +161,7 @@ export default function RondasDePisoPage() {
 
     setFases((fasesRes.data as Fase[]) ?? []);
     setRoles((rolesRes.data as Rol[]) ?? []);
+    setEquipos((equiposRes.data as Equipo[]) ?? []);
     setPersonas((personasRes.data as Persona[]) ?? []);
     setHabituales((habitualesRes.data as PersonaHabitual[]) ?? []);
     setOrdenes((ordenesRes.data as OrdenRef[]) ?? []);
@@ -214,6 +223,35 @@ export default function RondasDePisoPage() {
     setAbierto(null);
   }
 
+  // Equipo: varias personas haciendo la misma fase/rol juntas (ej. 3
+  // personas en inventario de una orden) se marcan de una sola vez y
+  // quedan vinculadas al mismo equipo_id para que Trazabilidad de piso las
+  // agrupe como una sola mesa en vez de medirlas por separado.
+  async function obtenerOCrearEquipo(nombre: string, personaIds: string[]) {
+    const ordenados = [...personaIds].sort();
+    const existente = equipos.find((e) => e.nombre === nombre && arraysIguales([...e.persona_ids].sort(), ordenados));
+    if (existente) return existente.id;
+    const { data, error } = await supabase.from("rondas_equipos").insert({ nombre, persona_ids: personaIds }).select("id").single();
+    if (error || !data) {
+      avisar("No se pudo crear el equipo: " + (error?.message ?? ""));
+      return null;
+    }
+    setEquipos((prev) => [...prev, { id: data.id, nombre, persona_ids: personaIds }]);
+    return data.id as string;
+  }
+
+  async function marcarEquipo(personaIds: string[], ordenId: string, draftComun: Omit<Draft, "equipoId" | "ordenId">, nombreEquipo: string) {
+    const equipoId = await obtenerOCrearEquipo(nombreEquipo, personaIds);
+    if (!equipoId) return;
+    setEnCurso((prev) => {
+      const next = { ...prev };
+      personaIds.forEach((pid) => {
+        next[pid] = { ...draftComun, ordenId, equipoId };
+      });
+      return next;
+    });
+  }
+
   async function guardarRonda() {
     const ids = Object.keys(enCurso);
     if (ids.length === 0) {
@@ -239,6 +277,7 @@ export default function RondasDePisoPage() {
           orden_id: d.ordenId,
           fase_id: d.interrumpido ? null : d.faseId,
           rol_id: d.interrumpido ? null : d.rolId,
+          equipo_id: d.equipoId ?? null,
           interrumpido: d.interrumpido,
           motivo: d.motivo,
           avance: d.avance || 0,
@@ -463,10 +502,12 @@ export default function RondasDePisoPage() {
               personaById={personaById}
               fasesDeOrden={fasesDeOrden}
               rolesDeFase={rolesDeFase}
+              equipos={equipos}
               enCurso={enCurso}
               abierto={abierto}
               setAbierto={setAbierto}
               marcar={marcar}
+              marcarEquipo={marcarEquipo}
               faseLabel={faseLabel}
               faseColor={faseColor}
               rolLabel={rolLabel}
@@ -548,10 +589,12 @@ function RondaTab({
   personaById,
   fasesDeOrden,
   rolesDeFase,
+  equipos,
   enCurso,
   abierto,
   setAbierto,
   marcar,
+  marcarEquipo,
   faseLabel,
   faseColor,
   rolLabel,
@@ -564,10 +607,12 @@ function RondaTab({
   personaById: (id: string) => Persona | undefined;
   fasesDeOrden: (ordenId: string) => Fase[];
   rolesDeFase: (faseId: string | null) => Rol[];
+  equipos: Equipo[];
   enCurso: Record<string, Draft>;
   abierto: string | null;
   setAbierto: (v: string | null) => void;
   marcar: (personaId: string, ordenId: string, draft: Draft) => void;
+  marcarEquipo: (personaIds: string[], ordenId: string, draftComun: Omit<Draft, "equipoId" | "ordenId">, nombreEquipo: string) => Promise<void>;
   faseLabel: (id: string | null) => string;
   faseColor: (id: string | null) => string;
   rolLabel: (id: string | null) => string;
@@ -581,6 +626,16 @@ function RondaTab({
   const totalPages = Math.max(1, Math.ceil(conPersonas.length / PAGE_SIZE));
   const visibles = conPersonas.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
+  const [equipoModoOrdenId, setEquipoModoOrdenId] = useState<string | null>(null);
+  const [equipoSeleccion, setEquipoSeleccion] = useState<string[]>([]);
+  const [equipoPanelOrdenId, setEquipoPanelOrdenId] = useState<string | null>(null);
+
+  function salirDeModoEquipo() {
+    setEquipoModoOrdenId(null);
+    setEquipoSeleccion([]);
+    setEquipoPanelOrdenId(null);
+  }
+
   return (
     <>
       {conPersonas.length === 0 && (
@@ -590,37 +645,125 @@ function RondaTab({
       )}
       {visibles.map((orden) => {
         const ids = asignaciones.filter((a) => a.orden_id === orden.id).map((a) => a.persona_id);
+        const enModoEquipo = equipoModoOrdenId === orden.id;
+        const panelAbierto = equipoPanelOrdenId === orden.id;
+        const equiposDeEstaOrden = equipos.filter((e) => e.persona_ids.every((pid) => ids.includes(pid)));
+
         return (
           <div key={orden.id} className="card p-3.5 flex flex-col gap-2.5">
             <div className="flex items-baseline justify-between gap-2 flex-wrap">
               <span className="text-[14.5px] font-bold">{orden.numero_etq}</span>
-              <span className="text-[12px] text-text-dim">{orden.cliente_nombre}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-text-dim">{orden.cliente_nombre}</span>
+                <button
+                  onClick={() => {
+                    if (enModoEquipo) {
+                      salirDeModoEquipo();
+                    } else {
+                      setEquipoModoOrdenId(orden.id);
+                      setEquipoSeleccion([]);
+                    }
+                  }}
+                  className="text-[10.5px] font-bold px-2 py-1 rounded-full"
+                  style={
+                    enModoEquipo
+                      ? { background: "var(--accent-2)", color: "#1a1626" }
+                      : { border: "1px solid var(--border-2)", color: "var(--text-dim)" }
+                  }
+                >
+                  👥 Equipo
+                </button>
+              </div>
             </div>
-            <div className="grid grid-cols-2 gap-2 max-[420px]:grid-cols-1">
-              {ids.map((pid) => {
-                const persona = personaById(pid);
-                if (!persona) return null;
-                const marca = enCurso[pid];
-                const expandido = abierto === pid;
-                return (
-                  <PersonaChip
-                    key={pid}
-                    persona={persona}
-                    orden={orden}
-                    marca={marca}
-                    expandido={expandido}
-                    fases={fasesDeOrden(orden.id)}
-                    rolesDeFase={rolesDeFase}
-                    faseLabel={faseLabel}
-                    faseColor={faseColor}
-                    rolLabel={rolLabel}
-                    onToggle={() => setAbierto(expandido ? null : pid)}
-                    onConfirmar={(d) => marcar(pid, orden.id, d)}
-                    onCancelar={() => setAbierto(null)}
-                  />
-                );
-              })}
-            </div>
+
+            {panelAbierto ? (
+              <EquipoPanel
+                orden={orden}
+                personas={equipoSeleccion.map(personaById).filter(Boolean) as Persona[]}
+                fases={fasesDeOrden(orden.id)}
+                rolesDeFase={rolesDeFase}
+                faseLabel={faseLabel}
+                nombreSugerido={equiposDeEstaOrden.find((e) => arraysIguales([...e.persona_ids].sort(), [...equipoSeleccion].sort()))?.nombre}
+                onCancelar={() => setEquipoPanelOrdenId(null)}
+                onConfirmar={async (draftComun, nombreEquipo) => {
+                  await marcarEquipo(equipoSeleccion, orden.id, draftComun, nombreEquipo);
+                  salirDeModoEquipo();
+                }}
+              />
+            ) : enModoEquipo ? (
+              <>
+                {equiposDeEstaOrden.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {equiposDeEstaOrden.map((e) => (
+                      <button
+                        key={e.id}
+                        onClick={() => setEquipoSeleccion(e.persona_ids)}
+                        className="text-[11px] font-semibold px-2.5 py-1.5 rounded-full"
+                        style={{ background: "var(--card-2)", border: "1px solid var(--border-2)", color: "var(--text-dim)" }}
+                      >
+                        {e.nombre} ({e.persona_ids.length})
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-2 max-[420px]:grid-cols-1">
+                  {ids.map((pid) => {
+                    const persona = personaById(pid);
+                    if (!persona) return null;
+                    const sel = equipoSeleccion.includes(pid);
+                    return (
+                      <button
+                        key={pid}
+                        onClick={() => setEquipoSeleccion((s) => (sel ? s.filter((x) => x !== pid) : [...s, pid]))}
+                        className="flex items-center gap-2 rounded-xl px-2.5 py-2 text-left"
+                        style={{ background: sel ? "color-mix(in srgb, var(--accent-2) 18%, transparent)" : "var(--card-2)", border: `1px solid ${sel ? "var(--accent-2)" : "var(--border)"}` }}
+                      >
+                        <span
+                          className="w-4 h-4 rounded shrink-0 flex items-center justify-center text-[10px] font-bold"
+                          style={{ background: sel ? "var(--accent-2)" : "transparent", border: `1px solid ${sel ? "var(--accent-2)" : "var(--border-2)"}`, color: "#1a1626" }}
+                        >
+                          {sel ? "✓" : ""}
+                        </span>
+                        <span className="text-[13px] font-semibold truncate">{persona.nombre}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <button
+                  disabled={equipoSeleccion.length < 2}
+                  onClick={() => setEquipoPanelOrdenId(orden.id)}
+                  className="btn-primary w-full py-2.5 rounded-xl text-[12.5px] font-bold disabled:opacity-40"
+                >
+                  Marcar equipo ({equipoSeleccion.length}) →
+                </button>
+              </>
+            ) : (
+              <div className="grid grid-cols-2 gap-2 max-[420px]:grid-cols-1">
+                {ids.map((pid) => {
+                  const persona = personaById(pid);
+                  if (!persona) return null;
+                  const marca = enCurso[pid];
+                  const expandido = abierto === pid;
+                  return (
+                    <PersonaChip
+                      key={pid}
+                      persona={persona}
+                      orden={orden}
+                      marca={marca}
+                      expandido={expandido}
+                      fases={fasesDeOrden(orden.id)}
+                      rolesDeFase={rolesDeFase}
+                      faseLabel={faseLabel}
+                      faseColor={faseColor}
+                      rolLabel={rolLabel}
+                      onToggle={() => setAbierto(expandido ? null : pid)}
+                      onConfirmar={(d) => marcar(pid, orden.id, d)}
+                      onCancelar={() => setAbierto(null)}
+                    />
+                  );
+                })}
+              </div>
+            )}
           </div>
         );
       })}
@@ -833,6 +976,178 @@ function PersonaChip({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Panel para marcar a VARIAS personas (un equipo) de una sola vez, con la
+// misma fase/rol/interrupción/avance — igual a PersonaChip pero para N
+// personas en vez de una, y pidiendo un nombre de equipo para poder
+// reusarlo después (ej. "Mesa 1") y para que Trazabilidad de piso las
+// agrupe como una sola mesa.
+function EquipoPanel({
+  orden,
+  personas,
+  fases,
+  rolesDeFase,
+  faseLabel,
+  nombreSugerido,
+  onCancelar,
+  onConfirmar,
+}: {
+  orden: OrdenRef;
+  personas: Persona[];
+  fases: Fase[];
+  rolesDeFase: (faseId: string | null) => Rol[];
+  faseLabel: (id: string | null) => string;
+  nombreSugerido?: string;
+  onCancelar: () => void;
+  onConfirmar: (draftComun: Omit<Draft, "equipoId" | "ordenId">, nombreEquipo: string) => void | Promise<void>;
+}) {
+  const [faseId, setFaseId] = useState<string | null>(null);
+  const [rolId, setRolId] = useState<string | null>(null);
+  const [interrumpido, setInterrumpido] = useState(false);
+  const [motivo, setMotivo] = useState<string | null>(null);
+  const [avance, setAvance] = useState(0);
+  const [nombreEquipo, setNombreEquipo] = useState(nombreSugerido ?? "");
+  const [guardando, setGuardando] = useState(false);
+
+  const rolesActuales = rolesDeFase(faseId);
+  const faltaRol = !interrumpido && !!faseId && rolesActuales.length > 0 && !rolId;
+  const nombrePorDefecto = personas.map((p) => p.nombre.split(" ")[0]).join(" + ");
+
+  return (
+    <div className="rounded-xl p-3 flex flex-col gap-2.5" style={{ background: "var(--card-2)", border: "1px solid var(--border)" }}>
+      <p className="text-[13px] font-bold">
+        {personas.map((p) => p.nombre).join(", ")} · {orden.numero_etq}
+      </p>
+      <input
+        value={nombreEquipo}
+        onChange={(e) => setNombreEquipo(e.target.value)}
+        placeholder={`Nombre del equipo (ej. Mesa 1) — si lo dejas vacío, se usa "${nombrePorDefecto}"`}
+        className="w-full rounded-lg px-3 py-2 outline-none"
+        style={INPUT_STYLE}
+      />
+
+      {fases.length === 0 ? (
+        <p className="text-[11.5px] text-text-faint">Esta orden no tiene fases configuradas — ve a &quot;Órdenes&quot; y arrastra algunas.</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-1.5">
+          {fases.map((f) => {
+            const on = faseId === f.id && !interrumpido;
+            return (
+              <button
+                key={f.id}
+                onClick={() => {
+                  setFaseId(f.id);
+                  setRolId(null);
+                  setInterrumpido(false);
+                  setMotivo(null);
+                }}
+                className="rounded-lg px-2 py-2.5 text-[12px] font-semibold text-center"
+                style={{
+                  border: `1px solid ${on ? colorFaseSlot(f.color_slot) : "var(--border-2)"}`,
+                  background: on ? `color-mix(in srgb, ${colorFaseSlot(f.color_slot)} 18%, transparent)` : "var(--card)",
+                  color: on ? colorFaseSlot(f.color_slot) : "var(--text)",
+                }}
+              >
+                {f.nombre}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {!interrumpido && faseId && rolesActuales.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <p className="text-[11px] font-semibold text-text-dim">¿Qué rol tenía el equipo en {faseLabel(faseId)}?</p>
+          <div className="flex flex-wrap gap-1.5">
+            {rolesActuales.map((r) => (
+              <button
+                key={r.id}
+                onClick={() => setRolId(r.id)}
+                className="rounded-full px-2.5 py-1.5 text-[11.5px] font-semibold"
+                style={{
+                  border: `1px solid ${rolId === r.id ? "var(--accent-2)" : "var(--border-2)"}`,
+                  background: rolId === r.id ? "color-mix(in srgb, var(--accent-2) 18%, transparent)" : "var(--card)",
+                  color: rolId === r.id ? "var(--accent-2)" : "var(--text-dim)",
+                }}
+              >
+                {r.nombre}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <button
+        onClick={() => {
+          setInterrumpido((v) => !v);
+          setFaseId(null);
+          setRolId(null);
+          setMotivo(null);
+        }}
+        className="rounded-lg px-2 py-2 text-[12px] font-semibold text-center"
+        style={{
+          border: `1px solid ${interrumpido ? "var(--red)" : "var(--border-2)"}`,
+          background: interrumpido ? "rgba(248,113,113,.12)" : "var(--card)",
+          color: interrumpido ? "var(--red)" : "var(--text-dim)",
+        }}
+      >
+        Interrumpido / sin trabajar
+      </button>
+
+      {interrumpido && (
+        <div className="flex flex-wrap gap-1.5">
+          {MOTIVOS.map((m) => (
+            <button
+              key={m}
+              onClick={() => setMotivo(m)}
+              className="rounded-full px-2.5 py-1 text-[11px] font-medium"
+              style={{
+                border: `1px solid ${motivo === m ? "var(--red)" : "var(--border-2)"}`,
+                background: motivo === m ? "rgba(248,113,113,.12)" : "var(--card)",
+                color: motivo === m ? "var(--red)" : "var(--text-dim)",
+              }}
+            >
+              {m}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div className="flex items-center justify-between gap-2.5">
+        <span className="text-[12px] text-text-dim">Cajas/lotes avanzados por el equipo (opcional)</span>
+        <div className="flex items-center rounded-lg overflow-hidden border border-border-2">
+          <button onClick={() => setAvance((a) => Math.max(0, a - 1))} className="w-8 h-8 text-[16px] font-bold" style={{ background: "var(--card)" }}>
+            –
+          </button>
+          <span className="w-9 text-center text-[13px] font-bold tabular-nums">{avance}</span>
+          <button onClick={() => setAvance((a) => a + 1)} className="w-8 h-8 text-[16px] font-bold" style={{ background: "var(--card)" }}>
+            +
+          </button>
+        </div>
+      </div>
+
+      <div className="flex gap-2 justify-end">
+        <button onClick={onCancelar} className="text-[12px] font-bold px-3.5 py-2 rounded-lg text-text-dim">
+          Cerrar
+        </button>
+        <button
+          onClick={async () => {
+            if (!faseId && !interrumpido) return;
+            if (interrumpido && !motivo) return;
+            if (faltaRol) return;
+            setGuardando(true);
+            await onConfirmar({ faseId, rolId, interrumpido, motivo, avance }, nombreEquipo.trim() || nombrePorDefecto);
+            setGuardando(false);
+          }}
+          className="btn-primary text-[12px] font-bold px-3.5 py-2 rounded-lg disabled:opacity-40"
+          disabled={faltaRol || guardando}
+        >
+          {guardando ? "Marcando…" : `Confirmar equipo (${personas.length})`}
+        </button>
+      </div>
     </div>
   );
 }
