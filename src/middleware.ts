@@ -19,6 +19,12 @@ const ES_RUTA_DAP = (path: string) =>
 // deposito_aduanero ni etiquetado).
 const RUTAS_SOLO_ADMIN_EN_DAP = ["/usuarios", "/tracking-importadores"];
 
+// "Rondas de piso" es de uso exclusivo del dueño (Luis Cevallos): ni otros
+// administradores ni el rol etiquetado deben verla, así que se restringe
+// por user_id puntual en vez de por rol.
+const UID_DUENO_RONDAS = "8d644077-104b-4652-bf48-cf3c131a732b";
+const RUTAS_SOLO_DUENO = ["/etiquetado/rondas"];
+
 export async function middleware(request: NextRequest) {
   let response = NextResponse.next({ request });
 
@@ -67,6 +73,12 @@ export async function middleware(request: NextRequest) {
   if (user && isLoginPage) {
     const url = request.nextUrl.clone();
     url.pathname = "/";
+    return NextResponse.redirect(url);
+  }
+
+  if (user && RUTAS_SOLO_DUENO.some((r) => path.startsWith(r)) && user.id !== UID_DUENO_RONDAS) {
+    const url = request.nextUrl.clone();
+    url.pathname = "/etiquetado";
     return NextResponse.redirect(url);
   }
 

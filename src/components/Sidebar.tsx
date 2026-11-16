@@ -17,9 +17,14 @@ import {
   FileSpreadsheet,
   Radar,
   Layers,
+  Timer,
   type LucideIcon,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
+
+// Rondas de piso es de uso exclusivo del dueño (Luis Cevallos): se oculta
+// para todos los demás usuarios, incluso otros administradores.
+const UID_DUENO_RONDAS = "8d644077-104b-4652-bf48-cf3c131a732b";
 
 type NavItem = {
   href: string;
@@ -27,6 +32,7 @@ type NavItem = {
   icon: LucideIcon;
   badge?: string;
   badgeWarn?: boolean;
+  soloUid?: string;
 };
 
 // dap: el grupo pertenece al sistema DAP, se oculta completo si el rol es
@@ -66,6 +72,7 @@ const navGroups: { label?: string; items: NavItem[]; dap?: boolean; soloAdmin?: 
       { href: "/etiquetado", label: "Órdenes de etiquetado", icon: Tag },
       { href: "/etiquetado/clientes", label: "Clientes de etiquetado", icon: Users },
       { href: "/etiquetado/reportes", label: "Reportes de etiquetado", icon: BarChart3 },
+      { href: "/etiquetado/rondas", label: "Rondas de piso", icon: Timer, soloUid: UID_DUENO_RONDAS },
     ],
   },
   {
@@ -87,6 +94,7 @@ export function Sidebar({ activePath = "/" }: { activePath?: string }) {
   // null = todavía no se sabe el rol (se muestra todo para evitar parpadeo);
   // una vez resuelto, se filtra lo que no corresponde a ese rol.
   const [rol, setRol] = useState<string | null>("administrador");
+  const [userId, setUserId] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelado = false;
@@ -96,6 +104,7 @@ export function Sidebar({ activePath = "/" }: { activePath?: string }) {
         data: { user },
       } = await supabase.auth.getUser();
       if (!user) return;
+      if (!cancelado) setUserId(user.id);
       const { data } = await supabase
         .from("perfiles")
         .select("rol")
@@ -122,7 +131,9 @@ export function Sidebar({ activePath = "/" }: { activePath?: string }) {
     })
     .map((g) => ({
       ...g,
-      items: g.items.filter((it) => !(it as NavItem & { soloAdmin?: boolean }).soloAdmin || esAdmin),
+      items: g.items
+        .filter((it) => !(it as NavItem & { soloAdmin?: boolean }).soloAdmin || esAdmin)
+        .filter((it) => !it.soloUid || it.soloUid === userId),
     }));
 
   return (
