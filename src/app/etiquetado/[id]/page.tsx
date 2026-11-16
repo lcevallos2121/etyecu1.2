@@ -329,7 +329,7 @@ function MultiplicadorTallas({
   return (
     <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
       <span className="text-[10.5px] text-text-faint">Multiplicar por:</span>
-      {[2, 3, 4].map((factor) => (
+      {[2, 3, 4, 5].map((factor) => (
         <button
           key={factor}
           type="button"
