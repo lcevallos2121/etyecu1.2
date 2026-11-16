@@ -9,6 +9,7 @@ import ExcelJS from "exceljs";
 import { Printer, X, Check, HelpCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { ConfirmModal, Toast } from "@/components/Feedback";
 import { BuscadorCatalogo } from "@/components/BuscadorCatalogo";
+import TrazabilidadPiso from "./TrazabilidadPiso";
 import {
   BarChart,
   Bar,
@@ -260,6 +261,7 @@ const tabs = [
   { id: "inventario", label: "Inventario" },
   { id: "inconsistencias", label: "Inconsistencias" },
   { id: "productividad", label: "Productividad" },
+  { id: "trazabilidad-piso", label: "Trazabilidad de piso" },
 ] as const;
 
 export default function ReportesEtiquetadoPage() {
@@ -3551,6 +3553,8 @@ export default function ReportesEtiquetadoPage() {
                   )}
                 </>
               )}
+
+              {tab === "trazabilidad-piso" && <TrazabilidadPiso />}
             </>
           )}
         </div>

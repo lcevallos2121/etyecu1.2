@@ -15,12 +15,17 @@ export const dynamic = "force-dynamic";
 // Mide por MUESTREO DE TRABAJO (work sampling): en vez de instrumentar cada
 // puesto físico de marquilla/etiquetado (costaría tablets por puesto), el
 // dueño camina la planta unas pocas veces al día y registra, persona por
-// persona, en qué fase está cada quien en ese instante — o si está
-// interrumpido y por qué. Con suficientes rondas acumuladas en el mes, el
-// % de tiempo que cada persona pasa en cada fase (o interrumpida) se vuelve
-// una estimación estadísticamente razonable, sin ningún hardware nuevo.
+// persona, en qué fase y qué ROL está cada quien en ese instante — o si
+// está interrumpida y por qué. Con suficientes rondas acumuladas en el mes,
+// el % de tiempo que cada persona pasa en cada fase/rol (o interrumpida) se
+// vuelve una estimación estadísticamente razonable, sin hardware nuevo.
+//
+// Todo input/select de esta página usa 16px de fuente a propósito: por
+// debajo de eso Safari en iOS hace zoom automático al enfocar, que es justo
+// lo que se reportó como molesto.
 
 type Fase = { id: string; nombre: string; color_slot: number };
+type Rol = { id: string; fase_id: string; nombre: string };
 type Persona = { id: string; nombre: string; activo: boolean };
 type PersonaHabitual = { persona_id: string; fase_id: string };
 type OrdenRef = { id: string; numero_etq: string; cliente_nombre: string };
@@ -30,6 +35,7 @@ type RondaHoy = { id: string; hora: string; total: number };
 
 type Draft = {
   faseId: string | null;
+  rolId: string | null;
   interrumpido: boolean;
   motivo: string | null;
   avance: number;
@@ -38,16 +44,20 @@ type Draft = {
 
 const MOTIVOS = ["Lo llamaron a otra tarea", "Pasando cajas a costura", "Falta de material", "Descanso", "Otro"];
 const COLOR_SLOTS: Record<number, string> = {
-  1: "#5b9bf0", // preclasificación-ish, azul
-  2: "var(--amber)", // inventario — mismo color que ya usa el sistema para esa fase
-  3: "#2dd4bf", // marquilla, teal
-  4: "var(--accent)", // etiquetado — mismo morado que ya usa el sistema
+  1: "#5b9bf0",
+  2: "var(--amber)",
+  3: "#2dd4bf",
+  4: "var(--accent)",
   5: "#f472b6",
   6: "#a3e635",
 };
+const INPUT_STYLE = { background: "var(--card-2)", border: "1px solid var(--border-2)", color: "var(--text)", fontSize: 16 };
 
 function colorFase(slot: number | undefined) {
   return COLOR_SLOTS[slot ?? 1] ?? COLOR_SLOTS[1];
+}
+function colorFaseSlot(slot: number) {
+  return COLOR_SLOTS[slot] ?? COLOR_SLOTS[1];
 }
 function hoyStr() {
   const d = new Date();
@@ -55,6 +65,31 @@ function hoyStr() {
 }
 function horaStr(d: Date) {
   return d.toLocaleTimeString("es-EC", { hour: "2-digit", minute: "2-digit" });
+}
+
+function Paginador({ page, totalPages, onChange }: { page: number; totalPages: number; onChange: (p: number) => void }) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-between gap-2 pt-1 pb-1">
+      <button
+        disabled={page <= 1}
+        onClick={() => onChange(page - 1)}
+        className="btn-secondary text-[12px] font-bold px-3 py-1.5 rounded-lg disabled:opacity-40"
+      >
+        ‹ Anterior
+      </button>
+      <span className="text-[11.5px] text-text-dim">
+        Página {page} de {totalPages}
+      </span>
+      <button
+        disabled={page >= totalPages}
+        onClick={() => onChange(page + 1)}
+        className="btn-secondary text-[12px] font-bold px-3 py-1.5 rounded-lg disabled:opacity-40"
+      >
+        Siguiente ›
+      </button>
+    </div>
+  );
 }
 
 export default function RondasDePisoPage() {
@@ -66,6 +101,7 @@ export default function RondasDePisoPage() {
   const [userId, setUserId] = useState<string | null>(null);
 
   const [fases, setFases] = useState<Fase[]>([]);
+  const [roles, setRoles] = useState<Rol[]>([]);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const [habituales, setHabituales] = useState<PersonaHabitual[]>([]);
   const [ordenes, setOrdenes] = useState<OrdenRef[]>([]);
@@ -83,8 +119,9 @@ export default function RondasDePisoPage() {
 
   const cargarTodo = useCallback(async () => {
     const hoy = hoyStr();
-    const [fasesRes, personasRes, habitualesRes, ordenesRes] = await Promise.all([
+    const [fasesRes, rolesRes, personasRes, habitualesRes, ordenesRes] = await Promise.all([
       supabase.from("rondas_fases").select("id, nombre, color_slot").order("creado_en"),
+      supabase.from("rondas_roles").select("id, fase_id, nombre").order("creado_en"),
       supabase.from("rondas_personas").select("id, nombre, activo").eq("activo", true).order("nombre"),
       supabase.from("rondas_persona_fases_habituales").select("persona_id, fase_id"),
       supabase
@@ -92,7 +129,7 @@ export default function RondasDePisoPage() {
         .select("id, numero_etq, cliente_nombre")
         .eq("estado", "abierta")
         .order("creado_en", { ascending: false })
-        .limit(40),
+        .limit(80),
     ]);
     const ordenIds = (ordenesRes.data ?? []).map((o) => o.id);
     const [ordenFasesRes, asignacionesRes, rondasRes] = await Promise.all([
@@ -115,6 +152,7 @@ export default function RondasDePisoPage() {
     }
 
     setFases((fasesRes.data as Fase[]) ?? []);
+    setRoles((rolesRes.data as Rol[]) ?? []);
     setPersonas((personasRes.data as Persona[]) ?? []);
     setHabituales((habitualesRes.data as PersonaHabitual[]) ?? []);
     setOrdenes((ordenesRes.data as OrdenRef[]) ?? []);
@@ -150,6 +188,14 @@ export default function RondasDePisoPage() {
   function faseColor(id: string | null) {
     if (!id) return "var(--text-dim)";
     return colorFase(fases.find((f) => f.id === id)?.color_slot);
+  }
+  function rolLabel(id: string | null) {
+    if (!id) return "";
+    return roles.find((r) => r.id === id)?.nombre ?? "";
+  }
+  function rolesDeFase(faseId: string | null) {
+    if (!faseId) return [];
+    return roles.filter((r) => r.fase_id === faseId);
   }
   function fasesDeOrden(ordenId: string) {
     return ordenFases
@@ -192,6 +238,7 @@ export default function RondasDePisoPage() {
           persona_id: pid,
           orden_id: d.ordenId,
           fase_id: d.interrumpido ? null : d.faseId,
+          rol_id: d.interrumpido ? null : d.rolId,
           interrumpido: d.interrumpido,
           motivo: d.motivo,
           avance: d.avance || 0,
@@ -224,13 +271,23 @@ export default function RondasDePisoPage() {
     avisar(nombre + " agregado");
   }
 
+  async function editarPersona(id: string, nombre: string, faseIds: string[]) {
+    await supabase.from("rondas_personas").update({ nombre }).eq("id", id);
+    await supabase.from("rondas_persona_fases_habituales").delete().eq("persona_id", id);
+    if (faseIds.length) {
+      await supabase.from("rondas_persona_fases_habituales").insert(faseIds.map((fid) => ({ persona_id: id, fase_id: fid })));
+    }
+    await cargarTodo();
+    avisar("Cambios guardados");
+  }
+
   async function eliminarPersona(id: string, nombre: string) {
     await supabase.from("rondas_personas").update({ activo: false }).eq("id", id);
     await cargarTodo();
     avisar(nombre + " eliminado");
   }
 
-  // ---------------- Órdenes: fases y asignaciones ----------------
+  // ---------------- Órdenes: fases, roles y asignaciones ----------------
   async function reordenarFasesOrden(ordenId: string, nuevaListaFaseIds: string[]) {
     await supabase.from("rondas_orden_fases").delete().eq("orden_id", ordenId);
     if (nuevaListaFaseIds.length) {
@@ -250,6 +307,16 @@ export default function RondasDePisoPage() {
     }
     await cargarTodo();
     avisar(`"${nombre}" agregada al catálogo — ahora arrástrala a la orden que la necesite`);
+  }
+
+  async function agregarRol(faseId: string, nombre: string) {
+    const { error } = await supabase.from("rondas_roles").insert({ fase_id: faseId, nombre });
+    if (error) {
+      avisar("No se pudo agregar el rol: " + error.message);
+      return;
+    }
+    await cargarTodo();
+    avisar(`Rol "${nombre}" agregado`);
   }
 
   async function asignarPersona(ordenId: string, personaId: string) {
@@ -347,9 +414,9 @@ export default function RondasDePisoPage() {
   }
 
   const subs: Record<string, string> = {
-    ronda: "Marca la fase de cada persona al pasar",
-    personal: "Gestiona quién trabaja contigo",
-    ordenes: "Fases y personas de cada orden de hoy",
+    ronda: "Marca la fase y el rol de cada persona al pasar",
+    personal: "Busca, edita o agrega a quién trabaja contigo",
+    ordenes: "Fases, roles y personas de cada orden de hoy",
     resumen: "Historial y vista previa del reporte mensual",
   };
 
@@ -388,19 +455,21 @@ export default function RondasDePisoPage() {
           <p className="text-[12px] text-text-faint mt-0.5">{subs[tab]}</p>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-y-auto py-4 flex flex-col gap-3">
+        <div className="flex-1 min-h-0 overflow-y-auto py-4 flex flex-col gap-3" style={{ paddingBottom: 96 }}>
           {tab === "ronda" && (
             <RondaTab
               ordenes={ordenes}
               asignaciones={asignaciones}
               personaById={personaById}
               fasesDeOrden={fasesDeOrden}
+              rolesDeFase={rolesDeFase}
               enCurso={enCurso}
               abierto={abierto}
               setAbierto={setAbierto}
               marcar={marcar}
               faseLabel={faseLabel}
               faseColor={faseColor}
+              rolLabel={rolLabel}
               rondasHoy={rondasHoy}
               guardarRonda={guardarRonda}
               guardando={guardando}
@@ -413,6 +482,7 @@ export default function RondasDePisoPage() {
               habituales={habituales}
               faseLabel={faseLabel}
               agregarPersona={agregarPersona}
+              editarPersona={editarPersona}
               eliminarPersona={eliminarPersona}
             />
           )}
@@ -423,8 +493,10 @@ export default function RondasDePisoPage() {
               personas={personas}
               asignaciones={asignaciones}
               fasesDeOrden={fasesDeOrden}
+              rolesDeFase={rolesDeFase}
               iniciarDrag={iniciarDrag}
               agregarFaseCatalogo={agregarFaseCatalogo}
+              agregarRol={agregarRol}
               asignarPersona={asignarPersona}
               quitarAsignacion={quitarAsignacion}
               reordenarFasesOrden={reordenarFasesOrden}
@@ -434,8 +506,15 @@ export default function RondasDePisoPage() {
         </div>
 
         <nav
-          className="sticky bottom-0 z-10 flex border-t border-border rounded-t-2xl overflow-hidden"
-          style={{ background: "var(--card)", paddingBottom: "env(safe-area-inset-bottom,0px)" }}
+          className="fixed left-1/2 z-20 flex rounded-full overflow-hidden shadow-lg"
+          style={{
+            transform: "translateX(-50%)",
+            bottom: "calc(14px + env(safe-area-inset-bottom,0px))",
+            background: "var(--card)",
+            border: "1px solid var(--border-2)",
+            width: "calc(100% - 32px)",
+            maxWidth: 420,
+          }}
         >
           {(
             [
@@ -448,7 +527,7 @@ export default function RondasDePisoPage() {
             <button
               key={key}
               onClick={() => setTab(key)}
-              className="flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[10px] font-semibold"
+              className="flex-1 flex flex-col items-center gap-0.5 py-2.5 text-[11px] font-semibold"
               style={{ color: tab === key ? "var(--accent-2)" : "var(--text-dim)" }}
             >
               {label}
@@ -468,12 +547,14 @@ function RondaTab({
   asignaciones,
   personaById,
   fasesDeOrden,
+  rolesDeFase,
   enCurso,
   abierto,
   setAbierto,
   marcar,
   faseLabel,
   faseColor,
+  rolLabel,
   rondasHoy,
   guardarRonda,
   guardando,
@@ -482,17 +563,23 @@ function RondaTab({
   asignaciones: Asignacion[];
   personaById: (id: string) => Persona | undefined;
   fasesDeOrden: (ordenId: string) => Fase[];
+  rolesDeFase: (faseId: string | null) => Rol[];
   enCurso: Record<string, Draft>;
   abierto: string | null;
   setAbierto: (v: string | null) => void;
   marcar: (personaId: string, ordenId: string, draft: Draft) => void;
   faseLabel: (id: string | null) => string;
   faseColor: (id: string | null) => string;
+  rolLabel: (id: string | null) => string;
   rondasHoy: RondaHoy[];
   guardarRonda: () => void;
   guardando: boolean;
 }) {
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 4;
   const conPersonas = ordenes.filter((o) => asignaciones.some((a) => a.orden_id === o.id));
+  const totalPages = Math.max(1, Math.ceil(conPersonas.length / PAGE_SIZE));
+  const visibles = conPersonas.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <>
@@ -501,7 +588,7 @@ function RondaTab({
           No hay personas asignadas a ninguna orden todavía — ve a la pestaña &quot;Órdenes&quot;.
         </p>
       )}
-      {conPersonas.map((orden) => {
+      {visibles.map((orden) => {
         const ids = asignaciones.filter((a) => a.orden_id === orden.id).map((a) => a.persona_id);
         return (
           <div key={orden.id} className="card p-3.5 flex flex-col gap-2.5">
@@ -523,8 +610,10 @@ function RondaTab({
                     marca={marca}
                     expandido={expandido}
                     fases={fasesDeOrden(orden.id)}
+                    rolesDeFase={rolesDeFase}
                     faseLabel={faseLabel}
                     faseColor={faseColor}
+                    rolLabel={rolLabel}
                     onToggle={() => setAbierto(expandido ? null : pid)}
                     onConfirmar={(d) => marcar(pid, orden.id, d)}
                     onCancelar={() => setAbierto(null)}
@@ -536,20 +625,20 @@ function RondaTab({
         );
       })}
 
-      <div className="sticky bottom-[64px] pt-1">
-        <button
-          onClick={guardarRonda}
-          disabled={guardando}
-          className="btn-primary w-full py-3 rounded-xl text-[13.5px] font-bold disabled:opacity-50"
-        >
-          {guardando ? "Guardando…" : "Guardar ronda"}
-        </button>
-        <p className="text-[11px] text-text-faint text-center mt-1.5">
-          {rondasHoy.length === 0
-            ? "Todavía no has guardado ninguna ronda hoy."
-            : `Rondas guardadas hoy: ${rondasHoy.length} · última a las ${rondasHoy[0].hora}`}
-        </p>
-      </div>
+      <Paginador page={page} totalPages={totalPages} onChange={setPage} />
+
+      <button
+        onClick={guardarRonda}
+        disabled={guardando}
+        className="btn-primary w-full py-3 rounded-xl text-[13.5px] font-bold disabled:opacity-50"
+      >
+        {guardando ? "Guardando…" : "Guardar ronda"}
+      </button>
+      <p className="text-[11px] text-text-faint text-center -mt-1.5">
+        {rondasHoy.length === 0
+          ? "Todavía no has guardado ninguna ronda hoy."
+          : `Rondas guardadas hoy: ${rondasHoy.length} · última a las ${rondasHoy[0].hora}`}
+      </p>
     </>
   );
 }
@@ -560,8 +649,10 @@ function PersonaChip({
   marca,
   expandido,
   fases,
+  rolesDeFase,
   faseLabel,
   faseColor,
+  rolLabel,
   onToggle,
   onConfirmar,
   onCancelar,
@@ -571,19 +662,24 @@ function PersonaChip({
   marca: Draft | undefined;
   expandido: boolean;
   fases: Fase[];
+  rolesDeFase: (faseId: string | null) => Rol[];
   faseLabel: (id: string | null) => string;
   faseColor: (id: string | null) => string;
+  rolLabel: (id: string | null) => string;
   onToggle: () => void;
   onConfirmar: (d: Draft) => void;
   onCancelar: () => void;
 }) {
-  const [draft, setDraft] = useState<Draft>(
-    marca ?? { faseId: null, interrumpido: false, motivo: null, avance: 0, ordenId: orden.id }
-  );
+  const vacio: Draft = { faseId: null, rolId: null, interrumpido: false, motivo: null, avance: 0, ordenId: orden.id };
+  const [draft, setDraft] = useState<Draft>(marca ?? vacio);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reinicia el borrador al abrir/cambiar de persona, no un ciclo de sincronización
-    if (expandido) setDraft(marca ?? { faseId: null, interrumpido: false, motivo: null, avance: 0, ordenId: orden.id });
+    if (expandido) setDraft(marca ?? vacio);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expandido, marca, orden.id]);
+
+  const rolesActuales = rolesDeFase(draft.faseId);
+  const faltaRol = !draft.interrumpido && !!draft.faseId && rolesActuales.length > 0 && !draft.rolId;
 
   return (
     <div className={expandido ? "col-span-2 flex flex-col gap-1.5 max-[420px]:col-span-1" : ""}>
@@ -603,10 +699,11 @@ function PersonaChip({
           </span>
         ) : (
           <span
-            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0"
+            className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full shrink-0 truncate max-w-[130px]"
             style={{ background: `color-mix(in srgb, ${faseColor(marca.faseId)} 18%, transparent)`, color: faseColor(marca.faseId) }}
           >
             {faseLabel(marca.faseId)}
+            {marca.rolId ? ` · ${rolLabel(marca.rolId)}` : ""}
           </span>
         )}
       </button>
@@ -628,10 +725,10 @@ function PersonaChip({
                 return (
                   <button
                     key={f.id}
-                    onClick={() => setDraft((d) => ({ ...d, faseId: f.id, interrumpido: false, motivo: null }))}
+                    onClick={() => setDraft((d) => ({ ...d, faseId: f.id, rolId: null, interrumpido: false, motivo: null }))}
                     className="rounded-lg px-2 py-2.5 text-[12px] font-semibold text-center"
                     style={{
-                      border: `1px solid ${on ? f && colorFaseSlot(f.color_slot) : "var(--border-2)"}`,
+                      border: `1px solid ${on ? colorFaseSlot(f.color_slot) : "var(--border-2)"}`,
                       background: on ? `color-mix(in srgb, ${colorFaseSlot(f.color_slot)} 18%, transparent)` : "var(--card)",
                       color: on ? colorFaseSlot(f.color_slot) : "var(--text)",
                     }}
@@ -643,8 +740,38 @@ function PersonaChip({
             </div>
           )}
 
+          {!draft.interrumpido && draft.faseId && rolesActuales.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <p className="text-[11px] font-semibold text-text-dim">¿Qué rol tenía en {faseLabel(draft.faseId)}?</p>
+              <div className="flex flex-wrap gap-1.5">
+                {rolesActuales.map((r) => (
+                  <button
+                    key={r.id}
+                    onClick={() => setDraft((d) => ({ ...d, rolId: r.id }))}
+                    className="rounded-full px-2.5 py-1.5 text-[11.5px] font-semibold"
+                    style={{
+                      border: `1px solid ${draft.rolId === r.id ? "var(--accent-2)" : "var(--border-2)"}`,
+                      background: draft.rolId === r.id ? "color-mix(in srgb, var(--accent-2) 18%, transparent)" : "var(--card)",
+                      color: draft.rolId === r.id ? "var(--accent-2)" : "var(--text-dim)",
+                    }}
+                  >
+                    {r.nombre}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <button
-            onClick={() => setDraft((d) => ({ ...d, interrumpido: !d.interrumpido, faseId: d.interrumpido ? d.faseId : null, motivo: d.interrumpido ? null : d.motivo }))}
+            onClick={() =>
+              setDraft((d) => ({
+                ...d,
+                interrumpido: !d.interrumpido,
+                faseId: d.interrumpido ? d.faseId : null,
+                rolId: d.interrumpido ? d.rolId : null,
+                motivo: d.interrumpido ? null : d.motivo,
+              }))
+            }
             className="rounded-lg px-2 py-2 text-[12px] font-semibold text-center"
             style={{
               border: `1px solid ${draft.interrumpido ? "var(--red)" : "var(--border-2)"}`,
@@ -695,9 +822,11 @@ function PersonaChip({
               onClick={() => {
                 if (!draft.faseId && !draft.interrumpido) return;
                 if (draft.interrumpido && !draft.motivo) return;
+                if (faltaRol) return;
                 onConfirmar(draft);
               }}
-              className="btn-primary text-[12px] font-bold px-3.5 py-2 rounded-lg"
+              className="btn-primary text-[12px] font-bold px-3.5 py-2 rounded-lg disabled:opacity-40"
+              disabled={faltaRol}
             >
               Confirmar
             </button>
@@ -708,10 +837,6 @@ function PersonaChip({
   );
 }
 
-function colorFaseSlot(slot: number) {
-  return COLOR_SLOTS[slot] ?? COLOR_SLOTS[1];
-}
-
 // ========================= PERSONAL =========================
 function PersonalTab({
   fases,
@@ -719,6 +844,7 @@ function PersonalTab({
   habituales,
   faseLabel,
   agregarPersona,
+  editarPersona,
   eliminarPersona,
 }: {
   fases: Fase[];
@@ -726,11 +852,34 @@ function PersonalTab({
   habituales: PersonaHabitual[];
   faseLabel: (id: string | null) => string;
   agregarPersona: (nombre: string, faseIds: string[]) => void;
+  editarPersona: (id: string, nombre: string, faseIds: string[]) => void;
   eliminarPersona: (id: string, nombre: string) => void;
 }) {
   const [nombre, setNombre] = useState("");
   const [sel, setSel] = useState<string[]>([]);
   const [confirmandoId, setConfirmandoId] = useState<string | null>(null);
+  const [editandoId, setEditandoId] = useState<string | null>(null);
+  const [editNombre, setEditNombre] = useState("");
+  const [editSel, setEditSel] = useState<string[]>([]);
+
+  const [busq, setBusq] = useState("");
+  const [filtroFase, setFiltroFase] = useState("");
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 8;
+
+  const filtradas = personas.filter((p) => {
+    if (busq.trim() && !p.nombre.toLowerCase().includes(busq.trim().toLowerCase())) return false;
+    if (filtroFase && !habituales.some((h) => h.persona_id === p.id && h.fase_id === filtroFase)) return false;
+    return true;
+  });
+  const totalPages = Math.max(1, Math.ceil(filtradas.length / PAGE_SIZE));
+  const visibles = filtradas.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
+  function iniciarEdicion(p: Persona) {
+    setEditandoId(p.id);
+    setEditNombre(p.nombre);
+    setEditSel(habituales.filter((h) => h.persona_id === p.id).map((h) => h.fase_id));
+  }
 
   return (
     <>
@@ -740,8 +889,8 @@ function PersonalTab({
           value={nombre}
           onChange={(e) => setNombre(e.target.value)}
           placeholder="Nombre"
-          className="w-full rounded-lg px-3 py-2.5 text-[13px] outline-none"
-          style={{ background: "var(--card-2)", border: "1px solid var(--border-2)", color: "var(--text)" }}
+          className="w-full rounded-lg px-3 py-2.5 outline-none"
+          style={INPUT_STYLE}
         />
         <div className="flex flex-wrap gap-1.5">
           {fases.map((f) => {
@@ -775,49 +924,141 @@ function PersonalTab({
         </button>
       </div>
 
-      <h2 className="text-[12.5px] font-bold uppercase tracking-wide text-text-faint">Personal registrado ({personas.length})</h2>
+      <h2 className="text-[12.5px] font-bold uppercase tracking-wide text-text-faint">Personal registrado ({filtradas.length})</h2>
+      <div className="flex gap-2">
+        <input
+          value={busq}
+          onChange={(e) => {
+            setBusq(e.target.value);
+            setPage(1);
+          }}
+          placeholder="Buscar por nombre…"
+          className="flex-1 rounded-lg px-3 py-2 outline-none"
+          style={INPUT_STYLE}
+        />
+        <select
+          value={filtroFase}
+          onChange={(e) => {
+            setFiltroFase(e.target.value);
+            setPage(1);
+          }}
+          className="rounded-lg px-2 py-2 shrink-0"
+          style={{ ...INPUT_STYLE, maxWidth: 150 }}
+        >
+          <option value="">Todas las fases</option>
+          {fases.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.nombre}
+            </option>
+          ))}
+        </select>
+      </div>
+
       <div className="card p-3.5">
-        {personas.length === 0 && <p className="text-[12.5px] text-text-faint text-center py-3">Todavía no has agregado a nadie.</p>}
-        {personas.map((p, i) => {
+        {filtradas.length === 0 && (
+          <p className="text-[12.5px] text-text-faint text-center py-3">
+            {personas.length === 0 ? "Todavía no has agregado a nadie." : "Nadie coincide con esa búsqueda/filtro."}
+          </p>
+        )}
+        {visibles.map((p, i) => {
           const fids = habituales.filter((h) => h.persona_id === p.id).map((h) => h.fase_id);
+          const editando = editandoId === p.id;
           return (
-            <div key={p.id} className={`flex items-center justify-between gap-2.5 py-2.5 ${i > 0 ? "border-t border-border" : ""}`}>
-              <div className="min-w-0">
-                <div className="text-[13.5px] font-semibold">{p.nombre}</div>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {fids.length === 0 ? (
-                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-text-faint" style={{ background: "var(--card-2)" }}>
-                      sin fase habitual
-                    </span>
-                  ) : (
-                    fids.map((fid) => (
-                      <span key={fid} className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-text-dim" style={{ background: "var(--card-2)" }}>
-                        {faseLabel(fid)}
-                      </span>
-                    ))
-                  )}
+            <div key={p.id} className={`py-2.5 ${i > 0 ? "border-t border-border" : ""}`}>
+              {editando ? (
+                <div className="flex flex-col gap-2">
+                  <input
+                    value={editNombre}
+                    onChange={(e) => setEditNombre(e.target.value)}
+                    className="w-full rounded-lg px-3 py-2 outline-none"
+                    style={INPUT_STYLE}
+                  />
+                  <div className="flex flex-wrap gap-1.5">
+                    {fases.map((f) => {
+                      const on = editSel.includes(f.id);
+                      return (
+                        <button
+                          key={f.id}
+                          onClick={() => setEditSel((s) => (on ? s.filter((x) => x !== f.id) : [...s, f.id]))}
+                          className="rounded-full px-2.5 py-1.5 text-[11.5px] font-semibold"
+                          style={{
+                            border: `1px solid ${on ? colorFaseSlot(f.color_slot) : "var(--border-2)"}`,
+                            background: on ? `color-mix(in srgb, ${colorFaseSlot(f.color_slot)} 15%, transparent)` : "var(--card-2)",
+                            color: on ? colorFaseSlot(f.color_slot) : "var(--text-dim)",
+                          }}
+                        >
+                          {f.nombre}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex gap-2 justify-end">
+                    <button onClick={() => setEditandoId(null)} className="text-[12px] font-bold px-3.5 py-2 rounded-lg text-text-dim">
+                      Cancelar
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!editNombre.trim()) return;
+                        editarPersona(p.id, editNombre.trim(), editSel);
+                        setEditandoId(null);
+                      }}
+                      className="btn-primary text-[12px] font-bold px-3.5 py-2 rounded-lg"
+                    >
+                      Guardar
+                    </button>
+                  </div>
                 </div>
-              </div>
-              <button
-                onClick={() => {
-                  if (confirmandoId !== p.id) {
-                    setConfirmandoId(p.id);
-                    setTimeout(() => setConfirmandoId((c) => (c === p.id ? null : c)), 2500);
-                    return;
-                  }
-                  eliminarPersona(p.id, p.nombre);
-                  setConfirmandoId(null);
-                }}
-                className="w-8 h-8 rounded-lg shrink-0 text-[14px] font-bold"
-                style={{ border: "1px solid var(--red)", color: "var(--red)" }}
-                title="Eliminar"
-              >
-                {confirmandoId === p.id ? "✓?" : "×"}
-              </button>
+              ) : (
+                <div className="flex items-center justify-between gap-2.5">
+                  <div className="min-w-0">
+                    <div className="text-[13.5px] font-semibold">{p.nombre}</div>
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {fids.length === 0 ? (
+                        <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-text-faint" style={{ background: "var(--card-2)" }}>
+                          sin fase habitual
+                        </span>
+                      ) : (
+                        fids.map((fid) => (
+                          <span key={fid} className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full text-text-dim" style={{ background: "var(--card-2)" }}>
+                            {faseLabel(fid)}
+                          </span>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex gap-1.5 shrink-0">
+                    <button
+                      onClick={() => iniciarEdicion(p)}
+                      className="w-8 h-8 rounded-lg text-[12px] font-bold"
+                      style={{ border: "1px solid var(--border-2)", color: "var(--text-dim)" }}
+                      title="Editar"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirmandoId !== p.id) {
+                          setConfirmandoId(p.id);
+                          setTimeout(() => setConfirmandoId((c) => (c === p.id ? null : c)), 2500);
+                          return;
+                        }
+                        eliminarPersona(p.id, p.nombre);
+                        setConfirmandoId(null);
+                      }}
+                      className="w-8 h-8 rounded-lg text-[14px] font-bold"
+                      style={{ border: "1px solid var(--red)", color: "var(--red)" }}
+                      title="Eliminar"
+                    >
+                      {confirmandoId === p.id ? "✓?" : "×"}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
       </div>
+      <Paginador page={page} totalPages={totalPages} onChange={setPage} />
     </>
   );
 }
@@ -829,8 +1070,10 @@ function OrdenesTab({
   personas,
   asignaciones,
   fasesDeOrden,
+  rolesDeFase,
   iniciarDrag,
   agregarFaseCatalogo,
+  agregarRol,
   asignarPersona,
   quitarAsignacion,
   reordenarFasesOrden,
@@ -840,47 +1083,106 @@ function OrdenesTab({
   personas: Persona[];
   asignaciones: Asignacion[];
   fasesDeOrden: (ordenId: string) => Fase[];
+  rolesDeFase: (faseId: string | null) => Rol[];
   iniciarDrag: (e: React.PointerEvent, faseId: string, origenOrdenId: string | null) => void;
   agregarFaseCatalogo: (nombre: string) => void;
+  agregarRol: (faseId: string, nombre: string) => void;
   asignarPersona: (ordenId: string, personaId: string) => void;
   quitarAsignacion: (ordenId: string, personaId: string) => void;
   reordenarFasesOrden: (ordenId: string, nuevaListaFaseIds: string[]) => Promise<void>;
 }) {
   const [nuevaFase, setNuevaFase] = useState("");
+  const [faseRolAbierta, setFaseRolAbierta] = useState<string | null>(null);
+  const [nuevoRol, setNuevoRol] = useState("");
+
+  const [busq, setBusq] = useState("");
+  const [filtro, setFiltro] = useState<"todas" | "sin-fases" | "sin-personas">("todas");
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 4;
+
+  const filtradas = ordenes.filter((o) => {
+    if (busq.trim()) {
+      const q = busq.trim().toLowerCase();
+      if (!o.numero_etq.toLowerCase().includes(q) && !o.cliente_nombre.toLowerCase().includes(q)) return false;
+    }
+    if (filtro === "sin-fases" && fasesDeOrden(o.id).length > 0) return false;
+    if (filtro === "sin-personas" && asignaciones.some((a) => a.orden_id === o.id)) return false;
+    return true;
+  });
+  const totalPages = Math.max(1, Math.ceil(filtradas.length / PAGE_SIZE));
+  const visibles = filtradas.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <>
-      <h2 className="text-[12.5px] font-bold uppercase tracking-wide text-text-faint">Catálogo de fases</h2>
+      <h2 className="text-[12.5px] font-bold uppercase tracking-wide text-text-faint">Catálogo de fases y roles</h2>
       <div className="card p-3.5">
         <p className="text-[12px] text-text-faint mb-2.5">
-          Arrastra una fase de aquí hacia &quot;Fases de esta orden&quot; en cada orden de abajo, en el orden en que realmente ocurren. No
-          todas las órdenes usan las mismas.
+          Arrastra una fase de aquí hacia &quot;Fases de esta orden&quot; en cada orden de abajo, en el orden en que realmente ocurren. Toca
+          una fase para ver/agregar sus roles (ej. en Inventario: el que ingresa y el ayudante que cuenta).
         </p>
-        <div data-catalogo-zone className="flex flex-wrap gap-2 min-h-[38px] rounded-xl transition-colors [&.over]:bg-[rgba(248,113,113,.12)]">
-          {fases.map((f) => (
-            <div
-              key={f.id}
-              onPointerDown={(e) => iniciarDrag(e, f.id, null)}
-              className="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12.5px] font-semibold cursor-grab select-none"
-              style={{
-                touchAction: "none",
-                background: `color-mix(in srgb, ${colorFaseSlot(f.color_slot)} 15%, transparent)`,
-                border: `1.5px solid ${colorFaseSlot(f.color_slot)}`,
-                color: colorFaseSlot(f.color_slot),
-              }}
-            >
-              <span className="opacity-50 text-[11px]">⠿</span>
-              {f.nombre}
-            </div>
-          ))}
+        <div data-catalogo-zone className="flex flex-col gap-2 min-h-[38px] rounded-xl transition-colors [&.over]:bg-[rgba(248,113,113,.12)]">
+          {fases.map((f) => {
+            const rolesF = rolesDeFase(f.id);
+            const abierta = faseRolAbierta === f.id;
+            return (
+              <div key={f.id} className="flex flex-col gap-1.5">
+                <div
+                  onPointerDown={(e) => iniciarDrag(e, f.id, null)}
+                  onClick={() => setFaseRolAbierta(abierta ? null : f.id)}
+                  className="self-start flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12.5px] font-semibold cursor-grab select-none"
+                  style={{
+                    touchAction: "none",
+                    background: `color-mix(in srgb, ${colorFaseSlot(f.color_slot)} 15%, transparent)`,
+                    border: `1.5px solid ${colorFaseSlot(f.color_slot)}`,
+                    color: colorFaseSlot(f.color_slot),
+                  }}
+                >
+                  <span className="opacity-50 text-[11px]">⠿</span>
+                  {f.nombre}
+                  <span className="text-[10px] opacity-70">({rolesF.length} rol{rolesF.length === 1 ? "" : "es"})</span>
+                </div>
+                {abierta && (
+                  <div className="ml-3 pl-3 flex flex-col gap-2" style={{ borderLeft: "2px solid var(--border-2)" }}>
+                    <div className="flex flex-wrap gap-1.5">
+                      {rolesF.length === 0 && <span className="text-[11px] text-text-faint">Todavía no tiene roles.</span>}
+                      {rolesF.map((r) => (
+                        <span key={r.id} className="text-[11px] font-semibold px-2 py-1 rounded-full text-text-dim" style={{ background: "var(--card-2)" }}>
+                          {r.nombre}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        value={faseRolAbierta === f.id ? nuevoRol : ""}
+                        onChange={(e) => setNuevoRol(e.target.value)}
+                        placeholder={`Nuevo rol en ${f.nombre}…`}
+                        className="flex-1 rounded-lg px-2.5 py-1.5 outline-none"
+                        style={{ ...INPUT_STYLE, fontSize: 16 }}
+                      />
+                      <button
+                        onClick={() => {
+                          if (!nuevoRol.trim()) return;
+                          agregarRol(f.id, nuevoRol.trim());
+                          setNuevoRol("");
+                        }}
+                        className="btn-secondary text-[12px] font-bold px-2.5 py-1.5 rounded-lg shrink-0"
+                      >
+                        + Rol
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
         <div className="flex gap-2 mt-2.5">
           <input
             value={nuevaFase}
             onChange={(e) => setNuevaFase(e.target.value)}
             placeholder="¿Falta una fase? Escríbela aquí…"
-            className="flex-1 rounded-lg px-2.5 py-2 text-[12.5px] outline-none"
-            style={{ background: "var(--card-2)", border: "1px solid var(--border-2)", color: "var(--text)" }}
+            className="flex-1 rounded-lg px-2.5 py-2 outline-none"
+            style={INPUT_STYLE}
           />
           <button
             onClick={() => {
@@ -895,9 +1197,35 @@ function OrdenesTab({
         </div>
       </div>
 
-      <h2 className="text-[12.5px] font-bold uppercase tracking-wide text-text-faint">Órdenes abiertas</h2>
-      {ordenes.length === 0 && <p className="text-[12.5px] text-text-faint text-center py-4">No hay órdenes abiertas en este momento.</p>}
-      {ordenes.map((orden) => {
+      <h2 className="text-[12.5px] font-bold uppercase tracking-wide text-text-faint">Órdenes abiertas ({filtradas.length})</h2>
+      <div className="flex gap-2">
+        <input
+          value={busq}
+          onChange={(e) => {
+            setBusq(e.target.value);
+            setPage(1);
+          }}
+          placeholder="Buscar por número o cliente…"
+          className="flex-1 rounded-lg px-3 py-2 outline-none"
+          style={INPUT_STYLE}
+        />
+        <select
+          value={filtro}
+          onChange={(e) => {
+            setFiltro(e.target.value as typeof filtro);
+            setPage(1);
+          }}
+          className="rounded-lg px-2 py-2 shrink-0"
+          style={{ ...INPUT_STYLE, maxWidth: 150 }}
+        >
+          <option value="todas">Todas</option>
+          <option value="sin-fases">Sin fases</option>
+          <option value="sin-personas">Sin personas</option>
+        </select>
+      </div>
+
+      {filtradas.length === 0 && <p className="text-[12.5px] text-text-faint text-center py-4">No hay órdenes que coincidan.</p>}
+      {visibles.map((orden) => {
         const fasesOrden = fasesDeOrden(orden.id);
         const idsAsignados = asignaciones.filter((a) => a.orden_id === orden.id).map((a) => a.persona_id);
         const disponibles = personas.filter((p) => !idsAsignados.includes(p.id));
@@ -969,8 +1297,8 @@ function OrdenesTab({
                 e.target.value = "";
               }}
               defaultValue=""
-              className="rounded-lg px-2.5 py-2 text-[12.5px]"
-              style={{ background: "var(--card-2)", border: "1px solid var(--border-2)", color: "var(--text)" }}
+              className="rounded-lg px-2.5 py-2"
+              style={INPUT_STYLE}
             >
               <option value="">+ Agregar persona a esta orden…</option>
               {disponibles.map((p) => (
@@ -982,12 +1310,18 @@ function OrdenesTab({
           </div>
         );
       })}
+      <Paginador page={page} totalPages={totalPages} onChange={setPage} />
     </>
   );
 }
 
 // ========================= RESUMEN =========================
 function ResumenTab({ rondasHoy, fases }: { rondasHoy: RondaHoy[]; fases: Fase[] }) {
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 6;
+  const totalPages = Math.max(1, Math.ceil(rondasHoy.length / PAGE_SIZE));
+  const visibles = rondasHoy.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+
   const ejemplo = [
     { n: "Rubén", d: [["Inventario", 55], ["Preclasificación", 10], ["__interrumpido", 35]] },
     { n: "Francisco", d: [["Inventario", 60], ["Preclasificación", 15], ["__interrumpido", 25]] },
@@ -1007,7 +1341,7 @@ function ResumenTab({ rondasHoy, fases }: { rondasHoy: RondaHoy[]; fases: Fase[]
         {rondasHoy.length === 0 ? (
           <p className="text-[12.5px] text-text-faint text-center py-3">Todavía no hay rondas guardadas hoy.</p>
         ) : (
-          rondasHoy.map((r, i) => (
+          visibles.map((r, i) => (
             <div key={r.id} className={`flex items-baseline justify-between gap-2 py-2 text-[12.5px] ${i > 0 ? "border-t border-border" : ""}`}>
               <span>{r.total} personas registradas</span>
               <span className="text-text-dim tabular-nums">{r.hora}</span>
@@ -1015,9 +1349,20 @@ function ResumenTab({ rondasHoy, fases }: { rondasHoy: RondaHoy[]; fases: Fase[]
           ))
         )}
       </div>
+      <Paginador page={page} totalPages={totalPages} onChange={setPage} />
+
+      <div className="card p-3.5 flex items-center justify-between gap-2 flex-wrap">
+        <p className="text-[12.5px] text-text-dim">
+          El detalle completo (por persona, orden, fase y rol) ya se puede filtrar en Reportes de etiquetado, en la pestaña{" "}
+          <b>&quot;Trazabilidad de piso&quot;</b>, junto a Productividad.
+        </p>
+        <Link href="/etiquetado/reportes" className="btn-secondary text-[12px] font-bold px-3 py-2 rounded-lg shrink-0">
+          Ir a Reportes →
+        </Link>
+      </div>
 
       <h2 className="text-[12.5px] font-bold uppercase tracking-wide text-text-faint flex items-center gap-2">
-        Reporte mensual
+        Vista rápida
         <span className="text-[10px] font-bold uppercase tracking-wide text-text-faint px-2 py-0.5 rounded-full" style={{ background: "var(--card-2)", border: "1px solid var(--border-2)" }}>
           vista previa · datos de ejemplo
         </span>
