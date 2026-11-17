@@ -649,9 +649,12 @@ export default function TrazabilidadPiso() {
                 <span className="font-medium truncate" title={f.ordenCliente}>
                   {f.ordenNumero}
                 </span>
-                <span className="truncate" title={f.esEquipo ? f.miembrosLabel : undefined}>
-                  {f.esEquipo ? `👥 ${f.equipoNombre}` : f.personaNombre}
-                  {f.esEquipo && <span className="text-text-faint"> ({f.equipoMiembros.length})</span>}
+                <span className="flex flex-col min-w-0">
+                  <span className="truncate">
+                    {f.esEquipo ? `👥 ${f.equipoNombre}` : f.personaNombre}
+                    {f.esEquipo && <span className="text-text-faint"> ({f.equipoMiembros.length})</span>}
+                  </span>
+                  {f.esEquipo && <span className="truncate text-[10px] text-text-faint">{f.miembrosLabel}</span>}
                 </span>
                 <span className="truncate" style={{ color: f.interrumpido ? "var(--text-dim)" : colorSlot(f.faseColorSlot) }}>
                   {f.interrumpido ? "—" : f.faseNombre}
@@ -740,6 +743,16 @@ function EstadisticasFluctuacion({
     if (fPersona) return { tipo: "persona" as const, id: fPersona, nombre: personas.find((p) => p.id === fPersona)?.nombre ?? "" };
     return null;
   }, [fEquipo, fPersona, equipos, personas]);
+
+  // Nombres y apellidos de los integrantes del equipo elegido — la mesa ya
+  // no lleva nombres en el título (ahora es "MESA N"), así que hay que
+  // mostrarlos aparte para no perder de vista quién la compone.
+  const miembrosSujeto = useMemo(() => {
+    if (!sujeto || sujeto.tipo !== "equipo") return [];
+    const equipo = equipos.find((e) => e.id === sujeto.id);
+    if (!equipo) return [];
+    return equipo.persona_ids.map((pid) => personas.find((p) => p.id === pid)?.nombre ?? "?");
+  }, [sujeto, equipos, personas]);
 
   const ordenSel = fOrden ? ordenesRef.find((o) => o.id === fOrden) : undefined;
 
@@ -882,6 +895,9 @@ function EstadisticasFluctuacion({
                 {sujeto.tipo === "equipo" ? "Equipo" : "Persona"}
               </p>
               <p className="text-[16px] font-bold truncate">{sujeto.tipo === "equipo" ? `👥 ${sujeto.nombre}` : sujeto.nombre}</p>
+              {sujeto.tipo === "equipo" && miembrosSujeto.length > 0 && (
+                <p className="text-[10.5px] text-text-faint truncate mt-0.5">{miembrosSujeto.join(", ")}</p>
+              )}
             </div>
             <div className="card p-3">
               <p className="text-[10px] text-text-faint uppercase tracking-wide">Cajas del período</p>
@@ -1089,9 +1105,12 @@ function TablaRanking({ titulo, filas, vacio }: { titulo: string; filas: Ranking
                 key={f.id}
                 className="grid grid-cols-[1fr_70px_60px_70px] gap-2 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
               >
-                <span className="truncate font-medium" title={f.miembros.join(", ")}>
-                  {puestoGlobal === 0 && f.ritmoPromedio !== null && "🏆 "}
-                  {f.nombre}
+                <span className="flex flex-col min-w-0">
+                  <span className="truncate font-medium">
+                    {puestoGlobal === 0 && f.ritmoPromedio !== null && "🏆 "}
+                    {f.nombre}
+                  </span>
+                  {f.miembros.length > 1 && <span className="truncate text-[10px] text-text-faint">{f.miembros.join(", ")}</span>}
                 </span>
                 <span
                   className="text-right tabular-nums"
@@ -1461,8 +1480,9 @@ function ComparativaEquipos({
                 >
                   <span className="text-text-dim">{i.fecha.slice(5)}</span>
                   <span className="font-medium truncate">{i.ordenNumero}</span>
-                  <span className="truncate" title={i.miembros.join(", ")}>
-                    {i.esEquipo ? `👥 ${i.quienNombre}` : i.quienNombre}
+                  <span className="flex flex-col min-w-0">
+                    <span className="truncate">{i.esEquipo ? `👥 ${i.quienNombre}` : i.quienNombre}</span>
+                    {i.esEquipo && <span className="truncate text-[10px] text-text-faint">{i.miembros.join(", ")}</span>}
                   </span>
                   <span className="text-text-dim truncate" title={i.rolesLabel}>
                     {i.rolesLabel || "—"}

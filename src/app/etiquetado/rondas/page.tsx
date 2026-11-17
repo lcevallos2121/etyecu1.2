@@ -51,7 +51,18 @@ function arraysIguales(a: string[], b: string[]) {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
-const MOTIVOS = ["Lo llamaron a otra tarea", "Pasando cajas a costura", "Falta de material", "Descanso", "Otro"];
+const MOTIVOS = ["Lo llamaron a otra tarea", "Pasando cajas a costura", "Falta de material", "Descanso", "Ausente / sin hacer nada", "Otro"];
+
+// Siguiente número de mesa, en base al mayor "MESA N" ya usado (sin
+// importar en qué orden se haya creado cada uno) — así cada equipo nuevo
+// se numera solo, sin que el dueño tenga que inventarle nombre.
+function siguienteNombreMesa(equipos: Equipo[]) {
+  const numeros = equipos
+    .map((e) => /^MESA\s+(\d+)$/i.exec(e.nombre.trim())?.[1])
+    .filter((n): n is string => !!n)
+    .map(Number);
+  return `MESA ${(numeros.length ? Math.max(...numeros) : 0) + 1}`;
+}
 const COLOR_SLOTS: Record<number, string> = {
   1: "#5b9bf0",
   2: "var(--amber)",
@@ -702,7 +713,10 @@ function RondaTab({
                 fases={fasesDeOrden(orden.id)}
                 rolesDeFase={rolesDeFase}
                 faseLabel={faseLabel}
-                nombreSugerido={equiposDeEstaOrden.find((e) => arraysIguales([...e.persona_ids].sort(), [...equipoSeleccion].sort()))?.nombre}
+                nombreSugerido={
+                  equiposDeEstaOrden.find((e) => arraysIguales([...e.persona_ids].sort(), [...equipoSeleccion].sort()))?.nombre ??
+                  siguienteNombreMesa(equipos)
+                }
                 onCancelar={() => setEquipoPanelOrdenId(null)}
                 onConfirmar={async (draftComun, nombreEquipo, rolesPorPersona) => {
                   await marcarEquipo(equipoSeleccion, orden.id, draftComun, nombreEquipo, rolesPorPersona);
@@ -974,6 +988,14 @@ function PersonaChip({
                   </button>
                 ))}
               </div>
+              <input
+                type="text"
+                value={draft.motivo ?? ""}
+                onChange={(e) => setDraft((d) => ({ ...d, motivo: e.target.value || null }))}
+                placeholder="Motivo (opcional) — ej. se fue a no hacer nada"
+                className="w-full rounded-lg px-3 py-2 outline-none"
+                style={INPUT_STYLE}
+              />
               <div className="flex items-center gap-2.5">
                 <div className="flex-1">
                   <label className="text-[10.5px] text-text-faint block mb-1">Ausente desde (opcional)</label>
@@ -1039,7 +1061,6 @@ function PersonaChip({
             <button
               onClick={() => {
                 if (!draft.faseId && !draft.interrumpido) return;
-                if (draft.interrumpido && !draft.motivo) return;
                 if (faltaRol) return;
                 onConfirmar(draft);
               }}
@@ -1075,7 +1096,7 @@ function EquipoPanel({
   fases: Fase[];
   rolesDeFase: (faseId: string | null) => Rol[];
   faseLabel: (id: string | null) => string;
-  nombreSugerido?: string;
+  nombreSugerido: string;
   onCancelar: () => void;
   onConfirmar: (
     draftComun: Omit<Draft, "equipoId" | "ordenId">,
@@ -1093,7 +1114,7 @@ function EquipoPanel({
   const [ausenteHasta, setAusenteHasta] = useState<string | null>(null);
   const [avance, setAvance] = useState(0);
   const [unidades, setUnidades] = useState<number | null>(null);
-  const [nombreEquipo, setNombreEquipo] = useState(nombreSugerido ?? "");
+  const [nombreEquipo, setNombreEquipo] = useState(nombreSugerido);
   const [guardando, setGuardando] = useState(false);
 
   const rolesActuales = rolesDeFase(faseId);
@@ -1106,7 +1127,6 @@ function EquipoPanel({
     !!faseId &&
     rolesActuales.length > 0 &&
     (rolPorPersona ? personas.some((p) => !rolesPorPersona[p.id]) : !rolId);
-  const nombrePorDefecto = personas.map((p) => p.nombre.split(" ")[0]).join(" + ");
 
   return (
     <div className="rounded-xl p-3 flex flex-col gap-2.5" style={{ background: "var(--card-2)", border: "1px solid var(--border)" }}>
@@ -1116,7 +1136,7 @@ function EquipoPanel({
       <input
         value={nombreEquipo}
         onChange={(e) => setNombreEquipo(e.target.value)}
-        placeholder={`Nombre del equipo (ej. Mesa 1) — si lo dejas vacío, se usa "${nombrePorDefecto}"`}
+        placeholder="Nombre de la mesa"
         className="w-full rounded-lg px-3 py-2 outline-none"
         style={INPUT_STYLE}
       />
@@ -1256,6 +1276,14 @@ function EquipoPanel({
               </button>
             ))}
           </div>
+          <input
+            type="text"
+            value={motivo ?? ""}
+            onChange={(e) => setMotivo(e.target.value || null)}
+            placeholder="Motivo (opcional) — ej. se fueron a no hacer nada"
+            className="w-full rounded-lg px-3 py-2 outline-none"
+            style={INPUT_STYLE}
+          />
           <div className="flex items-center gap-2.5">
             <div className="flex-1">
               <label className="text-[10.5px] text-text-faint block mb-1">Ausente desde (opcional)</label>
@@ -1321,12 +1349,11 @@ function EquipoPanel({
         <button
           onClick={async () => {
             if (!faseId && !interrumpido) return;
-            if (interrumpido && !motivo) return;
             if (faltaRol) return;
             setGuardando(true);
             await onConfirmar(
               { faseId, rolId, interrumpido, motivo, ausenteDesde, ausenteHasta, avance, unidades },
-              nombreEquipo.trim() || nombrePorDefecto,
+              nombreEquipo.trim() || nombreSugerido,
               rolPorPersona ? rolesPorPersona : undefined
             );
             setGuardando(false);
