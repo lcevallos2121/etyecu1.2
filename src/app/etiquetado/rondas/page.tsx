@@ -38,6 +38,8 @@ type Draft = {
   rolId: string | null;
   interrumpido: boolean;
   motivo: string | null;
+  ausenteDesde: string | null;
+  ausenteHasta: string | null;
   avance: number;
   unidades: number | null;
   ordenId: string;
@@ -241,13 +243,20 @@ export default function RondasDePisoPage() {
     return data.id as string;
   }
 
-  async function marcarEquipo(personaIds: string[], ordenId: string, draftComun: Omit<Draft, "equipoId" | "ordenId">, nombreEquipo: string) {
+  async function marcarEquipo(
+    personaIds: string[],
+    ordenId: string,
+    draftComun: Omit<Draft, "equipoId" | "ordenId">,
+    nombreEquipo: string,
+    rolesPorPersona?: Record<string, string | null>
+  ) {
     const equipoId = await obtenerOCrearEquipo(nombreEquipo, personaIds);
     if (!equipoId) return;
     setEnCurso((prev) => {
       const next = { ...prev };
       personaIds.forEach((pid) => {
-        next[pid] = { ...draftComun, ordenId, equipoId };
+        const rolId = rolesPorPersona && pid in rolesPorPersona ? rolesPorPersona[pid] : draftComun.rolId;
+        next[pid] = { ...draftComun, rolId, ordenId, equipoId };
       });
       return next;
     });
@@ -281,6 +290,8 @@ export default function RondasDePisoPage() {
           equipo_id: d.equipoId ?? null,
           interrumpido: d.interrumpido,
           motivo: d.motivo,
+          ausente_desde: d.interrumpido ? d.ausenteDesde : null,
+          ausente_hasta: d.interrumpido ? d.ausenteHasta : null,
           avance: d.avance || 0,
           unidades: d.interrumpido ? null : d.unidades,
         };
@@ -614,7 +625,13 @@ function RondaTab({
   abierto: string | null;
   setAbierto: (v: string | null) => void;
   marcar: (personaId: string, ordenId: string, draft: Draft) => void;
-  marcarEquipo: (personaIds: string[], ordenId: string, draftComun: Omit<Draft, "equipoId" | "ordenId">, nombreEquipo: string) => Promise<void>;
+  marcarEquipo: (
+    personaIds: string[],
+    ordenId: string,
+    draftComun: Omit<Draft, "equipoId" | "ordenId">,
+    nombreEquipo: string,
+    rolesPorPersona?: Record<string, string | null>
+  ) => Promise<void>;
   faseLabel: (id: string | null) => string;
   faseColor: (id: string | null) => string;
   rolLabel: (id: string | null) => string;
@@ -687,8 +704,8 @@ function RondaTab({
                 faseLabel={faseLabel}
                 nombreSugerido={equiposDeEstaOrden.find((e) => arraysIguales([...e.persona_ids].sort(), [...equipoSeleccion].sort()))?.nombre}
                 onCancelar={() => setEquipoPanelOrdenId(null)}
-                onConfirmar={async (draftComun, nombreEquipo) => {
-                  await marcarEquipo(equipoSeleccion, orden.id, draftComun, nombreEquipo);
+                onConfirmar={async (draftComun, nombreEquipo, rolesPorPersona) => {
+                  await marcarEquipo(equipoSeleccion, orden.id, draftComun, nombreEquipo, rolesPorPersona);
                   salirDeModoEquipo();
                 }}
               />
@@ -815,7 +832,17 @@ function PersonaChip({
   onConfirmar: (d: Draft) => void;
   onCancelar: () => void;
 }) {
-  const vacio: Draft = { faseId: null, rolId: null, interrumpido: false, motivo: null, avance: 0, unidades: null, ordenId: orden.id };
+  const vacio: Draft = {
+    faseId: null,
+    rolId: null,
+    interrumpido: false,
+    motivo: null,
+    ausenteDesde: null,
+    ausenteHasta: null,
+    avance: 0,
+    unidades: null,
+    ordenId: orden.id,
+  };
   const [draft, setDraft] = useState<Draft>(marca ?? vacio);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reinicia el borrador al abrir/cambiar de persona, no un ciclo de sincronización
@@ -915,6 +942,8 @@ function PersonaChip({
                 faseId: d.interrumpido ? d.faseId : null,
                 rolId: d.interrumpido ? d.rolId : null,
                 motivo: d.interrumpido ? null : d.motivo,
+                ausenteDesde: d.interrumpido ? null : d.ausenteDesde,
+                ausenteHasta: d.interrumpido ? null : d.ausenteHasta,
               }))
             }
             className="rounded-lg px-2 py-2 text-[12px] font-semibold text-center"
@@ -928,22 +957,49 @@ function PersonaChip({
           </button>
 
           {draft.interrumpido && (
-            <div className="flex flex-wrap gap-1.5">
-              {MOTIVOS.map((m) => (
-                <button
-                  key={m}
-                  onClick={() => setDraft((d) => ({ ...d, motivo: m }))}
-                  className="rounded-full px-2.5 py-1 text-[11px] font-medium"
-                  style={{
-                    border: `1px solid ${draft.motivo === m ? "var(--red)" : "var(--border-2)"}`,
-                    background: draft.motivo === m ? "rgba(248,113,113,.12)" : "var(--card)",
-                    color: draft.motivo === m ? "var(--red)" : "var(--text-dim)",
-                  }}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="flex flex-wrap gap-1.5">
+                {MOTIVOS.map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setDraft((d) => ({ ...d, motivo: m }))}
+                    className="rounded-full px-2.5 py-1 text-[11px] font-medium"
+                    style={{
+                      border: `1px solid ${draft.motivo === m ? "var(--red)" : "var(--border-2)"}`,
+                      background: draft.motivo === m ? "rgba(248,113,113,.12)" : "var(--card)",
+                      color: draft.motivo === m ? "var(--red)" : "var(--text-dim)",
+                    }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+              <div className="flex items-center gap-2.5">
+                <div className="flex-1">
+                  <label className="text-[10.5px] text-text-faint block mb-1">Ausente desde (opcional)</label>
+                  <input
+                    type="time"
+                    value={draft.ausenteDesde ?? ""}
+                    onChange={(e) => setDraft((d) => ({ ...d, ausenteDesde: e.target.value || null }))}
+                    className="w-full rounded-lg px-2.5 py-1.5 outline-none"
+                    style={INPUT_STYLE}
+                  />
+                </div>
+                <div className="flex-1">
+                  <label className="text-[10.5px] text-text-faint block mb-1">Hasta (opcional)</label>
+                  <input
+                    type="time"
+                    value={draft.ausenteHasta ?? ""}
+                    onChange={(e) => setDraft((d) => ({ ...d, ausenteHasta: e.target.value || null }))}
+                    className="w-full rounded-lg px-2.5 py-1.5 outline-none"
+                    style={INPUT_STYLE}
+                  />
+                </div>
+              </div>
+              <p className="text-[10px] text-text-faint -mt-1">
+                Si sabes a qué hora se fue y a qué hora volvió, ponlo — sirve para ver cuánto tiempo estuvo ausente en los reportes.
+              </p>
+            </>
           )}
 
           <div className="flex items-center justify-between gap-2.5">
@@ -1021,19 +1077,35 @@ function EquipoPanel({
   faseLabel: (id: string | null) => string;
   nombreSugerido?: string;
   onCancelar: () => void;
-  onConfirmar: (draftComun: Omit<Draft, "equipoId" | "ordenId">, nombreEquipo: string) => void | Promise<void>;
+  onConfirmar: (
+    draftComun: Omit<Draft, "equipoId" | "ordenId">,
+    nombreEquipo: string,
+    rolesPorPersona?: Record<string, string | null>
+  ) => void | Promise<void>;
 }) {
   const [faseId, setFaseId] = useState<string | null>(null);
   const [rolId, setRolId] = useState<string | null>(null);
+  const [rolPorPersona, setRolPorPersona] = useState(false);
+  const [rolesPorPersona, setRolesPorPersona] = useState<Record<string, string | null>>({});
   const [interrumpido, setInterrumpido] = useState(false);
   const [motivo, setMotivo] = useState<string | null>(null);
+  const [ausenteDesde, setAusenteDesde] = useState<string | null>(null);
+  const [ausenteHasta, setAusenteHasta] = useState<string | null>(null);
   const [avance, setAvance] = useState(0);
   const [unidades, setUnidades] = useState<number | null>(null);
   const [nombreEquipo, setNombreEquipo] = useState(nombreSugerido ?? "");
   const [guardando, setGuardando] = useState(false);
 
   const rolesActuales = rolesDeFase(faseId);
-  const faltaRol = !interrumpido && !!faseId && rolesActuales.length > 0 && !rolId;
+  // En fases con más de un rol (ej. costura: Costurera + Ayudante de
+  // costura) cada integrante del equipo puede tener un rol distinto aunque
+  // estén trabajando juntos — "rol por persona" lo permite en vez de forzar
+  // un único rol para todo el equipo.
+  const faltaRol =
+    !interrumpido &&
+    !!faseId &&
+    rolesActuales.length > 0 &&
+    (rolPorPersona ? personas.some((p) => !rolesPorPersona[p.id]) : !rolId);
   const nombrePorDefecto = personas.map((p) => p.nombre.split(" ")[0]).join(" + ");
 
   return (
@@ -1061,6 +1133,7 @@ function EquipoPanel({
                 onClick={() => {
                   setFaseId(f.id);
                   setRolId(null);
+                  setRolesPorPersona({});
                   setInterrumpido(false);
                   setMotivo(null);
                 }}
@@ -1080,23 +1153,68 @@ function EquipoPanel({
 
       {!interrumpido && faseId && rolesActuales.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          <p className="text-[11px] font-semibold text-text-dim">¿Qué rol tenía el equipo en {faseLabel(faseId)}?</p>
-          <div className="flex flex-wrap gap-1.5">
-            {rolesActuales.map((r) => (
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] font-semibold text-text-dim">¿Qué rol tenía el equipo en {faseLabel(faseId)}?</p>
+            {rolesActuales.length > 1 && personas.length > 1 && (
               <button
-                key={r.id}
-                onClick={() => setRolId(r.id)}
-                className="rounded-full px-2.5 py-1.5 text-[11.5px] font-semibold"
-                style={{
-                  border: `1px solid ${rolId === r.id ? "var(--accent-2)" : "var(--border-2)"}`,
-                  background: rolId === r.id ? "color-mix(in srgb, var(--accent-2) 18%, transparent)" : "var(--card)",
-                  color: rolId === r.id ? "var(--accent-2)" : "var(--text-dim)",
+                onClick={() => {
+                  setRolPorPersona((v) => !v);
+                  setRolId(null);
+                  setRolesPorPersona({});
                 }}
+                className="text-[10.5px] font-semibold px-2 py-1 rounded-full shrink-0"
+                style={
+                  rolPorPersona
+                    ? { background: "var(--accent-2)", color: "#1a1626" }
+                    : { border: "1px solid var(--border-2)", color: "var(--text-dim)" }
+                }
               >
-                {r.nombre}
+                Rol distinto por persona
               </button>
-            ))}
+            )}
           </div>
+          {rolPorPersona ? (
+            <div className="flex flex-col gap-2">
+              {personas.map((p) => (
+                <div key={p.id} className="flex flex-col gap-1">
+                  <span className="text-[11.5px] font-semibold">{p.nombre}</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {rolesActuales.map((r) => (
+                      <button
+                        key={r.id}
+                        onClick={() => setRolesPorPersona((m) => ({ ...m, [p.id]: r.id }))}
+                        className="rounded-full px-2.5 py-1.5 text-[11.5px] font-semibold"
+                        style={{
+                          border: `1px solid ${rolesPorPersona[p.id] === r.id ? "var(--accent-2)" : "var(--border-2)"}`,
+                          background: rolesPorPersona[p.id] === r.id ? "color-mix(in srgb, var(--accent-2) 18%, transparent)" : "var(--card)",
+                          color: rolesPorPersona[p.id] === r.id ? "var(--accent-2)" : "var(--text-dim)",
+                        }}
+                      >
+                        {r.nombre}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {rolesActuales.map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => setRolId(r.id)}
+                  className="rounded-full px-2.5 py-1.5 text-[11.5px] font-semibold"
+                  style={{
+                    border: `1px solid ${rolId === r.id ? "var(--accent-2)" : "var(--border-2)"}`,
+                    background: rolId === r.id ? "color-mix(in srgb, var(--accent-2) 18%, transparent)" : "var(--card)",
+                    color: rolId === r.id ? "var(--accent-2)" : "var(--text-dim)",
+                  }}
+                >
+                  {r.nombre}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1105,7 +1223,10 @@ function EquipoPanel({
           setInterrumpido((v) => !v);
           setFaseId(null);
           setRolId(null);
+          setRolesPorPersona({});
           setMotivo(null);
+          setAusenteDesde(null);
+          setAusenteHasta(null);
         }}
         className="rounded-lg px-2 py-2 text-[12px] font-semibold text-center"
         style={{
@@ -1118,22 +1239,50 @@ function EquipoPanel({
       </button>
 
       {interrumpido && (
-        <div className="flex flex-wrap gap-1.5">
-          {MOTIVOS.map((m) => (
-            <button
-              key={m}
-              onClick={() => setMotivo(m)}
-              className="rounded-full px-2.5 py-1 text-[11px] font-medium"
-              style={{
-                border: `1px solid ${motivo === m ? "var(--red)" : "var(--border-2)"}`,
-                background: motivo === m ? "rgba(248,113,113,.12)" : "var(--card)",
-                color: motivo === m ? "var(--red)" : "var(--text-dim)",
-              }}
-            >
-              {m}
-            </button>
-          ))}
-        </div>
+        <>
+          <div className="flex flex-wrap gap-1.5">
+            {MOTIVOS.map((m) => (
+              <button
+                key={m}
+                onClick={() => setMotivo(m)}
+                className="rounded-full px-2.5 py-1 text-[11px] font-medium"
+                style={{
+                  border: `1px solid ${motivo === m ? "var(--red)" : "var(--border-2)"}`,
+                  background: motivo === m ? "rgba(248,113,113,.12)" : "var(--card)",
+                  color: motivo === m ? "var(--red)" : "var(--text-dim)",
+                }}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2.5">
+            <div className="flex-1">
+              <label className="text-[10.5px] text-text-faint block mb-1">Ausente desde (opcional)</label>
+              <input
+                type="time"
+                value={ausenteDesde ?? ""}
+                onChange={(e) => setAusenteDesde(e.target.value || null)}
+                className="w-full rounded-lg px-2.5 py-1.5 outline-none"
+                style={INPUT_STYLE}
+              />
+            </div>
+            <div className="flex-1">
+              <label className="text-[10.5px] text-text-faint block mb-1">Hasta (opcional)</label>
+              <input
+                type="time"
+                value={ausenteHasta ?? ""}
+                onChange={(e) => setAusenteHasta(e.target.value || null)}
+                className="w-full rounded-lg px-2.5 py-1.5 outline-none"
+                style={INPUT_STYLE}
+              />
+            </div>
+          </div>
+          <p className="text-[10px] text-text-faint -mt-1">
+            Si sabes a qué hora se fueron y a qué hora volvieron, ponlo — sirve para ver cuánto tiempo estuvieron ausentes en los
+            reportes.
+          </p>
+        </>
       )}
 
       <div className="flex items-center justify-between gap-2.5">
@@ -1175,7 +1324,11 @@ function EquipoPanel({
             if (interrumpido && !motivo) return;
             if (faltaRol) return;
             setGuardando(true);
-            await onConfirmar({ faseId, rolId, interrumpido, motivo, avance, unidades }, nombreEquipo.trim() || nombrePorDefecto);
+            await onConfirmar(
+              { faseId, rolId, interrumpido, motivo, ausenteDesde, ausenteHasta, avance, unidades },
+              nombreEquipo.trim() || nombrePorDefecto,
+              rolPorPersona ? rolesPorPersona : undefined
+            );
             setGuardando(false);
           }}
           className="btn-primary text-[12px] font-bold px-3.5 py-2 rounded-lg disabled:opacity-40"

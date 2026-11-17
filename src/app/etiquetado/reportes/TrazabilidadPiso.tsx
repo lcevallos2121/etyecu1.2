@@ -35,6 +35,8 @@ type FilaDetalle = {
   rolNombre: string;
   interrumpido: boolean;
   motivo: string | null;
+  ausenteDesde: string | null;
+  ausenteHasta: string | null;
   avance: number;
   unidades: number | null;
   equipoId: string | null;
@@ -43,6 +45,17 @@ type FilaDetalle = {
 };
 
 type FilaAgrupada = FilaDetalle & { esEquipo: boolean; miembrosLabel: string };
+
+// Minutos entre dos horas "HH:MM" o "HH:MM:SS" (mismo día). Negativo o
+// inválido se trata como 0 — no se espera una ausencia que cruce medianoche.
+function minutosEntreHoras(desde: string | null, hasta: string | null) {
+  if (!desde || !hasta) return 0;
+  const [h1, m1] = desde.split(":").map(Number);
+  const [h2, m2] = hasta.split(":").map(Number);
+  if ([h1, m1, h2, m2].some((n) => Number.isNaN(n))) return 0;
+  const mins = h2 * 60 + m2 - (h1 * 60 + m1);
+  return mins > 0 ? mins : 0;
+}
 
 const COLOR_SLOTS: Record<number, string> = {
   1: "#5b9bf0",
@@ -97,7 +110,7 @@ export default function TrazabilidadPiso() {
   const [ordenesRef, setOrdenesRef] = useState<OrdenRef[]>([]);
   const [filas, setFilas] = useState<FilaDetalle[]>([]);
 
-  const [vista, setVista] = useState<"detalle" | "estadisticas">("detalle");
+  const [vista, setVista] = useState<"detalle" | "estadisticas" | "comparativa">("detalle");
   const [desde, setDesde] = useState(primerDiaDelMes());
   const [hasta, setHasta] = useState(hoyStr());
   const [fPersona, setFPersona] = useState("");
@@ -154,13 +167,17 @@ export default function TrazabilidadPiso() {
         equipo_id: string | null;
         interrumpido: boolean;
         motivo: string | null;
+        ausente_desde: string | null;
+        ausente_hasta: string | null;
         avance: number;
         unidades: number | null;
       }[] = [];
       if (rondaIds.length) {
         const { data } = await supabase
           .from("rondas_observaciones")
-          .select("id, ronda_id, persona_id, orden_id, fase_id, rol_id, equipo_id, interrumpido, motivo, avance, unidades")
+          .select(
+            "id, ronda_id, persona_id, orden_id, fase_id, rol_id, equipo_id, interrumpido, motivo, ausente_desde, ausente_hasta, avance, unidades"
+          )
           .in("ronda_id", rondaIds);
         obsData = data ?? [];
       }
@@ -203,6 +220,8 @@ export default function TrazabilidadPiso() {
           rolNombre: rol?.nombre ?? "",
           interrumpido: o.interrumpido,
           motivo: o.motivo,
+          ausenteDesde: o.ausente_desde,
+          ausenteHasta: o.ausente_hasta,
           avance: o.avance,
           unidades: o.unidades,
           equipoId: o.equipo_id,
@@ -246,9 +265,14 @@ export default function TrazabilidadPiso() {
 
   // Varias personas que se marcaron juntas como equipo (misma ronda +
   // mismo equipo_id) se muestran como UNA sola fila en el detalle, con los
-  // nombres de todo el equipo, en vez de una fila repetida por persona.
+  // nombres de todo el equipo, en vez de una fila repetida por persona. Si
+  // el equipo tuvo roles distintos por persona (ej. costura: Costurera +
+  // Ayudante de costura), se combinan en vez de quedarse solo con el rol
+  // de la primera fila encontrada.
   const filasAgrupadas = useMemo(() => {
     const grupos = new Map<string, FilaAgrupada>();
+    const rolesPorGrupo = new Map<string, Set<string>>();
+    const detallePorGrupo = new Map<string, string[]>();
     const orden: string[] = [];
     filtradas.forEach((f) => {
       const clave = f.equipoId ? `${f.rondaId}|${f.equipoId}` : `solo|${f.id}`;
@@ -258,10 +282,24 @@ export default function TrazabilidadPiso() {
           esEquipo: !!f.equipoId,
           miembrosLabel: f.equipoId ? (f.equipoMiembros.length ? f.equipoMiembros.join(", ") : f.personaNombre) : f.personaNombre,
         });
+        rolesPorGrupo.set(clave, new Set());
+        detallePorGrupo.set(clave, []);
         orden.push(clave);
       }
+      if (!f.interrumpido && f.rolNombre) {
+        rolesPorGrupo.get(clave)!.add(f.rolNombre);
+        detallePorGrupo.get(clave)!.push(`${f.personaNombre} (${f.rolNombre})`);
+      } else if (f.equipoId) {
+        detallePorGrupo.get(clave)!.push(f.personaNombre);
+      }
     });
-    return orden.map((k) => grupos.get(k)!);
+    return orden.map((clave) => {
+      const base = grupos.get(clave)!;
+      const roles = rolesPorGrupo.get(clave)!;
+      const detalle = detallePorGrupo.get(clave)!;
+      if (!base.esEquipo || roles.size <= 1) return base;
+      return { ...base, rolNombre: Array.from(roles).join(" + "), miembrosLabel: detalle.join(", ") };
+    });
   }, [filtradas]);
 
   const rolesDeFaseFiltro = fFase ? roles.filter((r) => r.fase_id === fFase) : roles;
@@ -408,6 +446,7 @@ export default function TrazabilidadPiso() {
           [
             ["detalle", "Detalle"],
             ["estadisticas", "Estadísticas (fluctuación)"],
+            ["comparativa", "Comparativa y ranking"],
           ] as const
         ).map(([key, label]) => (
           <button
@@ -438,6 +477,10 @@ export default function TrazabilidadPiso() {
           setDesde={setDesde}
           setHasta={setHasta}
         />
+      )}
+
+      {vista === "comparativa" && (
+        <ComparativaEquipos filas={filas} fases={fases} roles={roles} fOrden={fOrden} fFase={fFase} fRol={fRol} />
       )}
 
       {vista === "detalle" &&
@@ -533,6 +576,7 @@ export default function TrazabilidadPiso() {
                 {f.interrumpido ? (
                   <span className="truncate text-[11px] font-semibold" style={{ color: "var(--red)" }} title={f.motivo ?? ""}>
                     Interrumpido: {f.motivo}
+                    {f.ausenteDesde && f.ausenteHasta && ` (${f.ausenteDesde.slice(0, 5)}–${f.ausenteHasta.slice(0, 5)})`}
                   </span>
                 ) : (
                   <span className="text-[11px] font-semibold" style={{ color: "var(--green)" }}>
@@ -637,9 +681,17 @@ function EstadisticasFluctuacion({
   const serie = useMemo(() => {
     if (!sujeto) return [];
     const dias = rangoDeDias(limites.inicio, limites.fin);
-    type Dia = { avance: number; unidades: number; obs: number; interrumpido: number; minHora: string | null; maxHora: string | null };
+    type Dia = {
+      avance: number;
+      unidades: number;
+      obs: number;
+      interrumpido: number;
+      minAusente: number;
+      minHora: string | null;
+      maxHora: string | null;
+    };
     const porDia = new Map<string, Dia>();
-    dias.forEach((d) => porDia.set(d, { avance: 0, unidades: 0, obs: 0, interrumpido: 0, minHora: null, maxHora: null }));
+    dias.forEach((d) => porDia.set(d, { avance: 0, unidades: 0, obs: 0, interrumpido: 0, minAusente: 0, minHora: null, maxHora: null }));
 
     const grupos = new Map<string, { avanceMax: number; unidadesMax: number; minHora: string; maxHora: string }>();
     filas.forEach((f) => {
@@ -654,6 +706,7 @@ function EstadisticasFluctuacion({
       dia.obs += 1;
       if (f.interrumpido) {
         dia.interrumpido += 1;
+        dia.minAusente += minutosEntreHoras(f.ausenteDesde, f.ausenteHasta);
         return;
       }
       const claveGrupo = `${f.fecha}|${f.ordenId}|${f.faseId ?? ""}`;
@@ -682,7 +735,17 @@ function EstadisticasFluctuacion({
           ? Math.round((new Date(dia.maxHora).getTime() - new Date(dia.minHora).getTime()) / 60000)
           : 0;
       const ritmo = minutos > 0 && dia.unidades > 0 ? Math.round((dia.unidades / minutos) * 100) / 100 : null;
-      return { dia: d, diaLabel: d.slice(5), avance: dia.avance, unidades: dia.unidades, obs: dia.obs, interrumpido: dia.interrumpido, minutos, ritmo };
+      return {
+        dia: d,
+        diaLabel: d.slice(5),
+        avance: dia.avance,
+        unidades: dia.unidades,
+        obs: dia.obs,
+        interrumpido: dia.interrumpido,
+        minAusente: dia.minAusente,
+        minutos,
+        ritmo,
+      };
     });
   }, [sujeto, limites, filas, fOrden, fFase, fRol]);
 
@@ -693,6 +756,7 @@ function EstadisticasFluctuacion({
   const diasConRitmo = serie.filter((d) => d.ritmo !== null);
   const ritmoPromedio =
     diasConRitmo.length > 0 ? Math.round((diasConRitmo.reduce((a, d) => a + (d.ritmo ?? 0), 0) / diasConRitmo.length) * 100) / 100 : null;
+  const totalMinAusente = serie.reduce((a, d) => a + d.minAusente, 0);
 
   return (
     <div className="flex flex-col gap-4">
@@ -728,7 +792,7 @@ function EstadisticasFluctuacion({
             </div>
           )}
 
-          <div className="grid grid-cols-5 gap-3 max-[760px]:grid-cols-2">
+          <div className="grid grid-cols-6 gap-3 max-[900px]:grid-cols-3 max-[480px]:grid-cols-2">
             <div className="card p-3">
               <p className="text-[10px] text-text-faint uppercase tracking-wide">
                 {sujeto.tipo === "equipo" ? "Equipo" : "Persona"}
@@ -750,6 +814,12 @@ function EstadisticasFluctuacion({
             <div className="card p-3">
               <p className="text-[10px] text-text-faint uppercase tracking-wide">Ritmo promedio</p>
               <p className="text-[20px] font-bold">{ritmoPromedio !== null ? `${ritmoPromedio} u/min` : "—"}</p>
+            </div>
+            <div className="card p-3">
+              <p className="text-[10px] text-text-faint uppercase tracking-wide">Minutos ausente (período)</p>
+              <p className="text-[20px] font-bold" style={{ color: totalMinAusente > 0 ? "var(--red)" : "var(--text)" }}>
+                {totalMinAusente || "—"}
+              </p>
             </div>
           </div>
 
@@ -796,18 +866,19 @@ function EstadisticasFluctuacion({
           </div>
 
           <div className="card overflow-hidden">
-            <div className="grid grid-cols-[80px_1fr_1fr_1fr_1fr_1fr] gap-3 px-4 py-2.5 text-[10.5px] uppercase tracking-wide text-text-faint border-b border-border">
+            <div className="grid grid-cols-[80px_1fr_1fr_1fr_1fr_1fr_1fr] gap-3 px-4 py-2.5 text-[10.5px] uppercase tracking-wide text-text-faint border-b border-border">
               <span>Día</span>
               <span className="text-right">Cajas</span>
               <span className="text-right">Unidades</span>
               <span className="text-right">Ritmo (u/min)</span>
               <span className="text-right">Observaciones</span>
               <span className="text-right">Interrumpido</span>
+              <span className="text-right">Min. ausente</span>
             </div>
             {serie.map((d) => (
               <div
                 key={d.dia}
-                className="grid grid-cols-[80px_1fr_1fr_1fr_1fr_1fr] gap-3 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
+                className="grid grid-cols-[80px_1fr_1fr_1fr_1fr_1fr_1fr] gap-3 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
               >
                 <span className="text-text-dim">{d.diaLabel}</span>
                 <span className="text-right font-semibold tabular-nums">{d.avance || "—"}</span>
@@ -816,6 +887,304 @@ function EstadisticasFluctuacion({
                 <span className="text-right text-text-dim tabular-nums">{d.obs || "—"}</span>
                 <span className="text-right tabular-nums" style={{ color: d.interrumpido > 0 ? "var(--red)" : "var(--text-faint)" }}>
                   {d.interrumpido || "—"}
+                </span>
+                <span className="text-right tabular-nums" style={{ color: d.minAusente > 0 ? "var(--red)" : "var(--text-faint)" }}>
+                  {d.minAusente || "—"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Compara, para un mismo proceso (fase y, opcionalmente, rol), cómo
+// rindieron distintas personas o distintas composiciones de equipo en
+// distintos días: cajas, unidades, minutos y ritmo (u/min) por instancia,
+// más un ranking individual, un ranking de equipos (por composición exacta
+// de integrantes) y una sugerencia automática de con quién/qué equipo se
+// avanza más rápido, según el historial registrado.
+type Instancia = {
+  key: string;
+  fecha: string;
+  ordenNumero: string;
+  faseNombre: string;
+  esEquipo: boolean;
+  quienId: string;
+  quienNombre: string;
+  miembros: string[];
+  rolesLabel: string;
+  avance: number;
+  unidades: number;
+  minutos: number;
+  ritmo: number | null;
+};
+
+type RankingFila = {
+  id: string;
+  nombre: string;
+  miembros: string[];
+  dias: number;
+  muestras: number;
+  avanceTotal: number;
+  unidadesTotal: number;
+  ritmoPromedio: number | null;
+};
+
+function construirRanking(instancias: Instancia[], soloEquipo: boolean): RankingFila[] {
+  const grupos = new Map<
+    string,
+    { nombre: string; miembros: string[]; ritmos: number[]; dias: Set<string>; avanceTotal: number; unidadesTotal: number }
+  >();
+  instancias
+    .filter((i) => i.esEquipo === soloEquipo)
+    .forEach((i) => {
+      const g = grupos.get(i.quienId) ?? {
+        nombre: i.quienNombre,
+        miembros: i.miembros,
+        ritmos: [] as number[],
+        dias: new Set<string>(),
+        avanceTotal: 0,
+        unidadesTotal: 0,
+      };
+      if (i.ritmo !== null) g.ritmos.push(i.ritmo);
+      g.dias.add(i.fecha);
+      g.avanceTotal += i.avance;
+      g.unidadesTotal += i.unidades;
+      grupos.set(i.quienId, g);
+    });
+  return Array.from(grupos.entries())
+    .map(([id, g]) => ({
+      id,
+      nombre: g.nombre,
+      miembros: g.miembros,
+      dias: g.dias.size,
+      muestras: g.ritmos.length,
+      avanceTotal: g.avanceTotal,
+      unidadesTotal: g.unidadesTotal,
+      ritmoPromedio: g.ritmos.length ? Math.round((g.ritmos.reduce((a, b) => a + b, 0) / g.ritmos.length) * 100) / 100 : null,
+    }))
+    .sort((a, b) => (b.ritmoPromedio ?? -1) - (a.ritmoPromedio ?? -1));
+}
+
+function TablaRanking({ titulo, filas, vacio }: { titulo: string; filas: RankingFila[]; vacio: string }) {
+  return (
+    <div className="card overflow-hidden flex-1 min-w-[280px]">
+      <p className="text-[12px] font-semibold uppercase tracking-wide text-text-faint px-4 pt-3 pb-2">{titulo}</p>
+      {filas.length === 0 ? (
+        <p className="text-[11.5px] text-text-faint px-4 pb-4">{vacio}</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-[1fr_70px_60px_70px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wide text-text-faint border-b border-border border-t">
+            <span>Quién</span>
+            <span className="text-right">Ritmo</span>
+            <span className="text-right">Días</span>
+            <span className="text-right">Unidades</span>
+          </div>
+          {filas.map((f, i) => (
+            <div
+              key={f.id}
+              className="grid grid-cols-[1fr_70px_60px_70px] gap-2 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
+            >
+              <span className="truncate font-medium" title={f.miembros.join(", ")}>
+                {i === 0 && f.ritmoPromedio !== null && "🏆 "}
+                {f.nombre}
+              </span>
+              <span className="text-right tabular-nums" style={{ color: i === 0 && f.ritmoPromedio !== null ? "var(--green)" : "var(--text)" }}>
+                {f.ritmoPromedio !== null ? `${f.ritmoPromedio} u/min` : "—"}
+              </span>
+              <span className="text-right text-text-dim tabular-nums">{f.dias}</span>
+              <span className="text-right text-text-dim tabular-nums">{f.unidadesTotal || "—"}</span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function ComparativaEquipos({
+  filas,
+  fases,
+  roles,
+  fOrden,
+  fFase,
+  fRol,
+}: {
+  filas: FilaDetalle[];
+  fases: Fase[];
+  roles: Rol[];
+  fOrden: string;
+  fFase: string;
+  fRol: string;
+}) {
+  const faseNombreSel = fases.find((f) => f.id === fFase)?.nombre ?? "";
+  const rolNombreSel = roles.find((r) => r.id === fRol)?.nombre ?? "";
+
+  const instancias = useMemo(() => {
+    if (!fFase) return [] as Instancia[];
+    type Grupo = {
+      fecha: string;
+      ordenNumero: string;
+      faseNombre: string;
+      esEquipo: boolean;
+      quienId: string;
+      quienNombre: string;
+      miembros: string[];
+      roles: Set<string>;
+      avanceMax: number;
+      unidadesMax: number;
+      minHora: string;
+      maxHora: string;
+    };
+    const grupos = new Map<string, Grupo>();
+    filas.forEach((f) => {
+      if (f.interrumpido) return;
+      if (f.faseId !== fFase) return;
+      if (fRol && f.rolId !== fRol) return;
+      if (fOrden && f.ordenId !== fOrden) return;
+      const quienId = f.equipoId ?? f.personaId;
+      const clave = `${f.fecha}|${f.ordenId}|${f.faseId}|${quienId}`;
+      const g =
+        grupos.get(clave) ??
+        ({
+          fecha: f.fecha,
+          ordenNumero: f.ordenNumero,
+          faseNombre: f.faseNombre,
+          esEquipo: !!f.equipoId,
+          quienId,
+          quienNombre: f.equipoId ? f.equipoNombre ?? "Equipo" : f.personaNombre,
+          miembros: f.equipoId ? f.equipoMiembros : [f.personaNombre],
+          roles: new Set<string>(),
+          avanceMax: 0,
+          unidadesMax: 0,
+          minHora: f.horaISO,
+          maxHora: f.horaISO,
+        } as Grupo);
+      g.avanceMax = Math.max(g.avanceMax, f.avance || 0);
+      g.unidadesMax = Math.max(g.unidadesMax, f.unidades ?? 0);
+      if (f.horaISO && f.horaISO < g.minHora) g.minHora = f.horaISO;
+      if (f.horaISO && f.horaISO > g.maxHora) g.maxHora = f.horaISO;
+      if (f.rolNombre) g.roles.add(f.rolNombre);
+      grupos.set(clave, g);
+    });
+    return Array.from(grupos.entries())
+      .map(([clave, g]) => {
+        const minutos = g.minHora !== g.maxHora ? Math.round((new Date(g.maxHora).getTime() - new Date(g.minHora).getTime()) / 60000) : 0;
+        const ritmo = minutos > 0 && g.unidadesMax > 0 ? Math.round((g.unidadesMax / minutos) * 100) / 100 : null;
+        return {
+          key: clave,
+          fecha: g.fecha,
+          ordenNumero: g.ordenNumero,
+          faseNombre: g.faseNombre,
+          esEquipo: g.esEquipo,
+          quienId: g.quienId,
+          quienNombre: g.quienNombre,
+          miembros: g.miembros,
+          rolesLabel: Array.from(g.roles).join(" + "),
+          avance: g.avanceMax,
+          unidades: g.unidadesMax,
+          minutos,
+          ritmo,
+        };
+      })
+      .sort((a, b) => (b.ritmo ?? -1) - (a.ritmo ?? -1));
+  }, [filas, fFase, fRol, fOrden]);
+
+  const rankingIndividual = useMemo(() => construirRanking(instancias, false), [instancias]);
+  const rankingEquipos = useMemo(() => construirRanking(instancias, true), [instancias]);
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="card p-3">
+        <p className="text-[11.5px] text-text-faint">
+          Compara el <b>mismo proceso</b> (fase y, si quieres, rol) entre días y entre personas/equipos distintos: cuánto avanzó, en
+          cuántos minutos y a qué ritmo (unidades por minuto) — para ver con quién o con qué combinación de equipo se avanza más rápido.
+          Elige la <b>Fase</b> (y opcionalmente el <b>Rol</b>) en los filtros de arriba.
+        </p>
+      </div>
+
+      {!fFase ? (
+        <p className="text-[12.5px] text-text-faint text-center py-8">
+          Elige una fase arriba (ej. &quot;Etiquetado&quot;) — y opcionalmente un rol (ej. &quot;Termofijador&quot;) — para ver la
+          comparativa de ese proceso.
+        </p>
+      ) : instancias.length === 0 ? (
+        <p className="text-[12.5px] text-text-faint text-center py-8">
+          No hay observaciones de {faseNombreSel}
+          {rolNombreSel && ` · ${rolNombreSel}`} sin interrupción en el rango de fechas elegido.
+        </p>
+      ) : (
+        <>
+          <div className="card p-4" style={{ border: "1px solid var(--accent-2)" }}>
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-text-faint mb-2">
+              Sugerencia del sistema — {faseNombreSel}
+              {rolNombreSel && ` · ${rolNombreSel}`}
+            </p>
+            <p className="text-[13px] leading-relaxed">
+              {rankingEquipos[0]?.ritmoPromedio !== null && rankingEquipos[0] ? (
+                <>
+                  El <b>equipo más rápido</b> registrado es <b>👥 {rankingEquipos[0].miembros.join(" + ")}</b>, con un ritmo promedio de{" "}
+                  <b>{rankingEquipos[0].ritmoPromedio} u/min</b> (basado en {rankingEquipos[0].dias} día
+                  {rankingEquipos[0].dias === 1 ? "" : "s"}).{" "}
+                </>
+              ) : (
+                "Todavía no hay suficientes rondas con equipos y unidades registradas para sugerir la mejor combinación. "
+              )}
+              {rankingIndividual[0]?.ritmoPromedio !== null && rankingIndividual[0] ? (
+                <>
+                  La <b>persona individual más rápida</b> es <b>{rankingIndividual[0].nombre}</b>, con{" "}
+                  <b>{rankingIndividual[0].ritmoPromedio} u/min</b>.
+                </>
+              ) : (
+                "Todavía no hay suficientes observaciones individuales con unidades para un top individual."
+              )}
+            </p>
+            <p className="text-[10.5px] text-text-faint mt-2">
+              El ritmo se calcula con el campo &quot;Unidades&quot; (opcional) de las rondas — si no se registran unidades, esa instancia
+              no entra en el promedio de ritmo, aunque sí cuenta para las cajas totales.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap gap-3">
+            <TablaRanking titulo="🏆 Top individual" filas={rankingIndividual} vacio="Nadie trabajó este proceso de forma individual todavía." />
+            <TablaRanking titulo="🏆 Top equipos (por composición)" filas={rankingEquipos} vacio="Ningún equipo trabajó este proceso todavía." />
+          </div>
+
+          <div className="card overflow-hidden">
+            <p className="text-[12px] font-semibold uppercase tracking-wide text-text-faint px-4 pt-3 pb-2">
+              Comparativa por día — de más rápido a más lento
+            </p>
+            <div className="grid grid-cols-[70px_90px_1fr_130px_55px_70px_60px_70px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wide text-text-faint border-b border-border border-t">
+              <span>Fecha</span>
+              <span>Orden</span>
+              <span>Quién</span>
+              <span>Rol(es)</span>
+              <span className="text-right">Cajas</span>
+              <span className="text-right">Unidades</span>
+              <span className="text-right">Min.</span>
+              <span className="text-right">Ritmo</span>
+            </div>
+            {instancias.map((i) => (
+              <div
+                key={i.key}
+                className="grid grid-cols-[70px_90px_1fr_130px_55px_70px_60px_70px] gap-2 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
+              >
+                <span className="text-text-dim">{i.fecha.slice(5)}</span>
+                <span className="font-medium truncate">{i.ordenNumero}</span>
+                <span className="truncate" title={i.miembros.join(", ")}>
+                  {i.esEquipo ? `👥 ${i.quienNombre}` : i.quienNombre}
+                </span>
+                <span className="text-text-dim truncate" title={i.rolesLabel}>
+                  {i.rolesLabel || "—"}
+                </span>
+                <span className="text-right tabular-nums">{i.avance || "—"}</span>
+                <span className="text-right tabular-nums">{i.unidades || "—"}</span>
+                <span className="text-right text-text-dim tabular-nums">{i.minutos || "—"}</span>
+                <span className="text-right font-semibold tabular-nums" style={{ color: i.ritmo !== null ? "var(--accent-2)" : "var(--text-faint)" }}>
+                  {i.ritmo !== null ? i.ritmo : "—"}
                 </span>
               </div>
             ))}
