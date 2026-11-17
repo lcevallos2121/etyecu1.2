@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase-browser";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 
@@ -99,6 +99,100 @@ function rangoDeDias(desde: string, hasta: string) {
 
 const INPUT = { background: "var(--card-2)", border: "1px solid var(--border-2)", color: "var(--text)", fontSize: 16 };
 const PAGINA = 15;
+
+// Reemplaza el <select> nativo (cuyo panel de opciones el navegador pinta
+// feo y sin límite de alto) por un desplegable propio, angosto, con scroll
+// interno y resaltado de la opción elegida, consistente con el resto del
+// tema oscuro.
+function SelectBonito({
+  value,
+  onChange,
+  options,
+  maxWidth,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: { value: string; label: string }[];
+  maxWidth?: number;
+}) {
+  const [abierto, setAbierto] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function alHacerClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setAbierto(false);
+    }
+    document.addEventListener("mousedown", alHacerClick);
+    return () => document.removeEventListener("mousedown", alHacerClick);
+  }, []);
+  const actual = options.find((o) => o.value === value)?.label ?? options[0]?.label ?? "";
+
+  return (
+    <div ref={ref} className="relative" style={{ width: maxWidth, maxWidth }}>
+      <button
+        type="button"
+        onClick={() => setAbierto((v) => !v)}
+        className="w-full flex items-center justify-between gap-1.5 rounded-lg px-2.5 py-1.5 text-left truncate"
+        style={{ ...INPUT, fontSize: 13 }}
+      >
+        <span className="truncate">{actual}</span>
+        <span className="text-text-faint shrink-0" style={{ fontSize: 9 }}>
+          {abierto ? "▲" : "▼"}
+        </span>
+      </button>
+      {abierto && (
+        <div
+          className="absolute z-30 mt-1 rounded-lg overflow-hidden shadow-lg"
+          style={{ background: "var(--card)", border: "1px solid var(--border-2)", minWidth: "100%", width: "max-content", maxWidth: 260 }}
+        >
+          <div className="max-h-56 overflow-y-auto py-1">
+            {options.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => {
+                  onChange(o.value);
+                  setAbierto(false);
+                }}
+                className="w-full text-left px-3 py-1.5 text-[12.5px] truncate"
+                style={{
+                  background: value === o.value ? "color-mix(in srgb, var(--accent-2) 16%, transparent)" : "transparent",
+                  color: value === o.value ? "var(--accent-2)" : "var(--text)",
+                }}
+              >
+                {o.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Paginador({ pagina, totalPaginas, onChange }: { pagina: number; totalPaginas: number; onChange: (p: number) => void }) {
+  if (totalPaginas <= 1) return null;
+  return (
+    <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-t border-border">
+      <button
+        disabled={pagina <= 1}
+        onClick={() => onChange(pagina - 1)}
+        className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg disabled:opacity-40"
+      >
+        ‹ Anterior
+      </button>
+      <span className="text-[11px] text-text-dim">
+        Página {pagina} de {totalPaginas}
+      </span>
+      <button
+        disabled={pagina >= totalPaginas}
+        onClick={() => onChange(pagina + 1)}
+        className="btn-secondary text-[11.5px] font-semibold px-3 py-1.5 rounded-lg disabled:opacity-40"
+      >
+        Siguiente ›
+      </button>
+    </div>
+  );
+}
 
 export default function TrazabilidadPiso() {
   const supabase = createClient();
@@ -369,74 +463,64 @@ export default function TrazabilidadPiso() {
           </div>
           <div>
             <label className="text-[10.5px] text-text-faint block mb-1">Orden</label>
-            <select value={fOrden} onChange={(e) => setFOrden(e.target.value)} className="rounded-lg px-2.5 py-1.5" style={{ ...INPUT, maxWidth: 190 }}>
-              <option value="">Todas</option>
-              {ordenesRef.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.numero_etq}
-                </option>
-              ))}
-            </select>
+            <SelectBonito
+              value={fOrden}
+              onChange={setFOrden}
+              options={[{ value: "", label: "Todas" }, ...ordenesRef.map((o) => ({ value: o.id, label: o.numero_etq }))]}
+              maxWidth={190}
+            />
           </div>
           <div>
             <label className="text-[10.5px] text-text-faint block mb-1">Persona</label>
-            <select value={fPersona} onChange={(e) => setFPersona(e.target.value)} className="rounded-lg px-2.5 py-1.5" style={{ ...INPUT, maxWidth: 160 }}>
-              <option value="">Todas</option>
-              {personas.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.nombre}
-                </option>
-              ))}
-            </select>
+            <SelectBonito
+              value={fPersona}
+              onChange={setFPersona}
+              options={[{ value: "", label: "Todas" }, ...personas.map((p) => ({ value: p.id, label: p.nombre }))]}
+              maxWidth={160}
+            />
           </div>
           <div>
             <label className="text-[10.5px] text-text-faint block mb-1">Equipo</label>
-            <select value={fEquipo} onChange={(e) => setFEquipo(e.target.value)} className="rounded-lg px-2.5 py-1.5" style={{ ...INPUT, maxWidth: 160 }}>
-              <option value="">Todos</option>
-              {equipos.map((e) => (
-                <option key={e.id} value={e.id}>
-                  {e.nombre}
-                </option>
-              ))}
-            </select>
+            <SelectBonito
+              value={fEquipo}
+              onChange={setFEquipo}
+              options={[{ value: "", label: "Todos" }, ...equipos.map((e) => ({ value: e.id, label: e.nombre }))]}
+              maxWidth={160}
+            />
           </div>
           <div>
             <label className="text-[10.5px] text-text-faint block mb-1">Fase</label>
-            <select
+            <SelectBonito
               value={fFase}
-              onChange={(e) => {
-                setFFase(e.target.value);
+              onChange={(v) => {
+                setFFase(v);
                 setFRol("");
               }}
-              className="rounded-lg px-2.5 py-1.5"
-              style={{ ...INPUT, maxWidth: 150 }}
-            >
-              <option value="">Todas</option>
-              {fases.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.nombre}
-                </option>
-              ))}
-            </select>
+              options={[{ value: "", label: "Todas" }, ...fases.map((f) => ({ value: f.id, label: f.nombre }))]}
+              maxWidth={150}
+            />
           </div>
           <div>
             <label className="text-[10.5px] text-text-faint block mb-1">Rol</label>
-            <select value={fRol} onChange={(e) => setFRol(e.target.value)} className="rounded-lg px-2.5 py-1.5" style={{ ...INPUT, maxWidth: 170 }}>
-              <option value="">Todos</option>
-              {rolesDeFaseFiltro.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.nombre}
-                </option>
-              ))}
-            </select>
+            <SelectBonito
+              value={fRol}
+              onChange={setFRol}
+              options={[{ value: "", label: "Todos" }, ...rolesDeFaseFiltro.map((r) => ({ value: r.id, label: r.nombre }))]}
+              maxWidth={170}
+            />
           </div>
           <div>
             <label className="text-[10.5px] text-text-faint block mb-1">Estado</label>
-            <select value={fEstado} onChange={(e) => setFEstado(e.target.value as typeof fEstado)} className="rounded-lg px-2.5 py-1.5" style={{ ...INPUT, maxWidth: 150 }}>
-              <option value="todas">Todas</option>
-              <option value="trabajando">Trabajando</option>
-              <option value="interrumpido">Interrumpido</option>
-            </select>
+            <SelectBonito
+              value={fEstado}
+              onChange={(v) => setFEstado(v as "todas" | "trabajando" | "interrumpido")}
+              options={[
+                { value: "todas", label: "Todas" },
+                { value: "trabajando", label: "Trabajando" },
+                { value: "interrumpido", label: "Interrumpido" },
+              ]}
+              maxWidth={150}
+            />
           </div>
         </div>
       </div>
@@ -906,6 +990,9 @@ function EstadisticasFluctuacion({
 // más un ranking individual, un ranking de equipos (por composición exacta
 // de integrantes) y una sugerencia automática de con quién/qué equipo se
 // avanza más rápido, según el historial registrado.
+type ColCampo = "fecha" | "ordenNumero" | "quienNombre" | "rolesLabel";
+type OrdenCampo = ColCampo | "avance" | "unidades" | "minutos" | "ritmo";
+
 type Instancia = {
   key: string;
   fecha: string;
@@ -969,10 +1056,22 @@ function construirRanking(instancias: Instancia[], soloEquipo: boolean): Ranking
     .sort((a, b) => (b.ritmoPromedio ?? -1) - (a.ritmoPromedio ?? -1));
 }
 
+const PAGINA_RANKING = 6;
+
 function TablaRanking({ titulo, filas, vacio }: { titulo: string; filas: RankingFila[]; vacio: string }) {
+  const [pagina, setPagina] = useState(1);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- vuelve a página 1 cuando cambia el ranking (nuevo filtro de fase/rol/orden), no un ciclo de sincronización
+    setPagina(1);
+  }, [filas]);
+  const totalPaginas = Math.max(1, Math.ceil(filas.length / PAGINA_RANKING));
+  const visibles = filas.slice((pagina - 1) * PAGINA_RANKING, pagina * PAGINA_RANKING);
+
   return (
     <div className="card overflow-hidden flex-1 min-w-[280px]">
-      <p className="text-[12px] font-semibold uppercase tracking-wide text-text-faint px-4 pt-3 pb-2">{titulo}</p>
+      <p className="text-[12px] font-semibold uppercase tracking-wide text-text-faint px-4 pt-3 pb-2">
+        {titulo} {filas.length > 0 && <span className="text-text-faint font-normal">({filas.length})</span>}
+      </p>
       {filas.length === 0 ? (
         <p className="text-[11.5px] text-text-faint px-4 pb-4">{vacio}</p>
       ) : (
@@ -983,23 +1082,116 @@ function TablaRanking({ titulo, filas, vacio }: { titulo: string; filas: Ranking
             <span className="text-right">Días</span>
             <span className="text-right">Unidades</span>
           </div>
-          {filas.map((f, i) => (
-            <div
-              key={f.id}
-              className="grid grid-cols-[1fr_70px_60px_70px] gap-2 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
-            >
-              <span className="truncate font-medium" title={f.miembros.join(", ")}>
-                {i === 0 && f.ritmoPromedio !== null && "🏆 "}
-                {f.nombre}
-              </span>
-              <span className="text-right tabular-nums" style={{ color: i === 0 && f.ritmoPromedio !== null ? "var(--green)" : "var(--text)" }}>
-                {f.ritmoPromedio !== null ? `${f.ritmoPromedio} u/min` : "—"}
-              </span>
-              <span className="text-right text-text-dim tabular-nums">{f.dias}</span>
-              <span className="text-right text-text-dim tabular-nums">{f.unidadesTotal || "—"}</span>
-            </div>
-          ))}
+          {visibles.map((f, i) => {
+            const puestoGlobal = (pagina - 1) * PAGINA_RANKING + i;
+            return (
+              <div
+                key={f.id}
+                className="grid grid-cols-[1fr_70px_60px_70px] gap-2 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
+              >
+                <span className="truncate font-medium" title={f.miembros.join(", ")}>
+                  {puestoGlobal === 0 && f.ritmoPromedio !== null && "🏆 "}
+                  {f.nombre}
+                </span>
+                <span
+                  className="text-right tabular-nums"
+                  style={{ color: puestoGlobal === 0 && f.ritmoPromedio !== null ? "var(--green)" : "var(--text)" }}
+                >
+                  {f.ritmoPromedio !== null ? `${f.ritmoPromedio} u/min` : "—"}
+                </span>
+                <span className="text-right text-text-dim tabular-nums">{f.dias}</span>
+                <span className="text-right text-text-dim tabular-nums">{f.unidadesTotal || "—"}</span>
+              </div>
+            );
+          })}
+          <Paginador pagina={pagina} totalPaginas={totalPaginas} onChange={setPagina} />
         </>
+      )}
+    </div>
+  );
+}
+
+// Cabecera de columna "a la Excel": click en el texto ordena asc/desc por
+// esa columna; el botón ⏷ (solo en columnas con `filtro`) abre un panel con
+// checkboxes de los valores únicos presentes, para mostrar solo lo que se
+// quiere ver.
+function Encabezado({
+  label,
+  campo,
+  ordenCol,
+  setOrdenCol,
+  align = "left",
+  filtro,
+}: {
+  label: string;
+  campo: OrdenCampo;
+  ordenCol: { campo: OrdenCampo; dir: "asc" | "desc" };
+  setOrdenCol: (v: { campo: OrdenCampo; dir: "asc" | "desc" }) => void;
+  align?: "left" | "right";
+  filtro?: { valores: string[]; seleccionado: Set<string> | null; onChange: (s: Set<string> | null) => void; etiqueta?: (v: string) => string };
+}) {
+  const activo = ordenCol.campo === campo;
+  const [panelAbierto, setPanelAbierto] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function alHacerClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setPanelAbierto(false);
+    }
+    document.addEventListener("mousedown", alHacerClick);
+    return () => document.removeEventListener("mousedown", alHacerClick);
+  }, []);
+  const filtroActivo = !!filtro && filtro.seleccionado !== null && filtro.seleccionado.size < filtro.valores.length;
+
+  return (
+    <div ref={ref} className={`relative flex items-center gap-1 ${align === "right" ? "justify-end" : ""}`}>
+      <button
+        type="button"
+        onClick={() => setOrdenCol({ campo, dir: activo && ordenCol.dir === "desc" ? "asc" : "desc" })}
+        className="flex items-center gap-0.5 shrink-0"
+        style={{ color: activo ? "var(--accent-2)" : "var(--text-faint)" }}
+      >
+        {label}
+        {activo && <span style={{ fontSize: 8 }}>{ordenCol.dir === "desc" ? "▼" : "▲"}</span>}
+      </button>
+      {filtro && (
+        <button type="button" onClick={() => setPanelAbierto((v) => !v)} style={{ color: filtroActivo ? "var(--accent-2)" : "var(--text-faint)" }}>
+          <span style={{ fontSize: 8 }}>⏷</span>
+        </button>
+      )}
+      {filtro && panelAbierto && (
+        <div
+          className="absolute z-30 top-full mt-1 rounded-lg overflow-hidden shadow-lg normal-case"
+          style={{ background: "var(--card)", border: "1px solid var(--border-2)", width: 190, ...(align === "right" ? { right: 0 } : { left: 0 }) }}
+        >
+          <div className="flex justify-between px-2 py-1.5 border-b border-border">
+            <button type="button" className="text-[10px] font-semibold" style={{ color: "var(--accent-2)" }} onClick={() => filtro.onChange(null)}>
+              Todos
+            </button>
+            <button type="button" className="text-[10px] font-semibold text-text-faint" onClick={() => filtro.onChange(new Set())}>
+              Ninguno
+            </button>
+          </div>
+          <div className="max-h-48 overflow-y-auto py-1">
+            {filtro.valores.map((v) => {
+              const checked = filtro.seleccionado === null || filtro.seleccionado.has(v);
+              return (
+                <label key={v} className="flex items-center gap-2 px-2.5 py-1.5 text-[11px] cursor-pointer hover:bg-white/[0.04]">
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => {
+                      const base = filtro.seleccionado === null ? new Set(filtro.valores) : new Set(filtro.seleccionado);
+                      if (checked) base.delete(v);
+                      else base.add(v);
+                      filtro.onChange(base.size === filtro.valores.length ? null : base);
+                    }}
+                  />
+                  <span className="truncate">{filtro.etiqueta ? filtro.etiqueta(v) : v}</span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1096,6 +1288,61 @@ function ComparativaEquipos({
   const rankingIndividual = useMemo(() => construirRanking(instancias, false), [instancias]);
   const rankingEquipos = useMemo(() => construirRanking(instancias, true), [instancias]);
 
+  // Filtros "a la Excel" por columna (checkboxes de valores únicos) y
+  // orden/paginación de la tabla "Comparativa por día" — para que no se
+  // vaya de largo cuando el período tiene muchas instancias.
+  const PAGINA_COMPARATIVA = 15;
+  const [colFiltros, setColFiltros] = useState<Record<ColCampo, Set<string> | null>>({
+    fecha: null,
+    ordenNumero: null,
+    quienNombre: null,
+    rolesLabel: null,
+  });
+  const [ordenCol, setOrdenCol] = useState<{ campo: OrdenCampo; dir: "asc" | "desc" }>({ campo: "ritmo", dir: "desc" });
+  const [paginaComparativa, setPaginaComparativa] = useState(1);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- limpia filtros de columna al cambiar de proceso (fase/rol/orden), no un ciclo de sincronización
+    setColFiltros({ fecha: null, ordenNumero: null, quienNombre: null, rolesLabel: null });
+    setOrdenCol({ campo: "ritmo", dir: "desc" });
+    setPaginaComparativa(1);
+  }, [fFase, fRol, fOrden]);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- vuelve a página 1 cuando cambia un filtro de columna o el orden, no un ciclo de sincronización
+    setPaginaComparativa(1);
+  }, [colFiltros, ordenCol]);
+
+  const valoresFecha = useMemo(() => Array.from(new Set(instancias.map((i) => i.fecha))).sort(), [instancias]);
+  const valoresOrden = useMemo(() => Array.from(new Set(instancias.map((i) => i.ordenNumero))).sort(), [instancias]);
+  const valoresQuien = useMemo(() => Array.from(new Set(instancias.map((i) => i.quienNombre))).sort(), [instancias]);
+  const valoresRol = useMemo(() => Array.from(new Set(instancias.map((i) => i.rolesLabel))).sort(), [instancias]);
+
+  const instanciasFiltradas = useMemo(() => {
+    let out = instancias;
+    if (colFiltros.fecha) out = out.filter((i) => colFiltros.fecha!.has(i.fecha));
+    if (colFiltros.ordenNumero) out = out.filter((i) => colFiltros.ordenNumero!.has(i.ordenNumero));
+    if (colFiltros.quienNombre) out = out.filter((i) => colFiltros.quienNombre!.has(i.quienNombre));
+    if (colFiltros.rolesLabel) out = out.filter((i) => colFiltros.rolesLabel!.has(i.rolesLabel));
+    const dir = ordenCol.dir === "asc" ? 1 : -1;
+    const campo = ordenCol.campo;
+    return [...out].sort((a, b) => {
+      const va = a[campo];
+      const vb = b[campo];
+      if (va === null && vb === null) return 0;
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+      return String(va).localeCompare(String(vb)) * dir;
+    });
+  }, [instancias, colFiltros, ordenCol]);
+
+  const totalPaginasComparativa = Math.max(1, Math.ceil(instanciasFiltradas.length / PAGINA_COMPARATIVA));
+  const visiblesComparativa = instanciasFiltradas.slice(
+    (paginaComparativa - 1) * PAGINA_COMPARATIVA,
+    paginaComparativa * PAGINA_COMPARATIVA
+  );
+
   return (
     <div className="flex flex-col gap-4">
       <div className="card p-3">
@@ -1154,40 +1401,82 @@ function ComparativaEquipos({
           </div>
 
           <div className="card overflow-hidden">
-            <p className="text-[12px] font-semibold uppercase tracking-wide text-text-faint px-4 pt-3 pb-2">
-              Comparativa por día — de más rápido a más lento
-            </p>
-            <div className="grid grid-cols-[70px_90px_1fr_130px_55px_70px_60px_70px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wide text-text-faint border-b border-border border-t">
-              <span>Fecha</span>
-              <span>Orden</span>
-              <span>Quién</span>
-              <span>Rol(es)</span>
-              <span className="text-right">Cajas</span>
-              <span className="text-right">Unidades</span>
-              <span className="text-right">Min.</span>
-              <span className="text-right">Ritmo</span>
+            <div className="flex items-center justify-between flex-wrap gap-2 px-4 pt-3 pb-2">
+              <p className="text-[12px] font-semibold uppercase tracking-wide text-text-faint">
+                Comparativa por día <span className="text-text-faint font-normal">({instanciasFiltradas.length})</span>
+              </p>
+              <p className="text-[10.5px] text-text-faint">Click en un título para ordenar · ⏷ para filtrar esa columna</p>
             </div>
-            {instancias.map((i) => (
-              <div
-                key={i.key}
-                className="grid grid-cols-[70px_90px_1fr_130px_55px_70px_60px_70px] gap-2 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
-              >
-                <span className="text-text-dim">{i.fecha.slice(5)}</span>
-                <span className="font-medium truncate">{i.ordenNumero}</span>
-                <span className="truncate" title={i.miembros.join(", ")}>
-                  {i.esEquipo ? `👥 ${i.quienNombre}` : i.quienNombre}
-                </span>
-                <span className="text-text-dim truncate" title={i.rolesLabel}>
-                  {i.rolesLabel || "—"}
-                </span>
-                <span className="text-right tabular-nums">{i.avance || "—"}</span>
-                <span className="text-right tabular-nums">{i.unidades || "—"}</span>
-                <span className="text-right text-text-dim tabular-nums">{i.minutos || "—"}</span>
-                <span className="text-right font-semibold tabular-nums" style={{ color: i.ritmo !== null ? "var(--accent-2)" : "var(--text-faint)" }}>
-                  {i.ritmo !== null ? i.ritmo : "—"}
-                </span>
-              </div>
-            ))}
+            <div className="grid grid-cols-[70px_90px_1fr_130px_55px_70px_60px_70px] gap-2 px-4 py-2 text-[10px] uppercase tracking-wide text-text-faint border-b border-border border-t">
+              <Encabezado
+                label="Fecha"
+                campo="fecha"
+                ordenCol={ordenCol}
+                setOrdenCol={setOrdenCol}
+                filtro={{
+                  valores: valoresFecha,
+                  seleccionado: colFiltros.fecha,
+                  onChange: (s) => setColFiltros((c) => ({ ...c, fecha: s })),
+                  etiqueta: (v) => v.slice(5),
+                }}
+              />
+              <Encabezado
+                label="Orden"
+                campo="ordenNumero"
+                ordenCol={ordenCol}
+                setOrdenCol={setOrdenCol}
+                filtro={{ valores: valoresOrden, seleccionado: colFiltros.ordenNumero, onChange: (s) => setColFiltros((c) => ({ ...c, ordenNumero: s })) }}
+              />
+              <Encabezado
+                label="Quién"
+                campo="quienNombre"
+                ordenCol={ordenCol}
+                setOrdenCol={setOrdenCol}
+                filtro={{ valores: valoresQuien, seleccionado: colFiltros.quienNombre, onChange: (s) => setColFiltros((c) => ({ ...c, quienNombre: s })) }}
+              />
+              <Encabezado
+                label="Rol(es)"
+                campo="rolesLabel"
+                ordenCol={ordenCol}
+                setOrdenCol={setOrdenCol}
+                filtro={{
+                  valores: valoresRol,
+                  seleccionado: colFiltros.rolesLabel,
+                  onChange: (s) => setColFiltros((c) => ({ ...c, rolesLabel: s })),
+                  etiqueta: (v) => v || "(Sin rol)",
+                }}
+              />
+              <Encabezado label="Cajas" campo="avance" ordenCol={ordenCol} setOrdenCol={setOrdenCol} align="right" />
+              <Encabezado label="Unidades" campo="unidades" ordenCol={ordenCol} setOrdenCol={setOrdenCol} align="right" />
+              <Encabezado label="Min." campo="minutos" ordenCol={ordenCol} setOrdenCol={setOrdenCol} align="right" />
+              <Encabezado label="Ritmo" campo="ritmo" ordenCol={ordenCol} setOrdenCol={setOrdenCol} align="right" />
+            </div>
+            {visiblesComparativa.length === 0 ? (
+              <p className="text-[12px] text-text-faint text-center py-6">Ningún resultado con estos filtros de columna.</p>
+            ) : (
+              visiblesComparativa.map((i) => (
+                <div
+                  key={i.key}
+                  className="grid grid-cols-[70px_90px_1fr_130px_55px_70px_60px_70px] gap-2 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
+                >
+                  <span className="text-text-dim">{i.fecha.slice(5)}</span>
+                  <span className="font-medium truncate">{i.ordenNumero}</span>
+                  <span className="truncate" title={i.miembros.join(", ")}>
+                    {i.esEquipo ? `👥 ${i.quienNombre}` : i.quienNombre}
+                  </span>
+                  <span className="text-text-dim truncate" title={i.rolesLabel}>
+                    {i.rolesLabel || "—"}
+                  </span>
+                  <span className="text-right tabular-nums">{i.avance || "—"}</span>
+                  <span className="text-right tabular-nums">{i.unidades || "—"}</span>
+                  <span className="text-right text-text-dim tabular-nums">{i.minutos || "—"}</span>
+                  <span className="text-right font-semibold tabular-nums" style={{ color: i.ritmo !== null ? "var(--accent-2)" : "var(--text-faint)" }}>
+                    {i.ritmo !== null ? i.ritmo : "—"}
+                  </span>
+                </div>
+              ))
+            )}
+            <Paginador pagina={paginaComparativa} totalPaginas={totalPaginasComparativa} onChange={setPaginaComparativa} />
           </div>
         </>
       )}
