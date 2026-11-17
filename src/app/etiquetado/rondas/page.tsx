@@ -39,6 +39,7 @@ type Draft = {
   interrumpido: boolean;
   motivo: string | null;
   avance: number;
+  unidades: number | null;
   ordenId: string;
   equipoId?: string | null;
 };
@@ -281,6 +282,7 @@ export default function RondasDePisoPage() {
           interrumpido: d.interrumpido,
           motivo: d.motivo,
           avance: d.avance || 0,
+          unidades: d.interrumpido ? null : d.unidades,
         };
       });
       const { error: errObs } = await supabase.from("rondas_observaciones").insert(filas);
@@ -813,7 +815,7 @@ function PersonaChip({
   onConfirmar: (d: Draft) => void;
   onCancelar: () => void;
 }) {
-  const vacio: Draft = { faseId: null, rolId: null, interrumpido: false, motivo: null, avance: 0, ordenId: orden.id };
+  const vacio: Draft = { faseId: null, rolId: null, interrumpido: false, motivo: null, avance: 0, unidades: null, ordenId: orden.id };
   const [draft, setDraft] = useState<Draft>(marca ?? vacio);
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- reinicia el borrador al abrir/cambiar de persona, no un ciclo de sincronización
@@ -945,7 +947,7 @@ function PersonaChip({
           )}
 
           <div className="flex items-center justify-between gap-2.5">
-            <span className="text-[12px] text-text-dim">Cajas/lotes avanzados (opcional)</span>
+            <span className="text-[12px] text-text-dim">Cajas llevadas hoy (total, opcional)</span>
             <div className="flex items-center rounded-lg overflow-hidden border border-border-2">
               <button onClick={() => setDraft((d) => ({ ...d, avance: Math.max(0, d.avance - 1) }))} className="w-8 h-8 text-[16px] font-bold" style={{ background: "var(--card)" }}>
                 –
@@ -956,6 +958,23 @@ function PersonaChip({
               </button>
             </div>
           </div>
+          <div className="flex items-center justify-between gap-2.5">
+            <span className="text-[12px] text-text-dim">Unidades llevadas hoy (total, opcional)</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={0}
+              value={draft.unidades ?? ""}
+              onChange={(e) => setDraft((d) => ({ ...d, unidades: e.target.value === "" ? null : Math.max(0, Number(e.target.value)) }))}
+              placeholder="ej. 1000"
+              className="w-24 rounded-lg px-2.5 py-1.5 text-right outline-none"
+              style={INPUT_STYLE}
+            />
+          </div>
+          <p className="text-[10px] text-text-faint -mt-1">
+            Pon lo que te digan tal cual en cada vuelta (ej. 10 cajas a las 10am, 20 a las 2pm) — el sistema calcula solo el avance real
+            del día, no los suma.
+          </p>
 
           <div className="flex gap-2 justify-end">
             <button onClick={onCancelar} className="text-[12px] font-bold px-3.5 py-2 rounded-lg text-text-dim">
@@ -1009,6 +1028,7 @@ function EquipoPanel({
   const [interrumpido, setInterrumpido] = useState(false);
   const [motivo, setMotivo] = useState<string | null>(null);
   const [avance, setAvance] = useState(0);
+  const [unidades, setUnidades] = useState<number | null>(null);
   const [nombreEquipo, setNombreEquipo] = useState(nombreSugerido ?? "");
   const [guardando, setGuardando] = useState(false);
 
@@ -1117,7 +1137,7 @@ function EquipoPanel({
       )}
 
       <div className="flex items-center justify-between gap-2.5">
-        <span className="text-[12px] text-text-dim">Cajas/lotes avanzados por el equipo (opcional)</span>
+        <span className="text-[12px] text-text-dim">Cajas llevadas hoy por el equipo (total, opcional)</span>
         <div className="flex items-center rounded-lg overflow-hidden border border-border-2">
           <button onClick={() => setAvance((a) => Math.max(0, a - 1))} className="w-8 h-8 text-[16px] font-bold" style={{ background: "var(--card)" }}>
             –
@@ -1128,6 +1148,22 @@ function EquipoPanel({
           </button>
         </div>
       </div>
+      <div className="flex items-center justify-between gap-2.5">
+        <span className="text-[12px] text-text-dim">Unidades llevadas hoy por el equipo (total, opcional)</span>
+        <input
+          type="number"
+          inputMode="numeric"
+          min={0}
+          value={unidades ?? ""}
+          onChange={(e) => setUnidades(e.target.value === "" ? null : Math.max(0, Number(e.target.value)))}
+          placeholder="ej. 1000"
+          className="w-24 rounded-lg px-2.5 py-1.5 text-right outline-none"
+          style={INPUT_STYLE}
+        />
+      </div>
+      <p className="text-[10px] text-text-faint -mt-1">
+        Pon lo que te digan tal cual en cada vuelta — el sistema calcula solo el avance real del día, no los suma.
+      </p>
 
       <div className="flex gap-2 justify-end">
         <button onClick={onCancelar} className="text-[12px] font-bold px-3.5 py-2 rounded-lg text-text-dim">
@@ -1139,7 +1175,7 @@ function EquipoPanel({
             if (interrumpido && !motivo) return;
             if (faltaRol) return;
             setGuardando(true);
-            await onConfirmar({ faseId, rolId, interrumpido, motivo, avance }, nombreEquipo.trim() || nombrePorDefecto);
+            await onConfirmar({ faseId, rolId, interrumpido, motivo, avance, unidades }, nombreEquipo.trim() || nombrePorDefecto);
             setGuardando(false);
           }}
           className="btn-primary text-[12px] font-bold px-3.5 py-2 rounded-lg disabled:opacity-40"

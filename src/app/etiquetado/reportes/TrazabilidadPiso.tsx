@@ -22,6 +22,7 @@ type FilaDetalle = {
   rondaId: string;
   fecha: string;
   hora: string;
+  horaISO: string;
   ordenId: string;
   ordenNumero: string;
   ordenCliente: string;
@@ -35,6 +36,7 @@ type FilaDetalle = {
   interrumpido: boolean;
   motivo: string | null;
   avance: number;
+  unidades: number | null;
   equipoId: string | null;
   equipoNombre: string | null;
   equipoMiembros: string[];
@@ -153,11 +155,12 @@ export default function TrazabilidadPiso() {
         interrumpido: boolean;
         motivo: string | null;
         avance: number;
+        unidades: number | null;
       }[] = [];
       if (rondaIds.length) {
         const { data } = await supabase
           .from("rondas_observaciones")
-          .select("id, ronda_id, persona_id, orden_id, fase_id, rol_id, equipo_id, interrumpido, motivo, avance")
+          .select("id, ronda_id, persona_id, orden_id, fase_id, rol_id, equipo_id, interrumpido, motivo, avance, unidades")
           .in("ronda_id", rondaIds);
         obsData = data ?? [];
       }
@@ -187,6 +190,7 @@ export default function TrazabilidadPiso() {
           rondaId: o.ronda_id,
           fecha: ronda?.fecha ?? "",
           hora: ronda?.hora ? new Date(ronda.hora).toLocaleTimeString("es-EC", { hour: "2-digit", minute: "2-digit" }) : "",
+          horaISO: ronda?.hora ?? "",
           ordenId: o.orden_id,
           ordenNumero: orden?.numero_etq ?? "(orden eliminada)",
           ordenCliente: orden?.cliente_nombre ?? "",
@@ -200,12 +204,13 @@ export default function TrazabilidadPiso() {
           interrumpido: o.interrumpido,
           motivo: o.motivo,
           avance: o.avance,
+          unidades: o.unidades,
           equipoId: o.equipo_id,
           equipoNombre: equipo?.nombre ?? null,
           equipoMiembros: equipo ? equipo.persona_ids.map((pid) => personasPorId.get(pid)?.nombre ?? "?") : [],
         };
       });
-      filasArmadas.sort((a, b) => (a.fecha + a.hora < b.fecha + b.hora ? 1 : -1));
+      filasArmadas.sort((a, b) => (a.horaISO < b.horaISO ? 1 : -1));
 
       setFases((fasesRes.data as Fase[]) ?? []);
       setRoles((rolesRes.data as Rol[]) ?? []);
@@ -496,7 +501,7 @@ export default function TrazabilidadPiso() {
           </div>
 
           <div className="card overflow-hidden">
-            <div className="grid grid-cols-[80px_60px_110px_1fr_130px_130px_1fr_60px] gap-3 px-4 py-2.5 text-[10.5px] uppercase tracking-wide text-text-faint border-b border-border">
+            <div className="grid grid-cols-[80px_60px_110px_1fr_130px_130px_1fr_60px_70px] gap-3 px-4 py-2.5 text-[10.5px] uppercase tracking-wide text-text-faint border-b border-border">
               <span>Fecha</span>
               <span>Hora</span>
               <span>Orden</span>
@@ -504,12 +509,13 @@ export default function TrazabilidadPiso() {
               <span>Fase</span>
               <span>Rol</span>
               <span>Estado</span>
-              <span className="text-right">Avance</span>
+              <span className="text-right">Cajas</span>
+              <span className="text-right">Unidades</span>
             </div>
             {visibles.map((f) => (
               <div
                 key={f.id}
-                className="grid grid-cols-[80px_60px_110px_1fr_130px_130px_1fr_60px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-b-0 text-[12px]"
+                className="grid grid-cols-[80px_60px_110px_1fr_130px_130px_1fr_60px_70px] gap-3 px-4 py-2.5 items-center border-b border-border last:border-b-0 text-[12px]"
               >
                 <span className="text-text-dim">{f.fecha.slice(5)}</span>
                 <span className="text-text-dim tabular-nums">{f.hora}</span>
@@ -534,6 +540,7 @@ export default function TrazabilidadPiso() {
                   </span>
                 )}
                 <span className="text-right tabular-nums text-text-dim">{f.avance || "—"}</span>
+                <span className="text-right tabular-nums text-text-dim">{f.unidades ?? "—"}</span>
               </div>
             ))}
           </div>
@@ -620,29 +627,72 @@ function EstadisticasFluctuacion({
 
   const fueraDeRango = ordenSel && (limites.inicio < desde || limites.fin > hasta);
 
+  const [metrica, setMetrica] = useState<"cajas" | "unidades">("cajas");
+
+  // Cajas y unidades se registran como TOTAL ACUMULADO DEL DÍA (lo que
+  // dicen en cada vuelta tal cual, "vamos 20"), no un delta desde la
+  // ronda anterior — por eso aquí se toma el valor MÁS ALTO del día por
+  // cada combinación día+orden+fase (no se suman las vueltas), y recién
+  // esos máximos se suman entre sí si hubo más de una orden/fase ese día.
   const serie = useMemo(() => {
     if (!sujeto) return [];
     const dias = rangoDeDias(limites.inicio, limites.fin);
-    const porDia = new Map<string, { avance: number; obs: number; interrumpido: number }>();
-    dias.forEach((d) => porDia.set(d, { avance: 0, obs: 0, interrumpido: 0 }));
+    type Dia = { avance: number; unidades: number; obs: number; interrumpido: number; minHora: string | null; maxHora: string | null };
+    const porDia = new Map<string, Dia>();
+    dias.forEach((d) => porDia.set(d, { avance: 0, unidades: 0, obs: 0, interrumpido: 0, minHora: null, maxHora: null }));
+
+    const grupos = new Map<string, { avanceMax: number; unidadesMax: number; minHora: string; maxHora: string }>();
     filas.forEach((f) => {
-      if (!porDia.has(f.fecha)) return;
+      const dia = porDia.get(f.fecha);
+      if (!dia) return;
       if (fOrden && f.ordenId !== fOrden) return;
       if (fFase && f.faseId !== fFase) return;
       if (fRol && f.rolId !== fRol) return;
       if (sujeto.tipo === "equipo" && f.equipoId !== sujeto.id) return;
       if (sujeto.tipo === "persona" && f.personaId !== sujeto.id) return;
-      const dia = porDia.get(f.fecha)!;
+
       dia.obs += 1;
-      if (f.interrumpido) dia.interrumpido += 1;
-      else dia.avance += f.avance;
+      if (f.interrumpido) {
+        dia.interrumpido += 1;
+        return;
+      }
+      const claveGrupo = `${f.fecha}|${f.ordenId}|${f.faseId ?? ""}`;
+      const g = grupos.get(claveGrupo) ?? { avanceMax: 0, unidadesMax: 0, minHora: f.horaISO, maxHora: f.horaISO };
+      g.avanceMax = Math.max(g.avanceMax, f.avance || 0);
+      g.unidadesMax = Math.max(g.unidadesMax, f.unidades ?? 0);
+      if (f.horaISO && f.horaISO < g.minHora) g.minHora = f.horaISO;
+      if (f.horaISO && f.horaISO > g.maxHora) g.maxHora = f.horaISO;
+      grupos.set(claveGrupo, g);
     });
-    return dias.map((d) => ({ dia: d, diaLabel: d.slice(5), ...porDia.get(d)! }));
+
+    grupos.forEach((g, clave) => {
+      const fecha = clave.split("|")[0];
+      const dia = porDia.get(fecha);
+      if (!dia) return;
+      dia.avance += g.avanceMax;
+      dia.unidades += g.unidadesMax;
+      if (!dia.minHora || g.minHora < dia.minHora) dia.minHora = g.minHora;
+      if (!dia.maxHora || g.maxHora > dia.maxHora) dia.maxHora = g.maxHora;
+    });
+
+    return dias.map((d) => {
+      const dia = porDia.get(d)!;
+      const minutos =
+        dia.minHora && dia.maxHora && dia.minHora !== dia.maxHora
+          ? Math.round((new Date(dia.maxHora).getTime() - new Date(dia.minHora).getTime()) / 60000)
+          : 0;
+      const ritmo = minutos > 0 && dia.unidades > 0 ? Math.round((dia.unidades / minutos) * 100) / 100 : null;
+      return { dia: d, diaLabel: d.slice(5), avance: dia.avance, unidades: dia.unidades, obs: dia.obs, interrumpido: dia.interrumpido, minutos, ritmo };
+    });
   }, [sujeto, limites, filas, fOrden, fFase, fRol]);
 
   const totalAvance = serie.reduce((a, d) => a + d.avance, 0);
+  const totalUnidades = serie.reduce((a, d) => a + d.unidades, 0);
   const diasConTrabajo = serie.filter((d) => d.obs > 0).length;
   const promedioPorDiaActivo = diasConTrabajo > 0 ? Math.round((totalAvance / diasConTrabajo) * 10) / 10 : 0;
+  const diasConRitmo = serie.filter((d) => d.ritmo !== null);
+  const ritmoPromedio =
+    diasConRitmo.length > 0 ? Math.round((diasConRitmo.reduce((a, d) => a + (d.ritmo ?? 0), 0) / diasConRitmo.length) * 100) / 100 : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -678,7 +728,7 @@ function EstadisticasFluctuacion({
             </div>
           )}
 
-          <div className="grid grid-cols-3 gap-3 max-[640px]:grid-cols-1">
+          <div className="grid grid-cols-5 gap-3 max-[760px]:grid-cols-2">
             <div className="card p-3">
               <p className="text-[10px] text-text-faint uppercase tracking-wide">
                 {sujeto.tipo === "equipo" ? "Equipo" : "Persona"}
@@ -686,20 +736,46 @@ function EstadisticasFluctuacion({
               <p className="text-[16px] font-bold truncate">{sujeto.tipo === "equipo" ? `👥 ${sujeto.nombre}` : sujeto.nombre}</p>
             </div>
             <div className="card p-3">
-              <p className="text-[10px] text-text-faint uppercase tracking-wide">Avance total del período</p>
+              <p className="text-[10px] text-text-faint uppercase tracking-wide">Cajas del período</p>
               <p className="text-[20px] font-bold">{totalAvance}</p>
             </div>
             <div className="card p-3">
-              <p className="text-[10px] text-text-faint uppercase tracking-wide">Promedio por día con trabajo</p>
+              <p className="text-[10px] text-text-faint uppercase tracking-wide">Unidades del período</p>
+              <p className="text-[20px] font-bold">{totalUnidades || "—"}</p>
+            </div>
+            <div className="card p-3">
+              <p className="text-[10px] text-text-faint uppercase tracking-wide">Promedio cajas/día activo</p>
               <p className="text-[20px] font-bold">{promedioPorDiaActivo}</p>
+            </div>
+            <div className="card p-3">
+              <p className="text-[10px] text-text-faint uppercase tracking-wide">Ritmo promedio</p>
+              <p className="text-[20px] font-bold">{ritmoPromedio !== null ? `${ritmoPromedio} u/min` : "—"}</p>
             </div>
           </div>
 
           <div className="card p-4">
-            <p className="text-[12px] font-semibold uppercase tracking-wide text-text-faint mb-1">
-              Avance por día — {limites.inicio.slice(5)} al {limites.fin.slice(5)}
-              {ordenSel && !ordenSel.concluida_en && " (orden todavía abierta)"}
-            </p>
+            <div className="flex items-center justify-between flex-wrap gap-2 mb-1">
+              <p className="text-[12px] font-semibold uppercase tracking-wide text-text-faint">
+                {metrica === "cajas" ? "Cajas" : "Unidades"} por día — {limites.inicio.slice(5)} al {limites.fin.slice(5)}
+                {ordenSel && !ordenSel.concluida_en && " (orden todavía abierta)"}
+              </p>
+              <div className="flex gap-1.5">
+                {(["cajas", "unidades"] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setMetrica(m)}
+                    className="text-[11px] font-semibold px-2.5 py-1 rounded-full"
+                    style={
+                      metrica === m
+                        ? { background: "var(--accent)", color: "#fff" }
+                        : { background: "var(--card-2)", border: "1px solid var(--border-2)", color: "var(--text-dim)" }
+                    }
+                  >
+                    {m === "cajas" ? "Cajas" : "Unidades"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <div style={{ width: "100%", height: 220 }}>
               <ResponsiveContainer>
                 <BarChart data={serie} margin={{ left: -10 }}>
@@ -710,7 +786,7 @@ function EstadisticasFluctuacion({
                     contentStyle={{ background: "var(--card)", border: "1px solid var(--border-2)", borderRadius: 8, fontSize: 12 }}
                     labelFormatter={(v) => "Día " + v}
                   />
-                  <Bar dataKey="avance" fill="var(--accent)" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey={metrica} fill="var(--accent)" radius={[3, 3, 0, 0]} />
                   {limites.concluidaEn && (
                     <ReferenceLine x={limites.concluidaEn.slice(5)} stroke="var(--green)" label={{ value: "Concluida", fill: "var(--green)", fontSize: 10.5 }} />
                   )}
@@ -720,19 +796,23 @@ function EstadisticasFluctuacion({
           </div>
 
           <div className="card overflow-hidden">
-            <div className="grid grid-cols-[90px_1fr_1fr_1fr] gap-3 px-4 py-2.5 text-[10.5px] uppercase tracking-wide text-text-faint border-b border-border">
+            <div className="grid grid-cols-[80px_1fr_1fr_1fr_1fr_1fr] gap-3 px-4 py-2.5 text-[10.5px] uppercase tracking-wide text-text-faint border-b border-border">
               <span>Día</span>
-              <span className="text-right">Avance</span>
+              <span className="text-right">Cajas</span>
+              <span className="text-right">Unidades</span>
+              <span className="text-right">Ritmo (u/min)</span>
               <span className="text-right">Observaciones</span>
               <span className="text-right">Interrumpido</span>
             </div>
             {serie.map((d) => (
               <div
                 key={d.dia}
-                className="grid grid-cols-[90px_1fr_1fr_1fr] gap-3 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
+                className="grid grid-cols-[80px_1fr_1fr_1fr_1fr_1fr] gap-3 px-4 py-2 items-center border-b border-border last:border-b-0 text-[12px]"
               >
                 <span className="text-text-dim">{d.diaLabel}</span>
                 <span className="text-right font-semibold tabular-nums">{d.avance || "—"}</span>
+                <span className="text-right font-semibold tabular-nums">{d.unidades || "—"}</span>
+                <span className="text-right text-text-dim tabular-nums">{d.ritmo !== null ? d.ritmo : "—"}</span>
                 <span className="text-right text-text-dim tabular-nums">{d.obs || "—"}</span>
                 <span className="text-right tabular-nums" style={{ color: d.interrumpido > 0 ? "var(--red)" : "var(--text-faint)" }}>
                   {d.interrumpido || "—"}
