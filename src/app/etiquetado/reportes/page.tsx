@@ -1322,14 +1322,8 @@ export default function ReportesEtiquetadoPage() {
           let tallasAMostrar = v.tallas_detalle;
           let sinDesglose = false;
           if (cajaActiva) {
-            // Nota: como no guardamos el id real de la variante en este listado
-            // (solo item_id + color), buscamos por item_id y comparamos la caja
-            // de la variante para asociar el registro correcto.
             const registro = tallasPorCajaTodas.find(
-              (t) =>
-                t.item_id === it.id &&
-                t.numero_caja === cajaActiva &&
-                t.caja.trim() === (v.cajas ?? "").trim()
+              (t) => t.item_id === it.id && t.variante_id === v.id && t.numero_caja === cajaActiva
             );
             if (registro) {
               tallasAMostrar = registro.tallas_detalle;
