@@ -42,6 +42,7 @@ type FilaDetalle = {
   equipoId: string | null;
   equipoNombre: string | null;
   equipoMiembros: string[];
+  automatico: boolean;
 };
 
 type FilaAgrupada = FilaDetalle & { esEquipo: boolean; miembrosLabel: string };
@@ -276,7 +277,30 @@ export default function TrazabilidadPiso() {
         obsData = data ?? [];
       }
 
-      const ordenIds = Array.from(new Set(obsData.map((o) => o.orden_id)));
+      // Inventario ya no depende de que el dueño lo mida por muestreo: cada
+      // vez que el personal ingresa el conteo en el sistema principal, entra
+      // con su mesa seleccionada y queda guardado con hora exacta en
+      // etq_movimientos — un dato real y continuo, más preciso que una
+      // ronda. Se trae ese historial de la fase "inventario" y se mezcla
+      // con las rondas manuales de las demás fases en el mismo reporte.
+      const { data: movimientosData } = await supabase
+        .from("etq_movimientos")
+        .select("id, orden_id, mesa_id, caja, cantidad, creado_en")
+        .eq("fase", "inventario")
+        .gte("creado_en", `${desde}T00:00:00`)
+        .lte("creado_en", `${hasta}T23:59:59`);
+      const movimientosConMesa = (movimientosData ?? []).filter(
+        (m: { mesa_id: string | null }) => m.mesa_id
+      ) as { id: string; orden_id: string; mesa_id: string; caja: string | null; cantidad: number; creado_en: string }[];
+
+      const mesaIds = Array.from(new Set(movimientosConMesa.map((m) => m.mesa_id)));
+      const { data: mesasData } = mesaIds.length
+        ? await supabase.from("etq_mesas").select("id, orden_id, nombre, integrantes").in("id", mesaIds)
+        : { data: [] as { id: string; orden_id: string; nombre: string; integrantes: string[] }[] };
+
+      const ordenIds = Array.from(
+        new Set([...obsData.map((o) => o.orden_id), ...movimientosConMesa.map((m) => m.orden_id)])
+      );
       const { data: ordenesData } = ordenIds.length
         ? await supabase.from("etq_ordenes").select("id, numero_etq, cliente_nombre, fecha, concluida_en").in("id", ordenIds)
         : { data: [] as OrdenRef[] };
@@ -288,6 +312,11 @@ export default function TrazabilidadPiso() {
       const equiposPorId = new Map(((equiposRes.data as Equipo[]) ?? []).map((e) => [e.id, e]));
       const personasPorId = new Map(((personasRes.data as Persona[]) ?? []).map((p) => [p.id, p]));
       const ordenesPorId = new Map(((ordenesData as OrdenRef[]) ?? []).map((o) => [o.id, o]));
+      const fasesLista = (fasesRes.data as Fase[]) ?? [];
+      const faseInventario = fasesLista.find((f) => f.nombre.trim().toLowerCase() === "inventario");
+      const mesasPorId = new Map(
+        ((mesasData as { id: string; orden_id: string; nombre: string; integrantes: string[] }[]) ?? []).map((m) => [m.id, m])
+      );
 
       const filasArmadas: FilaDetalle[] = obsData.map((o) => {
         const ronda = rondaPorId.get(o.ronda_id) as { fecha: string; hora: string } | undefined;
@@ -321,16 +350,70 @@ export default function TrazabilidadPiso() {
           equipoId: o.equipo_id,
           equipoNombre: equipo?.nombre ?? null,
           equipoMiembros: equipo ? equipo.persona_ids.map((pid) => personasPorId.get(pid)?.nombre ?? "?") : [],
+          automatico: false,
         };
       });
-      filasArmadas.sort((a, b) => (a.horaISO < b.horaISO ? 1 : -1));
+
+      // Una fila por cada movimiento real de inventario (una caja contada),
+      // atribuida a la mesa física que estaba seleccionada en el sistema
+      // principal al momento de ingresarlo — no a una persona individual,
+      // porque esa atribución fina no existe en ese dato (igual que con un
+      // equipo marcado a mano en Rondas de piso).
+      const filasAutomaticas: FilaDetalle[] = faseInventario
+        ? movimientosConMesa.map((m) => {
+            const mesa = mesasPorId.get(m.mesa_id);
+            const orden = ordenesPorId.get(m.orden_id);
+            const fechaISO = m.creado_en;
+            return {
+              id: `etqmov:${m.id}`,
+              rondaId: `etqmov:${m.id}`,
+              fecha: fechaISO.slice(0, 10),
+              hora: new Date(fechaISO).toLocaleTimeString("es-EC", { hour: "2-digit", minute: "2-digit" }),
+              horaISO: fechaISO,
+              ordenId: m.orden_id,
+              ordenNumero: orden?.numero_etq ?? "(orden eliminada)",
+              ordenCliente: orden?.cliente_nombre ?? "",
+              personaId: `etqmesa:${m.mesa_id}`,
+              personaNombre: mesa?.nombre ?? "Mesa",
+              faseId: faseInventario.id,
+              faseNombre: faseInventario.nombre,
+              faseColorSlot: faseInventario.color_slot,
+              rolId: null,
+              rolNombre: "",
+              interrumpido: false,
+              motivo: null,
+              ausenteDesde: null,
+              ausenteHasta: null,
+              avance: 1,
+              unidades: m.cantidad,
+              equipoId: `etqmesa:${m.mesa_id}`,
+              equipoNombre: mesa?.nombre ?? "Mesa",
+              equipoMiembros: mesa?.integrantes ?? [],
+              automatico: true,
+            };
+          })
+        : [];
+
+      const todasLasFilas = [...filasArmadas, ...filasAutomaticas];
+      todasLasFilas.sort((a, b) => (a.horaISO < b.horaISO ? 1 : -1));
+
+      // Las mesas reales (etq_mesas) viven por orden, no son una entidad
+      // global como los equipos de Rondas de piso — dos órdenes distintas
+      // pueden tener cada una su propia "MESA 1". Se agregan a la misma
+      // lista de equipos (con un id sintético) para que aparezcan en el
+      // filtro de Equipo, distinguiendo a cuál orden pertenece cada una.
+      const equiposMesasReales: Equipo[] = Array.from(mesasPorId.values()).map((m) => ({
+        id: `etqmesa:${m.id}`,
+        nombre: `${m.nombre} · ${ordenesPorId.get(m.orden_id)?.numero_etq ?? "orden eliminada"}`,
+        persona_ids: [],
+      }));
 
       setFases((fasesRes.data as Fase[]) ?? []);
       setRoles((rolesRes.data as Rol[]) ?? []);
-      setEquipos((equiposRes.data as Equipo[]) ?? []);
+      setEquipos([...((equiposRes.data as Equipo[]) ?? []), ...equiposMesasReales]);
       setPersonas((personasRes.data as Persona[]) ?? []);
       setOrdenesRef((ordenesData as OrdenRef[]) ?? []);
-      setFilas(filasArmadas);
+      setFilas(todasLasFilas);
       setLoading(false);
     }
     cargar();
@@ -431,7 +514,8 @@ export default function TrazabilidadPiso() {
         <p className="text-[11.5px] text-text-faint mb-3">
           Detalle de las <b>Rondas de piso</b> (muestreo de trabajo): quién estuvo en qué fase y qué rol, por orden, con las interrupciones
           anotadas. Es independiente de &quot;Productividad&quot; — ese otro número mide unidades por hora en mesa, este mide cómo se reparte
-          el tiempo del personal entre fases.
+          el tiempo del personal entre fases. La fase <b>Inventario</b> ya no depende del muestreo: se alimenta sola con cada conteo real
+          que el personal ingresa en el sistema (con su mesa seleccionada), marcado como &quot;Inventario (auto)&quot; en la tabla.
         </p>
         <div className="flex flex-wrap gap-1.5 mb-3">
           {(
@@ -667,7 +751,7 @@ export default function TrazabilidadPiso() {
                   </span>
                 ) : (
                   <span className="text-[11px] font-semibold" style={{ color: "var(--green)" }}>
-                    Trabajando
+                    {f.automatico ? "Inventario (auto)" : "Trabajando"}
                   </span>
                 )}
                 <span className="text-right tabular-nums text-text-dim">{f.avance || "—"}</span>
@@ -790,7 +874,14 @@ function EstadisticasFluctuacion({
     const porDia = new Map<string, Dia>();
     dias.forEach((d) => porDia.set(d, { avance: 0, unidades: 0, obs: 0, interrumpido: 0, minAusente: 0, minHora: null, maxHora: null }));
 
-    const grupos = new Map<string, { avanceMax: number; unidadesMax: number; minHora: string; maxHora: string }>();
+    // Las filas automáticas de Inventario (una por caja real contada) se
+    // SUMAN entre sí — no son un contador acumulado repetido como las
+    // rondas manuales, son eventos distintos — mientras que las filas de
+    // rondas siguen tomando el máximo del día (ver comentario arriba).
+    const grupos = new Map<
+      string,
+      { avanceMax: number; unidadesMax: number; avanceAuto: number; unidadesAuto: number; minHora: string; maxHora: string }
+    >();
     filas.forEach((f) => {
       const dia = porDia.get(f.fecha);
       if (!dia) return;
@@ -807,9 +898,14 @@ function EstadisticasFluctuacion({
         return;
       }
       const claveGrupo = `${f.fecha}|${f.ordenId}|${f.faseId ?? ""}`;
-      const g = grupos.get(claveGrupo) ?? { avanceMax: 0, unidadesMax: 0, minHora: f.horaISO, maxHora: f.horaISO };
-      g.avanceMax = Math.max(g.avanceMax, f.avance || 0);
-      g.unidadesMax = Math.max(g.unidadesMax, f.unidades ?? 0);
+      const g = grupos.get(claveGrupo) ?? { avanceMax: 0, unidadesMax: 0, avanceAuto: 0, unidadesAuto: 0, minHora: f.horaISO, maxHora: f.horaISO };
+      if (f.automatico) {
+        g.avanceAuto += f.avance || 0;
+        g.unidadesAuto += f.unidades ?? 0;
+      } else {
+        g.avanceMax = Math.max(g.avanceMax, f.avance || 0);
+        g.unidadesMax = Math.max(g.unidadesMax, f.unidades ?? 0);
+      }
       if (f.horaISO && f.horaISO < g.minHora) g.minHora = f.horaISO;
       if (f.horaISO && f.horaISO > g.maxHora) g.maxHora = f.horaISO;
       grupos.set(claveGrupo, g);
@@ -819,8 +915,8 @@ function EstadisticasFluctuacion({
       const fecha = clave.split("|")[0];
       const dia = porDia.get(fecha);
       if (!dia) return;
-      dia.avance += g.avanceMax;
-      dia.unidades += g.unidadesMax;
+      dia.avance += g.avanceAuto + g.avanceMax;
+      dia.unidades += g.unidadesAuto + g.unidadesMax;
       if (!dia.minHora || g.minHora < dia.minHora) dia.minHora = g.minHora;
       if (!dia.maxHora || g.maxHora > dia.maxHora) dia.maxHora = g.maxHora;
     });
@@ -1247,6 +1343,8 @@ function ComparativaEquipos({
       roles: Set<string>;
       avanceMax: number;
       unidadesMax: number;
+      avanceAuto: number;
+      unidadesAuto: number;
       minHora: string;
       maxHora: string;
     };
@@ -1271,11 +1369,21 @@ function ComparativaEquipos({
           roles: new Set<string>(),
           avanceMax: 0,
           unidadesMax: 0,
+          avanceAuto: 0,
+          unidadesAuto: 0,
           minHora: f.horaISO,
           maxHora: f.horaISO,
         } as Grupo);
-      g.avanceMax = Math.max(g.avanceMax, f.avance || 0);
-      g.unidadesMax = Math.max(g.unidadesMax, f.unidades ?? 0);
+      // Igual que en Estadísticas: las filas automáticas de Inventario (una
+      // por caja real) se suman; las de rondas manuales toman el máximo del
+      // día, porque son un contador acumulado repetido en cada vuelta.
+      if (f.automatico) {
+        g.avanceAuto += f.avance || 0;
+        g.unidadesAuto += f.unidades ?? 0;
+      } else {
+        g.avanceMax = Math.max(g.avanceMax, f.avance || 0);
+        g.unidadesMax = Math.max(g.unidadesMax, f.unidades ?? 0);
+      }
       if (f.horaISO && f.horaISO < g.minHora) g.minHora = f.horaISO;
       if (f.horaISO && f.horaISO > g.maxHora) g.maxHora = f.horaISO;
       if (f.rolNombre) g.roles.add(f.rolNombre);
@@ -1283,8 +1391,10 @@ function ComparativaEquipos({
     });
     return Array.from(grupos.entries())
       .map(([clave, g]) => {
+        const avance = g.avanceAuto + g.avanceMax;
+        const unidades = g.unidadesAuto + g.unidadesMax;
         const minutos = g.minHora !== g.maxHora ? Math.round((new Date(g.maxHora).getTime() - new Date(g.minHora).getTime()) / 60000) : 0;
-        const ritmo = minutos > 0 && g.unidadesMax > 0 ? Math.round((g.unidadesMax / minutos) * 100) / 100 : null;
+        const ritmo = minutos > 0 && unidades > 0 ? Math.round((unidades / minutos) * 100) / 100 : null;
         return {
           key: clave,
           fecha: g.fecha,
@@ -1295,8 +1405,8 @@ function ComparativaEquipos({
           quienNombre: g.quienNombre,
           miembros: g.miembros,
           rolesLabel: Array.from(g.roles).join(" + "),
-          avance: g.avanceMax,
-          unidades: g.unidadesMax,
+          avance,
+          unidades,
           minutos,
           ritmo,
         };
