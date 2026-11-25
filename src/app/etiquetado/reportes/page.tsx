@@ -1914,17 +1914,19 @@ export default function ReportesEtiquetadoPage() {
 
   // ---- Módulo de Inconsistencias ----
 
-  // Códigos de la orden seleccionada con diferencia contra factura.
-  // Todos los códigos con factura de la orden (completos e inconsistentes),
-  // MÁS los códigos nuevos (que por definición no vienen en la factura
-  // original, así que su cantidad_factura queda en 0) — si se excluían por
-  // no tener factura, "Solo códigos nuevos" no mostraba nada y ni siquiera
-  // aparecían con el filtro "Todas" (caso reportado: BE12313F4 en la orden
-  // ETQ-2026-01-079).
+  // Todos los códigos capturados de la orden seleccionada, con su
+  // diferencia contra factura. Un código se considera "nuevo" si alguien lo
+  // marcó a mano con el toggle "Código nuevo" O si su cantidad_factura es 0
+  // — esto último por sí solo YA significa que no venía en la factura
+  // original, así que no debe depender de que el operador se acuerde de
+  // tildar el toggle aparte (si no lo tildaba, el código con factura 0
+  // desaparecía por completo de esta lista, ni siquiera salía como "Nuevo").
   const inconsistencias = useMemo(() => {
-    return itemsOrdenSeleccionada
-      .map((it) => ({ ...it, diferencia: it.cantidad_contada - it.cantidad_factura }))
-      .filter((it) => it.cantidad_factura > 0 || it.codigo_nuevo);
+    return itemsOrdenSeleccionada.map((it) => ({
+      ...it,
+      diferencia: it.cantidad_contada - it.cantidad_factura,
+      esNuevo: !!it.codigo_nuevo || it.cantidad_factura <= 0,
+    }));
   }, [itemsOrdenSeleccionada]);
 
   const inconsistenciasFiltradas = useMemo(() => {
@@ -1933,7 +1935,7 @@ export default function ReportesEtiquetadoPage() {
       if (tipoInconsistencia === "completo" && it.diferencia !== 0) return false;
       if (tipoInconsistencia === "faltante" && it.diferencia >= 0) return false;
       if (tipoInconsistencia === "sobrante" && it.diferencia <= 0) return false;
-      if (tipoInconsistencia === "nuevo" && !it.codigo_nuevo) return false;
+      if (tipoInconsistencia === "nuevo" && !it.esNuevo) return false;
       if (filtroRevisado === "revisado" && !it.revisado) return false;
       if (filtroRevisado === "sin_revisar" && it.revisado) return false;
       if (paletInconsistencia !== "todos" && (it.palet ?? "").trim() !== paletInconsistencia) return false;
@@ -3130,7 +3132,7 @@ export default function ReportesEtiquetadoPage() {
                         <div className="card p-8 text-center">
                           <p className="text-[13px] text-text-faint">
                             {inconsistencias.length === 0
-                              ? "Esta orden aún no tiene códigos con cantidad de factura registrada."
+                              ? "Esta orden aún no tiene códigos capturados en Inventario."
                               : "Ningún código coincide con el filtro."}
                           </p>
                         </div>
@@ -3187,7 +3189,7 @@ export default function ReportesEtiquetadoPage() {
                                   {it.tipo_etiqueta ?? "—"}
                                 </span>
                                 <span className="flex justify-center">
-                                  {it.codigo_nuevo ? (
+                                  {it.esNuevo ? (
                                     <Check size={14} className="text-[#6ee7b7]" />
                                   ) : (
                                     <span className="text-text-faint">—</span>
@@ -3215,7 +3217,17 @@ export default function ReportesEtiquetadoPage() {
                                   {it.composicion ?? "—"}
                                 </span>
                                 <span className="text-text-faint truncate text-[11px]">
-                                  {formatoTallas(it.tallas_detalle)}
+                                  {(() => {
+                                    const cajaActiva = cajaFiltroInconsistencia.trim();
+                                    if (!cajaActiva) return formatoTallas(it.tallas_detalle);
+                                    // Con un filtro de Caja activo, mostrar el desglose real de ESA
+                                    // caja puntual (si existe historial guardado para ella) en vez
+                                    // del total de todo el código — igual que ya hace Inventario.
+                                    const registro = tallasPorCajaTodas.find(
+                                      (t) => t.item_id === it.id && t.variante_id === null && t.numero_caja === cajaActiva
+                                    );
+                                    return formatoTallas(registro?.tallas_detalle ?? it.tallas_detalle);
+                                  })()}
                                 </span>
                                 <span className="text-right">{it.cantidad_factura}</span>
                                 <span className="text-right">{it.cantidad_contada}</span>
