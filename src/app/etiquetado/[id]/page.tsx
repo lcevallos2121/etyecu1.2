@@ -3881,12 +3881,15 @@ export default function DetalleEtiquetadoPage() {
                     <tr>
                       <td className="border border-black/40 p-1.5 font-bold">CANTIDAD:</td>
                       <td className="border border-black/40 p-1.5" colSpan={3}>
-                        {totalesInformeFilas.etiquetas} UNIDADES
+                        {totalesInformeFilas.inventario} UNIDADES
                       </td>
                     </tr>
                   </tbody>
                 </table>
 
+                {/* El Informe Licores usa la cantidad de inventario (cantidad_contada),
+                    no la suma de tallas: un licor no tiene tallas (S/M/L), así que
+                    "totalEtiquetas" (pensado para ropa/calzado) siempre da 0 aquí. */}
                 <table className="w-full text-[10px] border border-black/50 border-collapse mb-5">
                   <thead>
                     <tr className="bg-yellow-300">
@@ -3898,12 +3901,12 @@ export default function DetalleEtiquetadoPage() {
                     {filasInforme.map((g) => (
                       <tr key={g.descripcion}>
                         <td className="border border-black/40 p-1.5">{g.descripcion}</td>
-                        <td className="border border-black/40 p-1.5 text-right">{g.totalEtiquetas}</td>
+                        <td className="border border-black/40 p-1.5 text-right">{g.cantidadInventario}</td>
                       </tr>
                     ))}
                     <tr className="font-bold">
                       <td className="border border-black/40 p-1.5">TOTAL</td>
-                      <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.etiquetas}</td>
+                      <td className="border border-black/40 p-1.5 text-right">{totalesInformeFilas.inventario}</td>
                     </tr>
                   </tbody>
                 </table>
